@@ -1,5 +1,4 @@
 # check_id	path:content — known-debt violations; shrink to zero as items land
-check_cycle_task_controller	src/core/task/index.ts:import { Controller } from "../controller"
 check_env_centralized	src/core/api/providers/openai-codex.ts
 check_env_centralized	src/core/controller/grpc-recorder/grpc-recorder.builder.ts
 check_env_centralized	src/core/controller/grpc-recorder/log-file-handler.ts
@@ -13,55 +12,6 @@ check_env_centralized	src/core/task/tools/discovery/UserToolLoader.ts
 check_env_centralized	src/core/task/tools/modules/upsert_tool/UpsertTool.ts
 check_env_centralized	src/core/webview/WebviewProvider.ts
 check_env_centralized	src/core/workspace/WorkspaceResolver.ts
-check_leaf_integrations	src/integrations/checkpoints/CheckpointDiffPresenter.ts:import { MessageStateHandler } from "../../core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointDiffPresenter.ts:import { sendRelinquishControlEvent } from "@core/controller/ui/subscribeToRelinquishControl"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointRestoreHandler.ts:import { FileContextTracker } from "../../core/context/context-tracking/FileContextTracker"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointRestoreHandler.ts:import { MessageStateHandler } from "../../core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointRestoreHandler.ts:import { TaskMessenger } from "../../core/task/TaskMessenger"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointRestoreHandler.ts:import { TaskState } from "../../core/task/TaskState"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointRestoreHandler.ts:import { getPresentationHistoryAtMessage } from "@core/storage/disk"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointRestoreHandler.ts:import { sendRelinquishControlEvent } from "@core/controller/ui/subscribeToRelinquishControl"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointStorageManager.ts:import { MessageStateHandler } from "../../core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointStorageManager.ts:import { TaskState } from "../../core/task/TaskState"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointStorageManager.ts:import { WorkspaceRootManager } from "@core/workspace/WorkspaceRootManager"
-check_leaf_integrations	src/integrations/checkpoints/CheckpointTracker.ts:import { sendCheckpointEvent } from "@core/controller/checkpoints/subscribeToCheckpoints"
-check_leaf_integrations	src/integrations/checkpoints/MultiRootCheckpointManager.ts:import { MessageStateHandler } from "@core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/MultiRootCheckpointManager.ts:import { WorkspaceRootManager } from "@core/workspace"
-check_leaf_integrations	src/integrations/checkpoints/MultiRootCheckpointManager.ts:import { showChangedFilesDiff } from "@core/task/multifile-diff"
-check_leaf_integrations	src/integrations/checkpoints/__tests__/TaskCheckpointManager.test.ts:import type { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
-check_leaf_integrations	src/integrations/checkpoints/__tests__/TaskCheckpointManager.test.ts:import type { MessageStateHandler } from "@core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/__tests__/TaskCheckpointManager.test.ts:import type { TaskMessenger } from "@core/task/TaskMessenger"
-check_leaf_integrations	src/integrations/checkpoints/__tests__/TaskCheckpointManager.test.ts:import type { TaskState } from "@core/task/TaskState"
-check_leaf_integrations	src/integrations/checkpoints/__tests__/factory.test.ts:import type { WorkspaceRootManager } from "@core/workspace/WorkspaceRootManager"
-check_leaf_integrations	src/integrations/checkpoints/factory.ts:import type { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
-check_leaf_integrations	src/integrations/checkpoints/factory.ts:import type { MessageStateHandler } from "@core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/factory.ts:import type { TaskState } from "@core/task/TaskState"
-check_leaf_integrations	src/integrations/checkpoints/factory.ts:import { WorkspaceRootManager } from "@core/workspace/WorkspaceRootManager"
-check_leaf_integrations	src/integrations/checkpoints/index.ts:import { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
-check_leaf_integrations	src/integrations/checkpoints/index.ts:import { MessageStateHandler } from "../../core/task/message-state"
-check_leaf_integrations	src/integrations/checkpoints/index.ts:import { TaskMessenger } from "../../core/task/TaskMessenger"
-check_leaf_integrations	src/integrations/checkpoints/index.ts:import { TaskState } from "../../core/task/TaskState"
-check_leaf_integrations	src/integrations/checkpoints/index.ts:import { WorkspaceRootManager } from "@core/workspace/WorkspaceRootManager"
-check_leaf_integrations	src/integrations/editor/DiffContentManager.ts:import { formatResponse } from "@core/formatResponse"
-check_leaf_integrations	src/integrations/editor/DiffViewProvider.ts:import { workspaceResolver } from "@core/workspace"
-check_leaf_integrations	src/integrations/terminal/buildResult.ts:import { formatResponse } from "@core/formatResponse"
-check_leaf_integrations	src/integrations/terminal/process-listeners.ts:import type { TaskMessenger } from "../../core/task/TaskMessenger"
-check_leaf_integrations	src/integrations/terminal/types.ts:import { TaskMessenger } from "../../core/task/TaskMessenger"
-check_leaf_services	src/services/browser/BrowserConnectionManager.ts:import type { Controller } from "@core/controller"
-check_leaf_services	src/services/browser/BrowserSession.ts:import type { Controller } from "@core/controller"
-check_leaf_services	src/services/error/DiracError.ts:import { checkContextWindowExceededError } from "../../core/context/context-management/context-error-handling"
-check_leaf_services	src/services/glob/list-files.ts:import { workspaceResolver } from "@core/workspace"
-check_leaf_services	src/services/release-notes/ReleaseNotesService.ts:import type { StateManager } from "@core/storage/StateManager"
-check_leaf_services	src/services/release-notes/recordVersionUpgrade.ts:import type { StateManager } from "@core/storage/StateManager"
-check_leaf_services	src/services/ripgrep/index.ts:import { DiracIgnoreController } from "@core/ignore/DiracIgnoreController"
-check_leaf_services	src/services/test/TestServer.ts:import { DiracWebviewProvider } from "@core/webview"
-check_leaf_services	src/services/test/TestServer.ts:import { getSavedApiConversationHistory, getSavedDiracMessages } from "@core/storage/disk"
-check_leaf_services	src/services/tree-sitter/__tests__/language_compatibility.test.ts:import { EditAstTool } from "@core/task/tools/modules/edit_ast/EditAstTool"
-check_leaf_services	src/services/tree-sitter/__tests__/language_compatibility.test.ts:import { InspectAstTool } from "@core/task/tools/modules/inspect_ast/InspectAstTool"
-check_leaf_services	src/services/tree-sitter/__tests__/language_compatibility.test.ts:import { TaskState } from "@core/task/TaskState"
-check_leaf_services	src/services/tree-sitter/__tests__/language_compatibility.test.ts:import { ToolExecutorCoordinator } from "@core/task/tools/ToolExecutorCoordinator"
-check_leaf_services	src/services/tree-sitter/__tests__/language_compatibility.test.ts:import { createMockContext } from "@core/task/tools/__tests__/helpers/mockTaskConfig"
-check_leaf_services	src/services/tree-sitter/index.ts:import { DiracIgnoreController } from "@core/ignore/DiracIgnoreController"
 check_no_numeric_or_default	src/core/api/providers/aihubmix.ts:inputTokens: chunk.usage.prompt_tokens || 0,
 check_no_numeric_or_default	src/core/api/providers/aihubmix.ts:inputTokens: usage.input_tokens || 0,
 check_no_numeric_or_default	src/core/api/providers/aihubmix.ts:max_tokens: this.options.modelInfo?.maxTokens || 8192,
@@ -286,15 +236,6 @@ check_no_numeric_or_default	src/services/test/TestServer.ts:tokensOut: taskData?
 check_no_numeric_or_default	src/shared/getApiMetrics.ts:const total = (info.tokensIn || 0) + (info.tokensOut || 0) + (info.cacheWrites || 0) + (info.cacheReads || 0)
 check_no_numeric_or_default	src/utils/cost.ts:const cacheCreationInputTokensNum = cacheCreationInputTokens || 0
 check_no_numeric_or_default	src/utils/cost.ts:const cacheReadInputTokensNum = cacheReadInputTokens || 0
-check_no_vscode_in_core	src/core/api/providers/vscode-lm.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/api/transform/__tests__/vscode-lm-format.test.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/api/transform/vscode-lm-format.test.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/api/transform/vscode-lm-format.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/context/context-tracking/FileContextTracker.test.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/controller/models/getVsCodeLmModels.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/controller/ui/openWalkthrough.ts:import * as vscode from "vscode"
-check_no_vscode_in_core	src/core/storage/state-migrations.ts:import * as vscode from "vscode"
 check_one_tool_taxonomy	cli/src/utils/tools.ts:export const FILE_EDIT_TOOLS = new Set([
 check_one_tool_taxonomy	cli/src/utils/tools.ts:export const FILE_SAVE_TOOLS = new Set([
 check_one_tool_taxonomy	cli/src/utils/tools.ts:export const TOOL_DESCRIPTIONS: Record<string, { ask: string; say: string }> = {
-check_webview_no_escape	webview-ui/src/shared/api/grpc-client.ts:export { DiracError, DiracErrorType } from "@/../../src/services/error/DiracError"
