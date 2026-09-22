@@ -13,7 +13,9 @@ WRITE_BASELINE=0
 echo "===> Step 1: Running dependency-cruiser (module boundaries & cycles)..."
 if [ "$WRITE_BASELINE" = 1 ]; then
   npx depcruise-baseline src cli/src webview-ui/src --config .dependency-cruiser.js
-  echo "Updated .dependency-cruiser-known-violations.json baseline."
+  # Compact the baseline so a ~1.5k-entry file doesn't cost 5MB of repo footprint.
+  node -e "const fs=require('fs');const p='.dependency-cruiser-known-violations.json';fs.writeFileSync(p,JSON.stringify(JSON.parse(fs.readFileSync(p))))"
+  echo "Updated .dependency-cruiser-known-violations.json baseline (compacted)."
 else
   if ! npx depcruise src cli/src webview-ui/src --config .dependency-cruiser.js --ignore-known; then
     echo "ERROR: dependency-cruiser detected NEW architectural boundary or cycle violations!"
@@ -27,8 +29,11 @@ echo "===> Step 2: Running code-level syntax & smell checks..."
 EXCLUDES=(--exclude-dir=node_modules --exclude-dir=generated --exclude-dir=proto --exclude-dir=dist --exclude-dir=out --exclude-dir=build)
 
 check_one_tool_taxonomy() {
-  # tool-set definitions live only in src/shared/tools.ts (plan item 4)
+  # tool-set definitions live only in src/shared/tools.ts (plan item 4);
+  # covers declarations and same-line re-exports (multiline export blocks remain uncheckable via grep)
   grep -rEn 'export (const|function|class) (FILE_EDIT_TOOLS|FILE_SAVE_TOOLS|TOOL_DESCRIPTIONS|READ_ONLY_TOOLS|MUTATING_TOOLS)\b' \
+    "${EXCLUDES[@]}" --include='*.ts' src/ cli/src/ 2>/dev/null | grep -v '^src/shared/tools\.ts:'
+  grep -rEn 'export \{[^}]*\b(FILE_EDIT_TOOLS|FILE_SAVE_TOOLS|TOOL_DESCRIPTIONS|READ_ONLY_TOOLS|MUTATING_TOOLS)\b' \
     "${EXCLUDES[@]}" --include='*.ts' src/ cli/src/ 2>/dev/null | grep -v '^src/shared/tools\.ts:'
 }
 
