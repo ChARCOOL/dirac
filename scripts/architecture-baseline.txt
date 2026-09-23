@@ -10,6 +10,7 @@ check_env_centralized	src/core/task/tools/context/DiracContext.ts
 check_env_centralized	src/core/task/tools/discovery/ToolDiscoveryService.ts
 check_env_centralized	src/core/task/tools/discovery/UserToolLoader.ts
 check_env_centralized	src/core/task/tools/modules/upsert_tool/UpsertTool.ts
+check_env_centralized	src/core/task/tools/subagent/AgentConfigLoader.ts
 check_env_centralized	src/core/webview/WebviewProvider.ts
 check_env_centralized	src/core/workspace/WorkspaceResolver.ts
 check_no_numeric_or_default	src/core/api/providers/aihubmix.ts:inputTokens: chunk.usage.prompt_tokens || 0,
@@ -154,8 +155,6 @@ check_no_numeric_or_default	src/core/controller/models/refreshGroqModels.ts:cont
 check_no_numeric_or_default	src/core/controller/models/refreshGroqModels.ts:inputPrice: staticModelInfo?.inputPrice || 0,
 check_no_numeric_or_default	src/core/controller/models/refreshGroqModels.ts:maxTokens: rawModel.max_completion_tokens || staticModelInfo?.maxTokens || 8192,
 check_no_numeric_or_default	src/core/controller/models/refreshGroqModels.ts:outputPrice: staticModelInfo?.outputPrice || 0,
-check_no_numeric_or_default	src/core/controller/models/refreshHuggingFaceModels.ts:cacheReadsPrice: (modelInfo as any).cacheReadsPrice || 0,
-check_no_numeric_or_default	src/core/controller/models/refreshHuggingFaceModels.ts:cacheWritesPrice: (modelInfo as any).cacheWritesPrice || 0,
 check_no_numeric_or_default	src/core/controller/models/refreshRequestyModels.ts:cacheReadsPrice: parsePrice(model.cached_price) || 0,
 check_no_numeric_or_default	src/core/controller/models/refreshRequestyModels.ts:cacheWritesPrice: parsePrice(model.caching_price) || 0,
 check_no_numeric_or_default	src/core/controller/models/refreshRequestyModels.ts:inputPrice: parsePrice(model.input_price) || 0,
