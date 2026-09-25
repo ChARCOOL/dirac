@@ -66,6 +66,9 @@ export interface ApplyProviderConfigOptions {
  */
 export async function applyProviderConfig(options: ApplyProviderConfigOptions): Promise<void> {
 	const { providerId, apiKey, modelId, baseUrl, azureApiVersion, controller } = options
+	if (providerId === "unbiased" && modelId && modelId !== "pareto") {
+		throw new Error("Unbiased only supports the pareto model")
+	}
 	const stateManager = StateManager.get()
 
 	const config: Record<string, unknown> = {

@@ -27,6 +27,7 @@ import { AwsBedrockHandler } from "./providers/bedrock"
 import { CerebrasHandler } from "./providers/cerebras"
 import { ClaudeCodeHandler } from "./providers/claude-code"
 import { DeepSeekHandler } from "./providers/deepseek"
+import { UnbiasedHandler } from "./providers/unbiased"
 import { DifyHandler } from "./providers/dify"
 import { DoubaoHandler } from "./providers/doubao"
 import { FireworksHandler } from "./providers/fireworks"
@@ -321,6 +322,12 @@ const PROVIDER_REGISTRY: Record<
 			deepSeekApiKey: cfg.deepSeekApiKey,
 			reasoningEffort: mc.reasoningEffort,
 			apiModelId: mc.apiModelId,
+		}),
+	unbiased: (cfg) =>
+		new UnbiasedHandler({
+			onRetryAttempt: cfg.onRetryAttempt,
+			disableRetries: cfg.disableRetries,
+			unbiasedApiKey: cfg.unbiasedApiKey,
 		}),
 	requesty: (cfg, mc) =>
 		new RequestyHandler({

@@ -201,6 +201,12 @@ export class ModelsServiceClient extends ProtoBusClient {
 	static authenticateOpenAiCodex(request: proto.dirac.OpenAiCodexAuthRequest, callbacks: Callbacks<proto.dirac.OpenAiCodexAuthEvent>): ()=>void {
 		return this.makeStreamingRequest("authenticateOpenAiCodex", request, proto.dirac.OpenAiCodexAuthRequest.toJSON, proto.dirac.OpenAiCodexAuthEvent.fromJSON, callbacks)
 	}
+	static authenticateUnbiased(request: proto.dirac.EmptyRequest, callbacks: Callbacks<proto.dirac.UnbiasedAuthEvent>): ()=>void {
+		return this.makeStreamingRequest("authenticateUnbiased", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.UnbiasedAuthEvent.fromJSON, callbacks)
+	}
+	static async signOutUnbiased(request: proto.dirac.EmptyRequest): Promise<proto.dirac.Empty> {
+		return this.makeUnaryRequest("signOutUnbiased", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.Empty.fromJSON)
+	}
 	static async signOutOpenAiCodex(request: proto.dirac.EmptyRequest): Promise<proto.dirac.Empty> {
 		return this.makeUnaryRequest("signOutOpenAiCodex", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.Empty.fromJSON)
 	}

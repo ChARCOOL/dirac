@@ -323,6 +323,7 @@ const SECRETS_KEYS = [
 	"geminiApiKey",
 	"openAiNativeApiKey",
 	"deepSeekApiKey",
+	"unbiasedApiKey",
 	"requestyApiKey",
 	"togetherApiKey",
 	"fireworksApiKey",
