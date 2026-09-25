@@ -50,6 +50,7 @@ export class UnbiasedHandler implements ApiHandler {
 		const stream = await this.ensureClient().chat.completions.create(
 			{
 				model: unbiasedDefaultModelId,
+				max_tokens: this.getModel().info.maxTokens,
 				messages: [{ role: "system", content: systemPrompt }, ...convertToOpenAiMessages(messages, undefined, true)],
 				stream: true,
 				stream_options: { include_usage: true },

@@ -4,6 +4,21 @@ import { UnbiasedHandler } from "../unbiased"
 
 const emptyStream = { [Symbol.asyncIterator]: async function* () { } }
 
+describe("Unbiased request parameters", () => {
+	it("sends the model's maximum output tokens", async () => {
+		const handler = new UnbiasedHandler({ unbiasedApiKey: "test-key" })
+		const create = (params: { max_tokens?: number }) => {
+			assert.equal(params.max_tokens, 131_072)
+			return Promise.resolve(emptyStream)
+		}
+		Object.defineProperty(handler, "client", { value: { chat: { completions: { create } } } })
+
+		for await (const _chunk of handler.createMessage("system", [])) {
+			// Consume the empty response.
+		}
+	})
+})
+
 describe("Unbiased request cancellation", () => {
 	it("aborts an in-flight request and allows the next request to proceed", async () => {
 		const handler = new UnbiasedHandler({ unbiasedApiKey: "test-key" })
