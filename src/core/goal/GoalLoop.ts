@@ -223,6 +223,7 @@ export class GoalLoop {
 				conversationUlid: input.conversationUlid,
 				prompt: input.prompt,
 				executionProfile: "goal_child",
+				childRole: input.role,
 				environmentFactory: input.environmentFactory,
 				onHistorySnapshot: (_item, task) =>
 					this.recordAccounting(
