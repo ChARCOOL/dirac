@@ -54,8 +54,8 @@ import { ulid } from "ulid"
 import { getErrorMessage } from "@/shared/errors"
 import { type SkillMetadata } from "@/shared/skills"
 
-import { Controller } from "../controller"
 import { StateManager } from "../storage/StateManager"
+import type { ITaskHost } from "./types/task-host"
 import { ApiConversationManager } from "./ApiConversationManager"
 import { AssistantStreamManager } from "./AssistantStreamManager"
 import { activateTaskSkill } from "./activateTaskSkill"
@@ -124,7 +124,7 @@ import {
 export type ToolResponse = DiracToolResponseContent
 
 export type TaskParams = {
-	controller: Controller
+	controller: ITaskHost
 	updateTaskHistory: (historyItem: HistoryItem) => Promise<HistoryItem[]>
 	postStateToWebview: () => Promise<void>
 	postPresentationToWebview?: () => Promise<void>
@@ -162,6 +162,9 @@ export type TaskParams = {
 export class Task {
 	// Core task variables
 	readonly taskId: string
+	// Sequence number for prompt-metadata debug artifacts — see promptArtifactsContext.
+	// Each API request within a task gets its own file instead of overwriting the last.
+	private promptArtifactSeq = 0
 	private diracContext: DiracContext
 	readonly ulid: string
 	private taskIsFavorited?: boolean
@@ -201,6 +204,10 @@ export class Task {
 	private get promptArtifactsContext(): TaskPromptArtifactsContext {
 		return {
 			taskId: this.taskId,
+			// Each call gets its own sequence number so a multi-call turn (e.g. the
+			// noToolsUsed retry loop) leaves one debug artifact per API request
+			// instead of the last request overwriting all earlier ones.
+			requestSeq: ++this.promptArtifactSeq,
 			cwd: this.cwd,
 			writePromptMetadataEnabled: this.workingConfiguration.settings.writePromptMetadataEnabled,
 			writePromptMetadataDirectory: this.workingConfiguration.settings.writePromptMetadataDirectory,
@@ -227,6 +234,7 @@ export class Task {
 				writePromptMetadataArtifacts(
 					{
 						taskId: this.taskId,
+						requestSeq: ++this.promptArtifactSeq,
 						cwd: this.cwd,
 						writePromptMetadataEnabled: requestRuntime.workingConfiguration.settings.writePromptMetadataEnabled,
 						writePromptMetadataDirectory: requestRuntime.workingConfiguration.settings.writePromptMetadataDirectory,
@@ -243,6 +251,7 @@ export class Task {
 			taskMessenger: this.taskMessenger,
 			api: requestRuntime.api,
 			taskId: this.taskId,
+			mode: requestRuntime.workingConfiguration.settings.mode,
 			executionProfile: this.executionProfile,
 			checkpointManager: this.checkpointManager,
 			postStateToWebview: () => this.postStateToWebview(),
@@ -343,7 +352,7 @@ export class Task {
 	}
 
 	// Core dependencies
-	private controller: Controller
+	private host: ITaskHost
 
 	// Service handlers
 	api: ApiHandler
@@ -446,7 +455,7 @@ export class Task {
 			throw new Error(`${this.executionProfile} Tasks require an Act-mode working configuration`)
 		}
 		this.contextCompactionObserver = params.onContextCompacted
-		this.controller = controller
+		this.host = controller
 		this.updateTaskHistory = updateTaskHistory
 		this.postStateToWebview = postStateToWebview
 		this.postPresentationToWebview = postPresentationToWebview ?? postStateToWebview
@@ -459,7 +468,7 @@ export class Task {
 		this.taskId = taskId
 		this.taskState.taskLockAcquired = taskLockAcquired
 		this.terminalExecutionMode = vscodeTerminalExecutionMode || "vscodeTerminal"
-		this.switchToActMode = params.switchToActMode ?? (() => this.controller.toggleActModeForYoloMode())
+		this.switchToActMode = params.switchToActMode ?? (() => this.host.toggleActModeForYoloMode())
 		this.enqueuePreRequestSteeringMessages = params.enqueuePreRequestSteeringMessages ?? (async () => undefined)
 		this.conversationPersistenceHooks = params.conversationPersistenceHooks
 
@@ -555,7 +564,7 @@ export class Task {
 		this.diracContext = new DiracContext(this.taskId, this.stateManager, this.ulid)
 
 		// Initialize context trackers
-		this.fileContextTracker = new FileContextTracker(controller, this.taskId)
+		this.fileContextTracker = new FileContextTracker(stateManager, this.taskId)
 		this.modelContextTracker = new ModelContextTracker(this.taskId)
 		this.environmentContextTracker = new EnvironmentContextTracker(this.taskId)
 
@@ -672,7 +681,7 @@ export class Task {
 		const commandExecutorCallbacks: CommandExecutorCallbacks = {
 			taskMessenger: this.taskMessenger,
 			updateBackgroundCommandState: (isRunning: boolean) =>
-				(updateBackgroundCommandState ?? this.controller.updateBackgroundCommandState.bind(this.controller))(
+				(updateBackgroundCommandState ?? this.host.updateBackgroundCommandState.bind(this.host))(
 					isRunning,
 					this.taskId,
 				),
@@ -748,6 +757,7 @@ export class Task {
 			getWorkingConfiguration: () => this.workingConfiguration,
 			workspaceManager: this.workspaceManager,
 			getRequestRuntime: () => this.activeRequestRuntime,
+			diracIgnoreController: this.diracIgnoreController,
 		})
 
 		this.contextLoader = new ContextLoader({
