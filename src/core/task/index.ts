@@ -251,6 +251,7 @@ export class Task {
 			taskMessenger: this.taskMessenger,
 			api: requestRuntime.api,
 			taskId: this.taskId,
+			mode: requestRuntime.workingConfiguration.settings.mode,
 			executionProfile: this.executionProfile,
 			checkpointManager: this.checkpointManager,
 			postStateToWebview: () => this.postStateToWebview(),
