@@ -91,6 +91,16 @@ export const openAiCodexModels = {
 		outputPrice: 0,
 		description: "GPT-6 Sol Codex via ChatGPT subscription; Apr 20, 2026 knowledge cutoff",
 	},
+	"gpt-6.1-sol": {
+		...MODEL_CAPABILITIES["gpt-6.1-sol"],
+		supportsPromptCache: true,
+		supportsFastMode: true,
+		apiFormat: ApiFormat.OPENAI_RESPONSES,
+		supportsPersistedReasoning: true,
+		inputPrice: 0,
+		outputPrice: 0,
+		description: "GPT-6.1 Sol Codex via ChatGPT subscription; Apr 30, 2026 knowledge cutoff",
+	},
 	"gpt-6-luna": {
 		...MODEL_CAPABILITIES["gpt-6-luna"],
 		supportsPromptCache: true,

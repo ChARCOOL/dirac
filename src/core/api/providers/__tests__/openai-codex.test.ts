@@ -70,6 +70,19 @@ describe("OpenAiCodexHandler persisted reasoning", () => {
 		requests[0].reasoning.effort.should.equal("medium")
 	})
 
+	it("sends GPT-6.1 Sol with its supported default reasoning effort", async () => {
+		const handler = createHandler("gpt-6.1-sol")
+		const requests: any[] = []
+		sinon.stub(handler as any, "createResponseStreamWebsocket").callsFake(async function* (request: any) {
+			requests.push(request)
+		})
+
+		await drain(handler.createMessage("system", [{ role: "user", content: "hello" }] as any, tools))
+
+		requests[0].model.should.equal("gpt-6.1-sol")
+		requests[0].reasoning.effort.should.equal("medium")
+	})
+
 	it("advertises provider-native web search support", () => {
 		createHandler().supportsNativeWebSearch().should.equal(true)
 	})

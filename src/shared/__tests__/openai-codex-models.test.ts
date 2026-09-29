@@ -18,6 +18,7 @@ describe("openAiCodexModels", () => {
 			"gpt-5.6-sol",
 			"gpt-6-astra",
 			"gpt-6-sol",
+			"gpt-6.1-sol",
 			"gpt-6-luna",
 			"gpt-5.6-terra",
 			"gpt-5.6-luna",
@@ -78,4 +79,31 @@ describe("openAiCodexModels", () => {
 		openAiCodexModels["gpt-6-luna"].supportsPersistedReasoning.should.equal(true)
 	})
 
+	it("defines GPT-6.1 Sol capabilities and distinct cached-input pricing", () => {
+		const nativeSol = openAiNativeModels["gpt-6.1-sol"]
+		nativeSol.contextWindow!.should.equal(1_050_000)
+		nativeSol.maxTokens!.should.equal(128_000)
+		nativeSol.supportsImages!.should.equal(true)
+		nativeSol.supportsStrictTools!.should.equal(true)
+		nativeSol.supportsPersistedReasoning.should.equal(true)
+		nativeSol.reasoningEffortOptions!.should.deepEqual(["low", "medium", "high", "xhigh", "max"])
+		nativeSol.defaultReasoningEffort!.should.equal("medium")
+		nativeSol.supportsFastMode.should.equal(true)
+		nativeSol.fastModePriceMultiplier.should.equal(2)
+		nativeSol.inputPrice.should.equal(2)
+		nativeSol.outputPrice.should.equal(10)
+		nativeSol.cacheReadsPrice.should.equal(0.1)
+		nativeSol.cacheWritesPrice.should.equal(2.5)
+		nativeSol.tiers[0]!.contextWindow.should.equal(272_000)
+		nativeSol.tiers[1]!.inputPrice.should.equal(4)
+		nativeSol.tiers[1]!.outputPrice.should.equal(15)
+		nativeSol.tiers[1]!.cacheReadsPrice.should.equal(0.2)
+		nativeSol.tiers[1]!.cacheWritesPrice.should.equal(5)
+
+		const codexSol = openAiCodexModels["gpt-6.1-sol"]
+		codexSol.reasoningEffortOptions!.should.deepEqual(nativeSol.reasoningEffortOptions!)
+		codexSol.supportsPersistedReasoning.should.equal(true)
+		codexSol.inputPrice.should.equal(0)
+		codexSol.outputPrice.should.equal(0)
+	})
 })

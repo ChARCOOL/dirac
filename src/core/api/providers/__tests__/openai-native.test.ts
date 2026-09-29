@@ -124,6 +124,18 @@ describe("OpenAiNativeHandler persisted reasoning", () => {
 		params.tools.find((tool: any) => tool.type === "function").strict.should.equal(true)
 	})
 
+	it("sends GPT-6.1 Sol with supported reasoning effort and strict function tools", async () => {
+		const createStub = sinon.stub().resolves(createAsyncIterable())
+		const handler = createHandler(createStub, { modelId: "gpt-6.1-sol", reasoningEffort: "none" })
+
+		await drain(handler.createMessage("system", [{ role: "user", content: "hello" }] as any, tools))
+
+		const params = createStub.firstCall.args[0]
+		params.model.should.equal("gpt-6.1-sol")
+		params.reasoning.effort.should.equal("medium")
+		params.tools.find((tool: any) => tool.type === "function").strict.should.equal(true)
+	})
+
 	it("preserves Responses call IDs for persisted-reasoning tool results", async () => {
 		const createStub = sinon.stub().resolves(createAsyncIterable())
 		const handler = createHandler(createStub)

@@ -92,6 +92,23 @@ export const GPT_6_SOL_TIERS = [
 	},
 ]
 
+export const GPT_6_1_SOL_TIERS = [
+	{
+		contextWindow: 272_000,
+		inputPrice: 2.0,
+		outputPrice: 10.0,
+		cacheWritesPrice: 2.5,
+		cacheReadsPrice: 0.1,
+	},
+	{
+		contextWindow: Number.MAX_SAFE_INTEGER,
+		inputPrice: 4.0,
+		outputPrice: 15.0,
+		cacheWritesPrice: 5.0,
+		cacheReadsPrice: 0.2,
+	},
+]
+
 export const GPT_6_LUNA_TIERS = [
 	{
 		contextWindow: 272_000,

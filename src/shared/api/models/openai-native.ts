@@ -5,6 +5,7 @@ import {
 	GPT_5_5_TIERS,
 	GPT_5_4_TIERS,
 	GPT_5_4_PRO_TIERS,
+	GPT_6_1_SOL_TIERS,
 	GPT_6_LUNA_TIERS,
 	GPT_6_SOL_TIERS,
 } from "./shared-tiers"
@@ -112,6 +113,19 @@ export const openAiNativeModels = {
 		cacheWritesPrice: 2.5,
 		apiFormat: ApiFormat.OPENAI_RESPONSES,
 		tiers: GPT_6_SOL_TIERS,
+		supportsPersistedReasoning: true,
+	},
+	"gpt-6.1-sol": {
+		...MODEL_CAPABILITIES["gpt-6.1-sol"],
+		supportsPromptCache: true,
+		supportsFastMode: true,
+		fastModePriceMultiplier: 2,
+		inputPrice: 2.0,
+		outputPrice: 10.0,
+		cacheReadsPrice: 0.1,
+		cacheWritesPrice: 2.5,
+		apiFormat: ApiFormat.OPENAI_RESPONSES,
+		tiers: GPT_6_1_SOL_TIERS,
 		supportsPersistedReasoning: true,
 	},
 	"gpt-6-luna": {
