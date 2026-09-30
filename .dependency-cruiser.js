@@ -85,6 +85,9 @@ module.exports = {
 		},
 	],
 	options: {
+		exclude: {
+			path: "^src/generated",
+		},
 		doNotFollow: {
 			path: "node_modules",
 		},
