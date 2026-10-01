@@ -1,3 +1,4 @@
+import { type AutoCondenseAt, parseAutoCondenseAt } from "@shared/context-management"
 import { InvalidArgumentError } from "commander"
 import {
 	isOpenaiReasoningEffort,
@@ -20,6 +21,14 @@ export function parsePositiveInteger(value: string): number {
 	const parsed = Number(value)
 	if (value.trim() === "" || !Number.isSafeInteger(parsed) || parsed < 1) {
 		throw new InvalidArgumentError("Value must be a whole number greater than zero")
+	}
+	return parsed
+}
+
+export function parseAutoCondenseAtOption(value: string): AutoCondenseAt {
+	const parsed = parseAutoCondenseAt(value)
+	if (!parsed) {
+		throw new InvalidArgumentError("Value must be a token count greater than zero or a percent such as 60%")
 	}
 	return parsed
 }

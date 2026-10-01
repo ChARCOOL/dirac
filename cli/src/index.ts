@@ -12,6 +12,7 @@ import { isGoalRequest, UNSUPPORTED_GOAL_CLI_MESSAGE } from "./utils/goals"
 import { parseTimeoutSeconds } from "./utils/task-timeout"
 import {
 	parseInferenceSpeed,
+	parseAutoCondenseAtOption,
 	parsePositiveInteger,
 	parseReasoningEffort,
 	parseThinkingBudget,
@@ -69,7 +70,11 @@ program
 	.option("--json", "Output messages as JSON instead of styled text")
 	.option("--double-check-completion", "Reject first completion attempt to force re-verification")
 	.option("--auto-condense", "Enable AI-powered context compaction instead of mechanical truncation")
-	.option("--auto-condense-at <tokens>", "Auto-condense when provider context reaches this token count", parsePositiveInteger)
+	.option(
+		"--auto-condense-at <tokens|percent%>",
+		"Auto-condense when the context reaches this token count or percent of the model's window (e.g. 60%)",
+		parseAutoCondenseAtOption,
+	)
 	.option("--subagents", "Enable subagents for the task")
 	.addOption(
 		new Option("--enable-tool <tools>", "Enable comma-separated tools for this invocation")
@@ -215,6 +220,11 @@ program
 		`Reasoning effort: ${OPENAI_REASONING_EFFORT_OPTIONS.join("|")}`,
 		parseReasoningEffort,
 	)
+	.option(
+		"--context-window <tokens>",
+		"Context window of the selected model in tokens, for models Dirac does not know",
+		parsePositiveInteger,
+	)
 	.option("--speed <speed>", `Inference speed: ${INFERENCE_SPEED_OPTIONS.join("|")}`, parseInferenceSpeed)
 	.option(
 		"--max-consecutive-mistakes <count>",
@@ -224,7 +234,11 @@ program
 	.option("--json", "Output messages as JSON instead of styled text")
 	.option("--double-check-completion", "Reject first completion attempt to force re-verification")
 	.option("--auto-condense", "Enable AI-powered context compaction instead of mechanical truncation")
-	.option("--auto-condense-at <tokens>", "Auto-condense when provider context reaches this token count", parsePositiveInteger)
+	.option(
+		"--auto-condense-at <tokens|percent%>",
+		"Auto-condense when the context reaches this token count or percent of the model's window (e.g. 60%)",
+		parseAutoCondenseAtOption,
+	)
 	.option("--subagents", "Enable subagents for the task")
 	.addOption(
 		new Option("--enable-tool <tools>", "Enable comma-separated tools for this invocation")
@@ -296,6 +310,8 @@ program
 							? 1024
 							: Number(options.thinking),
 				reasoningEffort: options.reasoningEffort,
+				contextWindow: options.contextWindow,
+				autoCondenseAt: options.autoCondenseAt,
 				inferenceSpeed: options.speed,
 				hooksDir: options.hooksDir,
 				verbose: options.verbose,

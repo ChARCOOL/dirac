@@ -16,11 +16,15 @@ import path from "node:path"
 import type * as acp from "@agentclientprotocol/sdk"
 import { PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk"
 import type { DiracMessageChange } from "@core/task/message-state"
+import { type AutoCondenseAt, applyAutoCondenseAt } from "@shared/context-management"
 import {
+	getModelInfo,
 	modelSupportsInferenceSpeed,
+	openAiModelInfoSaneDefaults,
 	providerSupportsInferenceSpeed,
 	type ApiConfiguration,
 	type ApiProvider,
+	type ModelInfo,
 } from "@shared/api"
 import { isResumePromptCard } from "@shared/cardIdentity"
 import type { DiracMessage } from "@shared/ExtensionMessage"
@@ -672,7 +676,7 @@ export class DiracAgent implements acp.Agent {
 	}
 
 	private applyStartupProviderInfrastructure(): void {
-		const { provider, model, mode, thinkingBudgetTokens, reasoningEffort, inferenceSpeed } = this.options
+		const { provider, model, mode, thinkingBudgetTokens, reasoningEffort, inferenceSpeed, contextWindow } = this.options
 
 		if (mode && !["plan", "act"].includes(mode)) {
 			throw RequestError.invalidParams(undefined, `Invalid startup mode: ${mode}`)
@@ -685,6 +689,12 @@ export class DiracAgent implements acp.Agent {
 				undefined,
 				`Invalid --reasoning-effort value: ${reasoningEffort}. Expected one of: ${OPENAI_REASONING_EFFORT_OPTIONS.join(", ")}`,
 			)
+		}
+		if (contextWindow !== undefined && (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)) {
+			throw RequestError.invalidParams(undefined, `Invalid --context-window value: ${contextWindow}`)
+		}
+		if (contextWindow !== undefined && !model) {
+			throw RequestError.invalidParams(undefined, "--context-window requires --model to be specified")
 		}
 		if (inferenceSpeed !== undefined && !isInferenceSpeed(inferenceSpeed)) {
 			throw RequestError.invalidParams(
@@ -803,6 +813,12 @@ export class DiracAgent implements acp.Agent {
 				overrides[mode === "act" ? "actModeReasoningEffort" : "planModeReasoningEffort"] = reasoningEffort
 			}
 		}
+		if (this.options.contextWindow !== undefined) {
+			this.applyContextWindow(overrides, this.options.contextWindow)
+		}
+		if (this.options.autoCondenseAt !== undefined) {
+			this.applyAutoCondenseAt(overrides, this.options.autoCondenseAt)
+		}
 		if (inferenceSpeed !== undefined) {
 			const modes = overrides.planActSeparateModelsSetting ? [overrides.mode] : (["plan", "act"] as const)
 			for (const mode of modes) {
@@ -818,6 +834,39 @@ export class DiracAgent implements acp.Agent {
 			}
 		}
 		return overrides
+	}
+
+	/**
+	 * Gives the selected model the window the caller states, keeping a known model's other
+	 * capabilities. Dirac assumes 256k for a model id it does not know.
+	 */
+	private applyContextWindow(overrides: Partial<Settings>, contextWindow: number): void {
+		for (const mode of this.startupModes(overrides)) {
+			const provider = overrides[mode === "act" ? "actModeApiProvider" : "planModeApiProvider"] as ApiProvider
+			const modelInfoKey = getProviderModelInfoKey(provider, mode)
+			if (!modelInfoKey) {
+				throw RequestError.invalidParams(undefined, `--context-window is not supported for provider ${provider}`)
+			}
+			const modelId = overrides[getProviderModelIdKey(provider, mode)] as string
+			const runtimeValues = overrides as Record<string, unknown>
+			const known = (runtimeValues[modelInfoKey] as ModelInfo | undefined) ?? getModelInfo(modelId)
+			runtimeValues[modelInfoKey] = { ...(known ?? openAiModelInfoSaneDefaults), contextWindow }
+		}
+	}
+
+	/** Sets when each startup provider compacts: a token count, or a percent of its window. */
+	private applyAutoCondenseAt(overrides: Partial<Settings>, at: AutoCondenseAt): void {
+		for (const mode of this.startupModes(overrides)) {
+			const provider = overrides[mode === "act" ? "actModeApiProvider" : "planModeApiProvider"] as ApiProvider
+			const applied = applyAutoCondenseAt(overrides.autoCondenseContextLimits, provider, at)
+			overrides.autoCondenseContextLimits = applied.limits
+			overrides.autoCondenseContextPercent = applied.percent
+		}
+	}
+
+	private startupModes(overrides: Partial<Settings>): readonly ("plan" | "act")[] {
+		const current: "plan" | "act" = overrides.mode === "plan" ? "plan" : "act"
+		return overrides.planActSeparateModelsSetting ? [current] : ["plan", "act"]
 	}
 
 	private isStartupProviderConfigured(overrides: Partial<Settings>): boolean {

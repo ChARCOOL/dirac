@@ -18,6 +18,8 @@ const GLOBAL_MODEL_RUNTIME_KEYS = [
 	"fireworksModelMaxCompletionTokens",
 	"fireworksModelMaxTokens",
 	"enableParallelToolCalling",
+	"autoCondenseContextLimits",
+	"autoCondenseContextPercent",
 ] as const satisfies readonly SettingsKey[]
 
 const SESSION_MODE_RUNTIME_KEYS = [

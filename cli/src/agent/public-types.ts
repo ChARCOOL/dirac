@@ -9,6 +9,7 @@
  */
 
 import type * as acp from "@agentclientprotocol/sdk"
+import type { AutoCondenseAt } from "@shared/context-management"
 
 // ============================================================
 // Session Update Type Utilities
@@ -106,6 +107,10 @@ export interface DiracAgentOptions {
 	thinkingBudgetTokens?: number
 	/** Reasoning effort explicitly selected for this agent process */
 	reasoningEffort?: string
+	/** Context window of the selected model in tokens, for models Dirac does not know */
+	contextWindow?: number
+	/** When to compact: a token count or a percent of the model's context window */
+	autoCondenseAt?: AutoCondenseAt
 	/** Inference speed explicitly selected for this agent process */
 	inferenceSpeed?: "default" | "standard" | "fast"
 	/** Additional runtime hooks directory */
@@ -138,6 +143,10 @@ export interface AcpAgentOptions {
 	thinkingBudgetTokens?: number
 	/** Reasoning effort explicitly selected for this agent process */
 	reasoningEffort?: string
+	/** Context window of the selected model in tokens, for models Dirac does not know */
+	contextWindow?: number
+	/** When to compact: a token count or a percent of the model's context window */
+	autoCondenseAt?: AutoCondenseAt
 	/** Inference speed explicitly selected for this agent process */
 	inferenceSpeed?: "default" | "standard" | "fast"
 	/** Additional runtime hooks directory */

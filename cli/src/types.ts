@@ -1,3 +1,4 @@
+import type { AutoCondenseAt } from "@shared/context-management"
 import type { Controller } from "@/core/controller"
 import type { InferenceSpeed, OpenaiReasoningEffort } from "@/shared/storage/types"
 
@@ -32,7 +33,7 @@ export interface TaskOptions {
 	autoApproveAll?: boolean
 	doubleCheckCompletion?: boolean
 	autoCondense?: boolean
-	autoCondenseAt?: string | number
+	autoCondenseAt?: AutoCondenseAt
 	timeout?: string | number
 	json?: boolean
 	stdinWasPiped?: boolean

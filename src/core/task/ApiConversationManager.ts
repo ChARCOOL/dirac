@@ -11,7 +11,8 @@ import { DiracContent, DiracStorageMessage, removeProviderBoundaryMetadataFromMe
 import type { DiracTool } from "@shared/tools"
 import { NATIVE_WEB_SEARCH_SKILL_NAME } from "@shared/skills"
 import { Logger } from "@shared/services/Logger"
-import { getAutoCondenseContextLimit } from "@shared/context-management"
+import { getContextWindowInfo } from "@core/context/context-management/context-window-utils"
+import { resolveAutoCondenseContextLimit } from "@shared/context-management"
 import { ApiConversationManagerDependencies } from "./types/api-conversation-manager"
 
 export class ApiConversationManager {
@@ -120,9 +121,13 @@ export class ApiConversationManager {
 		}
 
 		const providerId = this.dependencies.getCurrentProviderInfo().providerId
-		const configuredLimit = getAutoCondenseContextLimit(
-			(this.dependencies.getRequestRuntime()?.workingConfiguration ?? this.dependencies.getWorkingConfiguration()).settings.autoCondenseContextLimits,
+		const settings = (this.dependencies.getRequestRuntime()?.workingConfiguration ?? this.dependencies.getWorkingConfiguration())
+			.settings
+		const configuredLimit = resolveAutoCondenseContextLimit(
+			settings.autoCondenseContextLimits,
+			settings.autoCondenseContextPercent,
 			providerId,
+			getContextWindowInfo(this.getOperationalApi()).contextWindow,
 		)
 		const shouldCompact = this.dependencies.contextManager.shouldCompactContextWindow(
 			this.dependencies.messageStateHandler.getDiracMessages(),

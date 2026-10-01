@@ -13,6 +13,7 @@
  * @module acp
  */
 
+import type { AutoCondenseAt } from "@shared/context-management";
 import { AgentSideConnection } from "@agentclientprotocol/sdk";
 import { Logger } from "@/shared/services/Logger";
 import { disposeAcpFileLogger, initAcpFileLogger } from "../utils/acp-file-logger.js";
@@ -90,6 +91,10 @@ export interface AcpModeOptions {
   thinkingBudgetTokens?: number;
   /** Reasoning effort explicitly selected at process startup */
   reasoningEffort?: string;
+  /** Context window of the selected model in tokens */
+  contextWindow?: number;
+  /** When to compact: a token count or a percent of the model's window */
+  autoCondenseAt?: AutoCondenseAt;
   /** Inference speed explicitly selected at process startup */
   inferenceSpeed?: "default" | "standard" | "fast";
   /** Additional runtime hooks directory */
@@ -150,6 +155,8 @@ export async function runAcpMode(options: AcpModeOptions = {}): Promise<void> {
         yolo: options.yolo,
         thinkingBudgetTokens: options.thinkingBudgetTokens,
         reasoningEffort: options.reasoningEffort,
+        contextWindow: options.contextWindow,
+        autoCondenseAt: options.autoCondenseAt,
         inferenceSpeed: options.inferenceSpeed,
         hooksDir: options.hooksDir,
       });
@@ -213,6 +220,8 @@ async function runDetachedAcpMode(
     yolo: options.yolo,
     thinkingBudgetTokens: options.thinkingBudgetTokens,
     reasoningEffort: options.reasoningEffort,
+    contextWindow: options.contextWindow,
+    autoCondenseAt: options.autoCondenseAt,
     inferenceSpeed: options.inferenceSpeed,
     hooksDir: options.hooksDir,
     socketPath: options.listen!,

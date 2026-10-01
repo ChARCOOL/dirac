@@ -110,4 +110,34 @@ describe("DiracAgent ACP authentication", () => {
 			else process.env.DIRAC_API_KEY = previous.apiKey
 		}
 	})
+
+	it("gives an unknown model the stated window without moving compaction", () => {
+		const overrides = (
+			new DiracAgent({ provider: "openai", model: "space-bunny-free", contextWindow: 1_000_000 }) as any
+		).createStartupSessionOverrides()
+		expect(overrides.actModeOpenAiModelInfo.contextWindow).toBe(1_000_000)
+		expect(overrides.planModeOpenAiModelInfo.contextWindow).toBe(1_000_000)
+		expect(overrides.autoCondenseContextPercent).toBeUndefined()
+	})
+
+	it("keeps a known model's capabilities when it states the window", () => {
+		const overrides = (
+			new DiracAgent({ provider: "openai", model: "gpt-5.6-luna", contextWindow: 400_000 }) as any
+		).createStartupSessionOverrides()
+		expect(overrides.actModeOpenAiModelInfo.contextWindow).toBe(400_000)
+		expect(overrides.actModeOpenAiModelInfo.maxTokens).toBe(128_000)
+	})
+
+	it("compacts at a percent of the window or at a token count", () => {
+		const percent = (
+			new DiracAgent({ provider: "openai", model: "m", autoCondenseAt: { percent: 60 } }) as any
+		).createStartupSessionOverrides()
+		expect(percent.autoCondenseContextPercent).toBe(60)
+		expect(percent.autoCondenseContextLimits?.openai).toBeUndefined()
+		const tokens = (
+			new DiracAgent({ provider: "openai", model: "m", autoCondenseAt: { tokens: 500_000 } }) as any
+		).createStartupSessionOverrides()
+		expect(tokens.autoCondenseContextLimits).toEqual({ openai: 500_000 })
+		expect(tokens.autoCondenseContextPercent).toBeUndefined()
+	})
 })

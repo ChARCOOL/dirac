@@ -1,4 +1,4 @@
-import { isValidAutoCondenseContextLimit } from "@shared/context-management"
+import { applyAutoCondenseAt } from "@shared/context-management"
 import { modelSupportsInferenceSpeed, providerSupportsInferenceSpeed, type ApiProvider } from "@shared/api"
 import type { InferenceSpeed, OpenaiReasoningEffort } from "@/shared/storage/types"
 import type { Controller } from "@/core/controller"
@@ -237,16 +237,15 @@ export async function applyTaskOptions(options: TaskOptions, workspaceRoot: stri
 	}
 
 	if (options.autoCondenseAt !== undefined) {
-		const limit = await normalizeMaxConsecutiveMistakes(options.autoCondenseAt)
-		if (!isValidAutoCondenseContextLimit(limit)) {
-			throw new Error("Auto-condense context limit must be between 1 and 2,000,000,000 tokens")
-		}
 		const providerKey = currentMode === "act" ? "actModeApiProvider" : "planModeApiProvider"
 		const providerId = stateManager.getGlobalSettingsKey(providerKey)
-		stateManager.setSessionOverride("autoCondenseContextLimits", {
-			...stateManager.getGlobalSettingsKey("autoCondenseContextLimits"),
-			[providerId]: limit!,
-		})
+		const { limits, percent } = applyAutoCondenseAt(
+			stateManager.getGlobalSettingsKey("autoCondenseContextLimits"),
+			providerId,
+			options.autoCondenseAt,
+		)
+		stateManager.setSessionOverride("autoCondenseContextLimits", limits)
+		stateManager.setSessionOverride("autoCondenseContextPercent", percent)
 	}
 
 	if (options.noEmoji || process.env.DIRAC_NO_EMOJI) {

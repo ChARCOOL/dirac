@@ -270,6 +270,12 @@ const USER_SETTINGS_FIELDS = {
 				),
 			),
 	},
+	/** Compact at this percent of the model's context window; a per-provider token limit wins. */
+	autoCondenseContextPercent: {
+		default: undefined as number | undefined,
+		transform: (percent: number | undefined) =>
+			typeof percent === "number" && percent > 0 && percent <= 100 ? percent : undefined,
+	},
 	subagentsEnabled: { default: false as boolean },
 	diracWebToolsEnabled: { default: true as boolean },
 	worktreesEnabled: { default: false as boolean },
