@@ -65,6 +65,7 @@ function createConfig(opts: { isSubagent?: boolean; diracIgnore?: any } = {}) {
 
 	const callbacks = {
 		assertMutationAuthorized: sinon.stub(),
+		withMutationAuthorization: sinon.stub().callsFake(async (_toolName: unknown, mutation: () => Promise<unknown>) => await mutation()),
 		say: sinon.stub().resolves(undefined),
 		ask: sinon.stub().resolves({ response: DiracAskResponse.APPROVE }),
 		saveCheckpoint: sinon.stub().resolves(),
@@ -188,7 +189,7 @@ describe("EditFileTool – characterization edge cases", () => {
 		})
 
 		assert.ok(typeof result === "string")
-		assert.ok(result.includes(`${MAX_ANCHORED_FILE_LINES + 1} lines`))
+		assert.ok(result.includes(`${(MAX_ANCHORED_FILE_LINES + 1).toLocaleString()} lines`))
 		assert.ok(result.includes("use execute_command"))
 		assert.equal(await fs.readFile(filePath, "utf8"), content)
 		sinon.assert.notCalled(diffViewProvider.readText)
@@ -611,9 +612,10 @@ describe("EditFileTool – characterization edge cases", () => {
 			await assert.rejects(handler.execute(config, block.params), /batch save failed/)
 
 			assert.equal(taskMessenger.createCard.callCount, 2)
-			const protocolCard = await taskMessenger.createCard.firstCall.returnValue
-			assert.equal(protocolCard.finalize.callCount, 2)
-			sinon.assert.alwaysCalledWith(protocolCard.finalize, CardStatus.ERROR)
+			for (const call of taskMessenger.createCard.getCalls()) {
+				const card = await call.returnValue
+				sinon.assert.calledOnceWithMatch(card.finalize, CardStatus.ERROR)
+			}
 		})
 
 		it("continues processing other files when one is diracignored", async () => {

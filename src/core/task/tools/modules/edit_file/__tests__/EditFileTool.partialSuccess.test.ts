@@ -95,6 +95,7 @@ function createConfig() {
 		createUtilityModelRunner: sinon.stub(),
 		createSubagentRuntime: sinon.stub(),
 		assertMutationAuthorized: sinon.stub(),
+		withMutationAuthorization: sinon.stub().callsFake(async (_toolName: unknown, mutation: () => Promise<unknown>) => await mutation()),
 		commitAttemptCompletion: sinon.stub().resolves({ committed: true }),
 		getDiracMessages: sinon.stub().returns([]),
 		updateDiracMessage: sinon.stub().resolves(),

@@ -75,6 +75,7 @@ function createConfig() {
 
 	const callbacks = {
 		assertMutationAuthorized: sinon.stub(),
+		withMutationAuthorization: sinon.stub().callsFake(async (_toolName: unknown, mutation: () => Promise<unknown>) => await mutation()),
 		say: sinon.stub().resolves(undefined),
 		ask: sinon.stub().resolves({ response: DiracAskResponse.APPROVE }),
 		saveCheckpoint: sinon.stub().resolves(),
