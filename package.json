@@ -451,7 +451,7 @@
         "pretest": "npm run compile && npm run compile-tests && npm run compile-standalone && npm run lint",
         "test": "npx npm-run-all test:unit test:integration",
         "test:integration": "vscode-test",
-        "test:unit": "cross-env TS_NODE_PROJECT=./tsconfig.unit-test.json mocha --node-option no-experimental-strip-types --ignore 'src/test/e2e/**' --ignore 'src/hosts/vscode/hostbridge/window/getOpenTabs.test.ts' --ignore 'src/hosts/vscode/hostbridge/window/getVisibleTabs.test.ts' --ignore 'src/hosts/vscode/terminal/VscodeTerminalProcess.test.ts' --ignore 'src/hosts/vscode/hostbridge/workspace/saveOpenDocumentIfDirty.test.ts' \"src/**/__tests__/*.ts\" \"src/**/*.test.ts\"",
+        "test:unit": "cross-env TS_NODE_PROJECT=./tsconfig.unit-test.json mocha --node-option no-experimental-strip-types --node-option liftoff-only --ignore 'src/test/e2e/**' --ignore 'src/hosts/vscode/hostbridge/window/getOpenTabs.test.ts' --ignore 'src/hosts/vscode/hostbridge/window/getVisibleTabs.test.ts' --ignore 'src/hosts/vscode/terminal/VscodeTerminalProcess.test.ts' --ignore 'src/hosts/vscode/hostbridge/workspace/saveOpenDocumentIfDirty.test.ts' \"src/**/__tests__/*.ts\" \"src/**/*.test.ts\"",
         "test:coverage": "vscode-test --coverage",
         "test:sca-server": "npx tsx watch scripts/test-standalone-core-api-server.ts",
         "test:tp-orchestrator": "npx tsx scripts/testing-platform-orchestrator.ts",
