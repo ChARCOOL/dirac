@@ -55,7 +55,7 @@ describe("HistoryView", () => {
 	describe("rendering", () => {
 		it("should render the history header", () => {
 			const { lastFrame } = render(<HistoryView controller={mockController} items={mockItems} />)
-			expect(lastFrame()).toContain("Task History")
+			expect(lastFrame()).toContain("Run History")
 		})
 
 		it("should show total count in header", () => {
@@ -113,7 +113,7 @@ describe("HistoryView", () => {
 		it("should handle missing task text", () => {
 			const itemsWithoutTask = [{ id: "task-1", ts: Date.now() }]
 			const { lastFrame } = render(<HistoryView controller={mockController} items={itemsWithoutTask} />)
-			expect(lastFrame()).toContain("Unknown task")
+			expect(lastFrame()).toContain("Unknown run")
 		})
 	})
 
@@ -132,7 +132,7 @@ describe("HistoryView", () => {
 			stdin.write("\x1B[B")
 
 			// Should still render properly
-			expect(lastFrame()).toContain("Task History")
+			expect(lastFrame()).toContain("Run History")
 		})
 
 		it("should navigate up with arrow key", () => {
@@ -142,7 +142,7 @@ describe("HistoryView", () => {
 			stdin.write("\x1B[B")
 			stdin.write("\x1B[A")
 
-			expect(lastFrame()).toContain("Task History")
+			expect(lastFrame()).toContain("Run History")
 		})
 
 		it("should not go below last item", () => {
@@ -153,7 +153,7 @@ describe("HistoryView", () => {
 				stdin.write("\x1B[B")
 			}
 
-			expect(lastFrame()).toContain("Task History")
+			expect(lastFrame()).toContain("Run History")
 		})
 
 		it("should not go above first item", () => {
@@ -162,7 +162,7 @@ describe("HistoryView", () => {
 			// Press up when already at first
 			stdin.write("\x1B[A")
 
-			expect(lastFrame()).toContain("Task History")
+			expect(lastFrame()).toContain("Run History")
 		})
 	})
 

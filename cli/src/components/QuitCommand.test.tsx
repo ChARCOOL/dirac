@@ -18,7 +18,8 @@ vi.mock("ink", async (importOriginal) => {
 })
 
 // Mock child_process
-vi.mock("child_process", () => ({
+vi.mock("child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("child_process")>()),
 	execSync: vi.fn().mockReturnValue(""),
 	exec: vi.fn(),
 }))

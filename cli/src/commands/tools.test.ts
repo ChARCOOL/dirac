@@ -59,7 +59,7 @@ describe("formatToolConfiguration", () => {
 			}),
 		).toBe(
 			[
-				"current config:",
+				"Current config:",
 				"",
 				"--enable-tool global_search,read_file",
 				"--disable-tool browser_action,workspace_lint",

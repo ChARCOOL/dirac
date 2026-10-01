@@ -177,7 +177,8 @@ vi.mock("@shared/getApiMetrics", () => ({
 	getLastApiReqTotalTokens: vi.fn(() => 0),
 }))
 
-vi.mock("child_process", () => ({
+vi.mock("child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("child_process")>()),
 	exec: vi.fn(),
 	execSync: vi.fn(() => "main"),
 }))

@@ -36,7 +36,7 @@ describe("CLI tool settings presentation", () => {
 		const global = results.find((result) => result.item.key === "global-tool")
 
 		expect(global?.searchText).toContain("global tool description")
-		expect(global?.searchText).toContain("global configuration")
+		expect(global?.searchText).toContain("global dirac configuration")
 		expect(global?.searchText).toContain("saved to global settings")
 	})
 
