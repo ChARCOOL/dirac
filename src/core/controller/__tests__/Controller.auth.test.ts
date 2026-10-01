@@ -112,6 +112,9 @@ describe("Controller — Auth delegate", () => {
 			asAbsolutePath: (rel: string) => `/tmp/${rel}`,
 		} as unknown as DiracExtensionContext
 		controller = new Controller(mockContext)
+		// The constructor sets up the workspace in the background; finish it while the stubs above
+		// still stand, so it never runs against a restored HostProvider during a later test.
+		await controller.ensureWorkspaceManager()
 	})
 
 	afterEach(async () => {

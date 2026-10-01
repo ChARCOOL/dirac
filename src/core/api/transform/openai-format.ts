@@ -196,12 +196,12 @@ function convertAssistantMessage(
 		{ nonToolMessages: [], toolMessages: [] },
 	)
 
+	// Only text parts carry content; joining the empty strings of thinking parts would add stray newlines.
 	const contentText =
 		nonToolMessages.length > 0
 			? nonToolMessages
-					.map((part) =>
-						part.type === "text" && (part as DiracTextContentBlock).text ? (part as DiracTextContentBlock).text : "",
-					)
+					.filter((part): part is DiracTextContentBlock => part.type === "text" && Boolean((part as DiracTextContentBlock).text))
+					.map((part) => part.text)
 					.join("\n")
 			: undefined
 
@@ -221,7 +221,7 @@ function convertAssistantMessage(
 	openAiMessages.push({
 		role: "assistant",
 		content: finalContent,
-		tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+		...(tool_calls.length > 0 ? { tool_calls } : {}),
 		...(consolidatedReasoningDetails.length > 0 ? { reasoning_details: consolidatedReasoningDetails } : {}),
 	})
 }
