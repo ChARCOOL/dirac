@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert"
 import { createGoalHistoryItem } from "@core/goal/GoalHistory"
 import type { GoalAccounting, GoalRecord } from "@shared/goal"
 import { historyItemFromProto } from "@shared/historyItemFromProto"
-import { TaskItem, TaskResponse } from "@shared/proto/dirac/task"
+import { GoalAccountingItem, TaskItem, TaskResponse } from "@shared/proto/dirac/task"
 import { describe, it } from "mocha"
 import { historyItemToTaskItem } from "./getTaskHistory"
 import { goalHistoryItemToTaskResponse } from "./showTaskWithId"
@@ -74,7 +74,7 @@ describe("Goal accounting transports", () => {
 			const historyProto = TaskItem.decode(TaskItem.encode(historyItemToTaskItem(historyItem)).finish())
 			assert.equal(historyProto.runKind, "goal")
 			assertLegacyAccountingAbsent(historyProto)
-			assert.deepEqual(historyProto.accounting, testCase.accounting)
+			assert.deepEqual(historyProto.accounting, GoalAccountingItem.fromPartial(testCase.accounting))
 			const restoredHistory = historyItemFromProto(historyProto)
 			assert.equal(restoredHistory.runKind, "goal")
 			assert.deepEqual(restoredHistory.accounting, testCase.accounting)
@@ -82,7 +82,7 @@ describe("Goal accounting transports", () => {
 			const detailProto = TaskResponse.decode(TaskResponse.encode(goalHistoryItemToTaskResponse(historyItem)).finish())
 			assert.equal(detailProto.runKind, "goal")
 			assertLegacyAccountingAbsent(detailProto)
-			assert.deepEqual(detailProto.accounting, testCase.accounting)
+			assert.deepEqual(detailProto.accounting, GoalAccountingItem.fromPartial(testCase.accounting))
 		})
 	}
 })

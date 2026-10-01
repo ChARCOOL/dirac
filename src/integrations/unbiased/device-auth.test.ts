@@ -43,6 +43,8 @@ describe("Unbiased device authorization polling", () => {
 		assert.equal(calls, 1)
 		abort.abort()
 		resolveRequest(new Response(JSON.stringify(issuedToken), { status: 200 }))
+		// Response body decoding schedules work on the faked timers.
+		await clock.tickAsync(0)
 
 		assert.equal((await poll).accessToken, issuedToken.access_token)
 		await clock.tickAsync(6_000)

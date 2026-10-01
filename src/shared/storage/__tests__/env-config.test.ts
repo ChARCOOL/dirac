@@ -1,12 +1,29 @@
 import { expect } from "chai"
 import { afterEach, beforeEach, describe, it } from "mocha"
-import { getProviderFromEnv, getSecretsFromEnv, getSettingsFromEnv } from "../env-config"
+import {
+	ENV_VAR_TO_SECRET_KEY,
+	ENV_VAR_TO_SETTINGS_KEY,
+	getProviderFromEnv,
+	getSecretsFromEnv,
+	getSettingsFromEnv,
+} from "../env-config"
 
-// Save and restore process.env around each test
+const CONFIG_ENV_VARS = [
+	...Object.keys(ENV_VAR_TO_SECRET_KEY),
+	...Object.keys(ENV_VAR_TO_SETTINGS_KEY),
+	"DIRAC_PROVIDER",
+	"DIRAC_MODEL",
+	"DIRAC_API_KEY",
+	"DIRAC_BASE_URL",
+]
+
+// Start each test from an empty provider environment (the developer shell or CI may export
+// e.g. OPENROUTER_API_KEY) and restore process.env afterwards.
 let savedEnv: NodeJS.ProcessEnv
 
 beforeEach(() => {
 	savedEnv = { ...process.env }
+	for (const key of CONFIG_ENV_VARS) delete process.env[key]
 })
 
 afterEach(() => {
