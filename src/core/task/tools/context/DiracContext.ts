@@ -135,7 +135,9 @@ export class DiracContext implements IDiracContext {
 			values: this.snapshotTaskData(),
 		}
 		this.pendingOperations = [reset]
-		this.pendingOperationBytes = Buffer.byteLength(JSON.stringify(reset), "utf8")
+		// Count only operations queued after the reset. Counting the reset itself re-snapshots on every
+		// later operation once the state exceeds the limit, which makes large flushes quadratic.
+		this.pendingOperationBytes = 0
 	}
 
 	private snapshotTaskData(): Record<string, unknown> {
@@ -184,7 +186,7 @@ export class DiracContext implements IDiracContext {
 					values: this.snapshotTaskData(),
 				}
 				this.pendingOperations = [reset]
-				this.pendingOperationBytes = Buffer.byteLength(JSON.stringify(reset), "utf8")
+				this.pendingOperationBytes = 0
 			}
 			throw error
 		}

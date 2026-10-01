@@ -9,6 +9,7 @@ import { buildScaffoldedToolSource, writeTestHarness } from "../scaffold-generat
 import { commitToolPromotion, createToolStagingDirectory, promoteStagedTool, rollbackToolPromotion } from "../tool-lifecycle"
 import { TOOL_IMPLEMENTATION_SENTINEL } from "../constants"
 import { SubagentExecutionStatus } from "@shared/ExtensionMessage"
+import { createEmptySubagentRunStats } from "@core/task/tools/subagent/SubagentRunHelpers"
 
 const temporaryDirectories: string[] = []
 
@@ -47,11 +48,12 @@ describe("upsert_tool support", () => {
 		let validationCalls = 0
 		const cardParams: any[] = []
 		const env = {
+			config: { taskState: { abortSignal: new AbortController().signal } },
 			orchestration: {
 				getHistory: () => [],
 				runSubagent: async (prompt: string) => {
 					prompts.push(prompt)
-					return { status: SubagentExecutionStatus.COMPLETED, result: "", stats: {} }
+					return { status: SubagentExecutionStatus.COMPLETED, result: "", stats: createEmptySubagentRunStats() }
 				},
 			},
 			ui: {
@@ -92,6 +94,7 @@ describe("upsert_tool support", () => {
 		let validationCalls = 0
 		let subagentCalls = 0
 		const env = {
+			config: { taskState: { abortSignal: new AbortController().signal } },
 			orchestration: {
 				getHistory: () => [],
 				runSubagent: async () => {
@@ -99,7 +102,7 @@ describe("upsert_tool support", () => {
 					return {
 						status: SubagentExecutionStatus.CANCELLED,
 						error: "cancelled by user",
-						stats: {},
+						stats: createEmptySubagentRunStats(),
 					}
 				},
 			},

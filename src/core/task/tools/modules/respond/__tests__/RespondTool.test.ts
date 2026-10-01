@@ -18,6 +18,7 @@ function environment(mode: "plan" | "act") {
 		},
 		ui: { upsertText: sinon.stub().resolves(), createCard: sinon.stub().resolves(card) },
 		telemetry: { captureCustomMetadata: sinon.stub() },
+		responseObserver: { recordResponse: sinon.stub().resolves() },
 		orchestration: {
 			getTaskState: () => consecutiveMistakeCount,
 			setTaskState: (_key: string, value: number) => {
@@ -51,6 +52,7 @@ describe("respond tool dispatch", () => {
 
 		assert.equal(await tool.processCall({ operation: ResponseOperation.COMPLETE, text: "Done" }, act), "completed")
 		assert.ok(completion.calledOnceWithExactly("Done", act))
+		assert.equal(act.responseObserver.recordResponse.callCount, 3)
 
 		assert.ok(
 			act.telemetry.captureCustomMetadata.calledWithExactly({

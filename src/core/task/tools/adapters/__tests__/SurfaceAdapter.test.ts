@@ -232,7 +232,7 @@ describe("SurfaceAdapter", () => {
 				body: "**Result:** Auto Approved by permission agent\n\n**Reason:** Allowed by policy.",
 				rawInput: { tool: "write_to_file" },
 				rawOutput: { decision: "approve", reason: "Allowed by policy.", approvedTool: "write_to_file" },
-				locations: undefined,
+				locations: [{ path: "src/index.ts" }],
 				collapsed: true,
 			})
 			sinon.assert.notCalled(auditCardHandle.waitForInteraction)
@@ -313,7 +313,7 @@ describe("SurfaceAdapter", () => {
 				})
 			).waitForInteraction()
 
-			sinon.assert.calledWithMatch(config.taskMessenger.createCard, { requireApproval: false })
+			sinon.assert.notCalled(config.taskMessenger.createCard)
 			sinon.assert.notCalled(fakeHandle.waitForInteraction)
 			result.action.should.equal(DiracAskResponse.APPROVE)
 		})
@@ -640,6 +640,7 @@ describe("SurfaceAdapter", () => {
 				exitCode: 2,
 				signal: null,
 				logFilePath: "/tmp/output.log",
+				backgroundCompletion: undefined,
 			})
 			const callArgs = config.callbacks.executeCommandTool.getCall(0).args
 			callArgs[0].should.equal("ls")

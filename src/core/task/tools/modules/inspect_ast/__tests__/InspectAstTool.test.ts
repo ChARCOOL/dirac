@@ -392,14 +392,14 @@ describe("InspectAstTool", () => {
 				}],
 			},
 		})
-			; (env.sourceAst as any).getAnchorFingerprint = () => "fingerprint"
 			; (env.context.task as any).updateEntries = async () => { throw new Error("cache readonly") }
 
+		// Only plain (unanchored) implementation reads are cached, so only they attempt a save.
 		const output = await new InspectAstTool().processCall({
 			operation: "implementation",
 			paths: ["src/a.ts"],
 			symbols: ["A.run"],
-			include_anchors: true,
+			include_anchors: false,
 		}, env)
 
 		assert.match(output, /run\(\) \{\}/)
