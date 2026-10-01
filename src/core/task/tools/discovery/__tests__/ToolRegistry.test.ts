@@ -373,20 +373,19 @@ describe("ToolRegistry", () => {
 			assert.strictEqual(registry.isEnabled("user_tool"), true)
 		})
 
-		it("rejects a lower-priority replacement without mutating the existing tool", () => {
+		it("keeps a higher-priority workspace tool effective over a same-id global tool", () => {
 			const registry = ToolRegistry.getInstance()
 			const existing = makeTool({ id: "user_tool", source: "workspace", modulePath: "workspace" })
 			registry.registerUserTool(existing)
 			registry.enable("user_tool")
-			const version = registry.getVersion()
 
+			// Global and workspace tools live in separate layers; the workspace layer overlays the global one.
 			assert.strictEqual(
 				registry.replaceUserTool(makeTool({ id: "user_tool", source: "global", modulePath: "global" })),
-				false,
+				true,
 			)
-			assert.strictEqual(registry.getAllTools()[0], existing)
+			assert.deepStrictEqual(registry.getAllTools(), [existing])
 			assert.strictEqual(registry.isEnabled("user_tool"), true)
-			assert.strictEqual(registry.getVersion(), version)
 		})
 
 		it("rejects a user tool that would shadow a built-in by name", () => {

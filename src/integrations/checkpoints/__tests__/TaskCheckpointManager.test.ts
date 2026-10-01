@@ -4,6 +4,10 @@ import type { TaskMessenger } from "@core/task/TaskMessenger"
 import type { TaskState } from "@core/task/TaskState"
 import type { DiffViewProvider } from "@integrations/editor/DiffViewProvider"
 import type { DiracMessage } from "@shared/ExtensionMessage"
+import * as fs from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
+import { saveDiracMessages } from "@core/storage/disk"
 import { expect } from "chai"
 import sinon from "sinon"
 import { HostProvider } from "../../../hosts/host-provider"
@@ -240,11 +244,27 @@ describe("TaskCheckpointManager", () => {
 		})
 
 		it("returns state update with conversationHistoryDeletedRange for task restore", async () => {
-			const msg = makeMessage({ id: "msg-1", conversationHistoryDeletedRange: [0, 5], conversationHistoryIndex: 3 })
-			const { manager, messageStateHandler } = makeManager(sandbox, { messages: [msg] })
-			// Task restore doesn't need tracker, just message state manipulation
-			const result = await manager.restoreCheckpoint("msg-1", "task")
-			expect(result.conversationHistoryDeletedRange).to.deep.equal([0, 5])
+			const content = { type: "markdown", content: "hello" } as DiracMessage["content"]
+			const msg = makeMessage({ id: "msg-1", content, conversationHistoryDeletedRange: [0, 5], conversationHistoryIndex: 3 })
+			const later = makeMessage({ id: "msg-2", content })
+			const { manager, messageStateHandler } = makeManager(sandbox, { messages: [msg, later] })
+			// Task restore rebuilds presentation history from the persisted task, so it needs real storage.
+			const storageDir = await fs.mkdtemp(path.join(os.tmpdir(), "dirac-checkpoint-restore-"))
+			try {
+				;(HostProvider.get as sinon.SinonStub).returns({
+					globalStorageFsPath: storageDir,
+					hostBridge: { windowClient: { showMessage: sandbox.stub() } },
+				})
+				await saveDiracMessages("test-task-1", [msg, later])
+
+				const result = await manager.restoreCheckpoint("msg-1", "task")
+
+				expect(result.conversationHistoryDeletedRange).to.deep.equal([0, 5])
+				const restored = (messageStateHandler.overwriteDiracMessages as sinon.SinonStub).firstCall.args[0]
+				expect(restored.map((message: DiracMessage) => message.id)).to.deep.equal(["msg-1"])
+			} finally {
+				await fs.rm(storageDir, { recursive: true, force: true })
+			}
 		})
 	})
 })

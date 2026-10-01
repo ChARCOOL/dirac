@@ -20,7 +20,7 @@ describe("parseHuggingFaceRouterModels", () => {
 		Object.keys(models).should.deepEqual(["org/tool-model"])
 		const info = models["org/tool-model"]
 		info.contextWindow!.should.equal(32_000)
-		info.maxTokens!.should.equal(8192)
+		info.maxTokens!.should.equal(8000) // a quarter of the smallest 32k route, under the 8192 cap
 		info.supportsImages!.should.equal(true)
 		info.supportsTools!.should.equal(true)
 		info.should.not.have.property("inputPrice")

@@ -113,9 +113,12 @@ function makeFakeTask(overrides?: { taskId?: string; cwd?: string; diracMessages
 			...overrides?.taskState,
 		},
 		messageStateHandler: {
-			getDiracMessages: () => overrides?.diracMessages ?? [],
+			capturePresentationSnapshot: async () => ({
+				messages: overrides?.diracMessages ?? [],
+				offset: 0,
+				generation: 0,
+			}),
 			getMessageById: (id: string) => overrides?.diracMessages?.find((message) => message.id === id),
-			getPresentationOffset: () => 0,
 		},
 	}
 }

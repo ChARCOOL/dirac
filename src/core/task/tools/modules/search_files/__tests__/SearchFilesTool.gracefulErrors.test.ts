@@ -239,6 +239,7 @@ describe("SearchFilesTool.execute – error recovery", () => {
 		const clock = sinon.useFakeTimers()
 		try {
 			const { config, taskMessenger } = createMockTaskConfig({
+				cwd: tmpDir,
 				overrides: { isSubagentExecution: false },
 			})
 			await fs.mkdir(path.join(tmpDir, "search-root"))
@@ -263,6 +264,7 @@ describe("SearchFilesTool.execute – error recovery", () => {
 
 	it("cancels the active search card when the task is stopped", async () => {
 		const { config, taskState, taskMessenger } = createMockTaskConfig({
+			cwd: tmpDir,
 			overrides: { isSubagentExecution: false },
 		})
 		await fs.mkdir(path.join(tmpDir, "search-root"))

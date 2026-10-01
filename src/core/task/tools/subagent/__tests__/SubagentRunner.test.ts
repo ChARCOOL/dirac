@@ -19,6 +19,7 @@ import { DiracDefaultTool } from "@/shared/tools"
 import { expectLoggerErrors } from "@/test/loggerGuard"
 import { TaskState } from "../../../TaskState"
 import { ListFilesTool, list_files_spec } from "../../modules/list_files"
+import { ToolExecutorCoordinator } from "../../ToolExecutorCoordinator"
 import { RespondTool, respondSpec } from "../../modules/respond/RespondTool"
 import { SubagentBuilder } from "../SubagentBuilder"
 import { SubagentRunner } from "../SubagentRunner"
@@ -117,6 +118,7 @@ function createTaskConfig(): TaskConfig {
 			},
 		},
 		coordinator: {
+			createEmptySibling: () => new ToolExecutorCoordinator(),
 			getHandler: sinon.stub().callsFake((toolName: DiracDefaultTool) => {
 				if (toolName === DiracDefaultTool.LIST_FILES) {
 					return {
@@ -482,7 +484,9 @@ describe("SubagentRunner", () => {
 		} finally {
 			resolveFlush()
 			await flushPromise
-			await new Promise((resolve) => setImmediate(resolve))
+			// Drain the run's real appends before removing their directory; otherwise they fail with ENOENT inside the next test.
+			flushStub.restore()
+			await recorder.flush()
 			await fs.rm(taskDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 		}
 	})

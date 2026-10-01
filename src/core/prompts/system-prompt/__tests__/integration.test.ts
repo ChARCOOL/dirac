@@ -26,6 +26,7 @@ import { getSystemPrompt } from "../index"
 import type { SystemPromptContext } from "../types"
 import type { ToolRequestSnapshot } from "@core/task/tools/runtime/ToolSnapshot"
 import { ToolDiscoveryService } from "@core/task/tools/discovery/ToolDiscoveryService"
+import { isDiscoveredToolAvailableToTaskProfile } from "@core/task/TaskExecutionProfile"
 import { DiracToolSet } from "../registry/DiracToolSet"
 import { toolSpecFunctionDeclarations, toolSpecInputSchema } from "../spec"
 import { mockProviderInfo } from "./test-helpers"
@@ -147,6 +148,9 @@ const makeProviderInfo = (providerId: string, modelId: string) => ({
 const baseContext: SystemPromptContext = {
 	cwd: "/test/project",
 	ide: "TestIde",
+	// Pin host-derived values so snapshots match on every machine.
+	activeShellPath: "/bin/bash",
+	runtimePlaceholders: { OS: "linux" },
 	supportsBrowserUse: true,
 	diracWebToolsEnabled: true,
 	subagentsEnabled: true,
@@ -176,7 +180,9 @@ function emptyToolSnapshot(): ToolRequestSnapshot {
 }
 
 function builtinToolSnapshot(context: SystemPromptContext): ToolRequestSnapshot {
-	const inventoryEnabledTools = ToolDiscoveryService.scanBuiltinTools()
+	const inventoryEnabledTools = ToolDiscoveryService.scanBuiltinTools().filter((tool) =>
+		isDiscoveredToolAvailableToTaskProfile("standalone", tool),
+	)
 	const contextFilteredSpecs = inventoryEnabledTools
 		.map((tool) => tool.spec)
 		.filter((spec) => !spec.contextRequirements || spec.contextRequirements(context))
