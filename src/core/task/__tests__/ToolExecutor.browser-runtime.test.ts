@@ -18,6 +18,7 @@ describe("ToolExecutor browser request runtime", () => {
 		const requestSettings = browserSettings("request.example")
 		const newerTaskSettings = browserSettings("newer-task.example")
 		const dispose = sinon.stub().resolves()
+		const installBrowserSession = sinon.stub()
 		const fakeExecutor = {
 			browserSession: { dispose },
 			ulid: "task-ulid",
@@ -26,12 +27,14 @@ describe("ToolExecutor browser request runtime", () => {
 				workingConfiguration: { settings: { browserSettings: requestSettings } },
 			}),
 			getCurrentWorkingConfiguration: () => ({ settings: { browserSettings: newerTaskSettings } }),
+			installBrowserSession,
 		}
 
 		const session = await ToolExecutor.prototype.applyLatestBrowserSettings.call(fakeExecutor as any)
 		const connection = (session as any).connection
 
 		sinon.assert.calledOnce(dispose)
+		sinon.assert.calledOnceWithExactly(installBrowserSession, session)
 		assert.deepEqual(connection.settingsSource, requestSettings)
 		assert.notDeepEqual(connection.settingsSource, newerTaskSettings)
 		assert.equal((session as any).useWebp, true)

@@ -2,16 +2,19 @@ import { strict as assert } from "node:assert"
 import { describe, it } from "mocha"
 import sinon from "sinon"
 import { TaskStatus } from "@shared/ExtensionMessage"
+import Mutex from "p-mutex"
 import { Task } from "../index"
 import { TaskState } from "../TaskState"
 
 function createTask() {
 	const task = Object.create(Task.prototype) as {
 		taskState: TaskState
+		stateMutex: Mutex
 		lifecycleManager?: { abortTask: () => Promise<void> }
 		abortTask: () => Promise<void>
 	}
 	task.taskState = new TaskState()
+	task.stateMutex = new Mutex()
 	return task
 }
 
@@ -23,6 +26,7 @@ describe("Task abort / state transitions", () => {
 		task.taskState.status = TaskStatus.EXECUTING_TOOL
 		await task.abortTask()
 		assert.equal(task.taskState.status, TaskStatus.CANCELLING)
+		assert.deepEqual(task.taskState.cancellationIntent, { kind: "cancelled" })
 		assert.equal(abort.callCount, 1)
 	})
 	it("keeps CANCELLED status and still delegates when already cancelled", async () => {

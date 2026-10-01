@@ -183,7 +183,10 @@ describe("ToolExecutor request-runtime authorization", () => {
 		const binding = createBinding.call(harness, enabled)
 		assert.ok(binding)
 		assert.equal(binding.configurationRevision, enabled.revision)
-		assert.equal(typeof harness.createUtilityRunner.firstCall.args[1].onUsage, "function")
+		// createUtilityRunner owns usage recording, so the binding only selects the model and configuration.
+		const [selection, , apiConfiguration] = harness.createUtilityRunner.firstCall.args
+		assert.deepEqual(selection, { provider: "openai", modelId: "utility-model" })
+		assert.equal(apiConfiguration, enabled.apiConfiguration)
 		assert.equal(createBinding.call(harness, disabled), undefined)
 	})
 
