@@ -162,11 +162,11 @@ describe("pinned ACP messages", () => {
 		const agent = new DiracAgent({ cwd })
 			; (agent as any).ctx = { DATA_DIR: cwd }
 
+		const messages = [{ id: "message-1", content: { type: "markdown", content: "Keep this requirement." } }]
 		const task = {
 			messageStateHandler: {
-				getDiracMessages: vi.fn(() => [
-					{ id: "message-1", content: { type: "markdown", content: "Keep this requirement." } },
-				]),
+				getDiracMessages: vi.fn(() => messages),
+				getMessageById: vi.fn((id: string) => messages.find((message) => message.id === id)),
 			},
 			taskState: {} as { pinnedContext?: string },
 			setContextCompactionObserver: vi.fn(),
