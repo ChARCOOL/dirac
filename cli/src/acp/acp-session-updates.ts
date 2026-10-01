@@ -17,6 +17,13 @@ const JOURNAL_COMPACTION_RETAIN_RATIO = 0.75
 const TAIL_READ_BYTES = 64 * 1024
 const LOCK_WAIT_TIMEOUT_MS = 15_000
 const LOCK_ORPHAN_GRACE_MS = 30_000
+/**
+ * How old a lock whose owner process is gone must be before another process removes it.
+ * The owner read and the removal are separate steps; a holder that releases and exits in
+ * between leaves the name to a new, live holder, whose lock must not be removed. Holders
+ * keep the lock for milliseconds, so a dead owner's lock this old was really abandoned.
+ */
+const LOCK_DEAD_OWNER_GRACE_MS = 5_000
 const LOCK_RETRY_INTERVAL_MS = 10
 const LOCK_SLEEP_ARRAY = new Int32Array(new SharedArrayBuffer(4))
 
@@ -223,6 +230,18 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
+function readLockOwner(lockDirectory: string): LockOwner | undefined {
+	try {
+		return JSON.parse(fs.readFileSync(path.join(lockDirectory, "owner.json"), "utf8")) as LockOwner
+	} catch {
+		return undefined
+	}
+}
+
+function sameOwner(left: LockOwner | undefined, right: LockOwner): boolean {
+	return left?.pid === right.pid && left.createdAt === right.createdAt
+}
+
 function removeAbandonedLock(lockDirectory: string): boolean {
 	let owner: LockOwner | undefined
 	try {
@@ -233,6 +252,8 @@ function removeAbandonedLock(lockDirectory: string): boolean {
 
 	if (owner && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
 		if (processIsAlive(owner.pid)) return false
+		if (!(Date.now() - owner.createdAt >= LOCK_DEAD_OWNER_GRACE_MS)) return false
+		if (!sameOwner(readLockOwner(lockDirectory), owner)) return true
 		fs.rmSync(lockDirectory, { recursive: true, force: true })
 		return true
 	}
