@@ -213,8 +213,12 @@ describe("Controller — Auth delegate", () => {
 			sinon.match({ value: "https://claim.example.com" }),
 		)
 		sandbox.assert.calledOnceWithExactly((githubCopilotAuthModule.githubCopilotAuthManager as any).pollForToken, "dc", 10)
-		// Flush microtasks spawned by fire-and-forget pollForToken().then(postStateToWebview)
-		await new Promise((resolve) => setImmediate(resolve))
+		// pollForToken() continues in the background; wait for its success message so it never
+		// runs after this test restores the HostProvider stubs.
+		for (let tick = 0; tick < 200 && showMessageStub.callCount < 2; tick++) {
+			await new Promise((resolve) => setTimeout(resolve, 5))
+		}
+		sandbox.assert.calledWith(showMessageStub, sinon.match({ message: "Successfully authenticated with GitHub Copilot!" }))
 	})
 
 	it("completeGithubLogin does not open a browser or poll when the prompt is dismissed", async () => {
