@@ -382,10 +382,10 @@ describe("ApiConversationManager steering delivery", () => {
 		const dependencies: any = {
 			taskState,
 			api: { supportsNativeWebSearch: () => true },
+			getRequestRuntime: () => undefined,
 			contextManager: {
 				getTruncatedMessages: sinon.stub().callsFake((messages: any[]) => messages),
 			},
-			stateManager: { getGlobalSettingsKey: sinon.stub() },
 			runUserPromptSubmitHook: sinon.stub().resolves({}),
 			loadContext: sinon.stub().resolves([
 				[{ type: "text", text: "search current information" }],
@@ -461,9 +461,13 @@ describe("ApiConversationManager steering delivery", () => {
 			]
 			let providerState: any = {}
 			const compactConversation = sinon.stub().resolves({ input: [{ type: "compaction", encrypted_content: "opaque" }] })
+			const settings: Record<string, unknown> = { hooksEnabled: false }
 			const dependencies: any = {
 				taskState,
-				api: { compactConversation },
+				api: { compactConversation, getModel: () => ({ id: "model", info: { contextWindow: 200_000 } }) },
+				settings,
+				getWorkingConfiguration: () => ({ settings }),
+				getRequestRuntime: () => undefined,
 				contextManager: {
 					getTruncatedMessages: sinon.stub().callsFake((messages: any[]) => messages),
 					getNextTruncationRange: sinon.stub().returns([0, 1]),
@@ -477,9 +481,6 @@ describe("ApiConversationManager steering delivery", () => {
 					}),
 					getDiracMessages: sinon.stub().returns([]),
 					saveDiracMessagesAndUpdateHistory: sinon.stub().resolves(),
-				},
-				stateManager: {
-					getGlobalSettingsKey: sinon.stub().callsFake((key: string) => (key === "hooksEnabled" ? false : undefined)),
 				},
 				getCurrentProviderInfo: () => ({ providerId: "openai-codex" }),
 			}
@@ -589,11 +590,8 @@ describe("ApiConversationManager steering delivery", () => {
 
 		it("uses the openai-codex-specific auto-condense threshold", async () => {
 			const { dependencies } = createCompactionDependencies()
-			dependencies.stateManager.getGlobalSettingsKey.callsFake((key: string) => {
-				if (key === "useAutoCondense") return true
-				if (key === "autoCondenseContextLimits") return { "openai-codex": 123456 }
-				return undefined
-			})
+			dependencies.settings.useAutoCondense = true
+			dependencies.settings.autoCondenseContextLimits = { "openai-codex": 123456 }
 			dependencies.contextManager.shouldCompactContextWindow.returns(true)
 
 			await new ApiConversationManager(dependencies).determineContextCompaction(4)
@@ -736,7 +734,7 @@ describe("ApiConversationManager steering delivery", () => {
 
 		it("skips the pre-condense token sample once after a successful condense", async () => {
 			const { dependencies } = createCompactionDependencies()
-			dependencies.stateManager.getGlobalSettingsKey.withArgs("useAutoCondense").returns(true)
+			dependencies.settings.useAutoCondense = true
 			dependencies.taskState.skipNextAutoCondenseCheck = true
 
 			const shouldCompact = await new ApiConversationManager(dependencies).determineContextCompaction(4)

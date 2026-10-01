@@ -132,6 +132,8 @@ describe("TaskRequestBuilder", () => {
 				useNativeToolCalls: false,
 				conversationHistoryDeletedRange: deletedRange,
 			},
+			executionProfile: "standalone",
+			getPinnedContext: sandbox.stub().resolves(undefined),
 			getCurrentProviderInfo: () => providerInfo,
 			isParallelToolCallingEnabled: () => false,
 			writePromptMetadataArtifacts,

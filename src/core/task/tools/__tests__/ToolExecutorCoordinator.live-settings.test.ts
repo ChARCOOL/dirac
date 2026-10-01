@@ -67,11 +67,15 @@ describe("ToolExecutorCoordinator live task settings", () => {
 				get: () => yoloModeToggled,
 			})
 
+			const cardState = { id: "approval-card", header: "Permission", status: CardStatus.RUNNING }
 			const protocolCard = {
-				id: "approval-card",
+				id: cardState.id,
+				getCard: () => cardState,
 				update: sinon.stub().resolves(),
 				appendBody: sinon.stub().resolves(),
-				finalize: sinon.stub().resolves(),
+				finalize: sinon.stub().callsFake(async (status: CardStatus) => {
+					cardState.status = status
+				}),
 				waitForInteraction: sinon.stub().resolves({ action: DiracAskResponse.APPROVE }),
 			}
 			taskMessenger.createCard.resolves(protocolCard)
