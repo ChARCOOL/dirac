@@ -68,7 +68,7 @@ export class OpenAiResponsesCompatibleHandler implements ApiHandler {
 			input,
 			tools: responseTools,
 			reasoningEffort: this.options.reasoningEffort,
-			store: true,
+			store: false,
 			enableParallelToolCalling: this.shouldEnableParallelToolCalling(),
 		})
 

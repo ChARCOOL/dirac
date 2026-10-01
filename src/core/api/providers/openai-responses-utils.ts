@@ -143,6 +143,11 @@ export function buildResponseCreateParams(args: {
 			? { parallel_tool_calls: args.enableParallelToolCalling }
 			: {}),
 		...(args.store !== undefined ? { store: args.store } : { store: !args.previousResponseId }),
+		// Stateless replay needs the encrypted chain of thought; Meta omits it unless asked,
+		// and the API rejects it alongside previous_response_id, so only the manual path sends it.
+		...(args.previousResponseId
+			? {}
+			: { include: ["reasoning.encrypted_content"] satisfies OpenAI.Responses.ResponseIncludable[] }),
 		...(args.previousResponseId ? { previous_response_id: args.previousResponseId } : {}),
 		...(reasoning ? { reasoning: reasoning as any } : {}),
 	} as OpenAI.Responses.ResponseCreateParamsStreaming

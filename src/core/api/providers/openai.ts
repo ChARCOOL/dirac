@@ -8,6 +8,7 @@ import { DiracStorageMessage } from "@/shared/messages/content"
 import { createOpenAIClient, fetch } from "@/shared/net"
 import { ApiHandler, CommonApiHandlerOptions } from "../index"
 import { withRetry } from "../retry"
+import { qwenTemplateParams, type QwenTemplateParams } from "./model-presets"
 import { convertToOpenAiMessages } from "../transform/openai-format"
 import { addReasoningContent } from "../transform/r1-format"
 import { convertToR1Format } from "../transform/r1-format"
@@ -147,13 +148,9 @@ export class OpenAiHandler implements ApiHandler {
 			{ role: "system", content: systemPrompt },
 			...convertToOpenAiMessages(messages, undefined, this.getModel().info.supportsImages !== false),
 		]
-		let temperature: number | undefined
-		if (this.options.openAiModelInfo?.temperature !== undefined) {
-			const tempValue = Number(this.options.openAiModelInfo.temperature)
-			temperature = tempValue === 0 ? undefined : tempValue
-		} else {
-			temperature = openAiModelInfoSaneDefaults.temperature
-		}
+		// 0 means "not configured": omit it so the server's or proxy's default applies.
+		const configuredTemperature = Number(this.options.openAiModelInfo?.temperature ?? 0)
+		let temperature: number | undefined = configuredTemperature === 0 ? undefined : configuredTemperature
 		let reasoningEffort: ChatCompletionReasoningEffort | undefined
 		let maxTokens: number | undefined
 
@@ -188,7 +185,8 @@ export class OpenAiHandler implements ApiHandler {
 		// omitting the field: omitting lets the server apply its own default, which for several
 		// local backends (Ollama with a qwen3 tag, for one) means reasoning stays ON. Selecting
 		// "none" in Settings must actually turn reasoning off.
-		reasoningEffort = normalizeOpenaiReasoningEffort(this.options.reasoningEffort) as ChatCompletionReasoningEffort
+		const effort = normalizeOpenaiReasoningEffort(this.options.reasoningEffort)
+		reasoningEffort = effort as ChatCompletionReasoningEffort
 
 		if (isReasoningModelFamily) {
 			openAiMessages = [
@@ -198,19 +196,18 @@ export class OpenAiHandler implements ApiHandler {
 			temperature = undefined // does not support temperature
 		}
 
-		const stream = await client.chat.completions.create(
-			{
-				model: modelId,
-				messages: openAiMessages,
-				temperature,
-				max_tokens: maxTokens,
-				reasoning_effort: reasoningEffort,
-				stream: true,
-				stream_options: { include_usage: true },
-				...getOpenAIToolParams(finalTools, this.shouldEnableParallelToolCalling()),
-			},
-			{ signal },
-		)
+		const body: OpenAI.Chat.ChatCompletionCreateParamsStreaming & QwenTemplateParams = {
+			model: modelId,
+			messages: openAiMessages,
+			temperature,
+			max_tokens: maxTokens,
+			reasoning_effort: reasoningEffort,
+			...qwenTemplateParams(modelId, effort),
+			stream: true,
+			stream_options: { include_usage: true },
+			...getOpenAIToolParams(finalTools, this.shouldEnableParallelToolCalling()),
+		}
+		const stream = await client.chat.completions.create(body, { signal })
 
 		const toolCallProcessor = new ToolCallProcessor()
 		let stopReason: string | undefined

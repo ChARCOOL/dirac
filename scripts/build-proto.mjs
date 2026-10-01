@@ -67,8 +67,9 @@ async function main() {
 async function compileProtos() {
 	console.log(chalk.bold.blue("Compiling Protocol Buffers..."))
 
-	// Check for Apple Silicon compatibility before proceeding
-	checkAppleSiliconCompatibility()
+	// The Rosetta gate only applies to the grpc-tools bundled x64 protoc shim;
+	// a native system protoc (brew) on Apple Silicon needs no translation.
+	if (PROTOC !== "protoc") checkAppleSiliconCompatibility()
 
 	// Create output directories if they don't exist
 	for (const dir of [TS_OUT_DIR, GRPC_JS_OUT_DIR, NICE_JS_OUT_DIR, DESCRIPTOR_OUT_DIR]) {
