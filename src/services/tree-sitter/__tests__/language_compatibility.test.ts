@@ -7,7 +7,7 @@ import { TaskState } from "@core/task/TaskState"
 import { EditAstTool } from "@core/task/tools/modules/edit_ast/EditAstTool"
 import { InspectAstTool } from "@core/task/tools/modules/inspect_ast/InspectAstTool"
 import { ToolExecutorCoordinator } from "@core/task/tools/ToolExecutorCoordinator"
-import { createMockContext } from "@core/task/tools/__tests__/helpers/mockTaskConfig"
+import { createMockCallbacks, createMockContext, createMockTaskMessenger } from "@core/task/tools/__tests__/helpers/mockTaskConfig"
 import { HostProvider } from "@/hosts/host-provider"
 import * as diagnosticsProvidersModule from "@/integrations/diagnostics/getDiagnosticsProviders"
 import { SymbolIndexService } from "@/services/symbol-index/SymbolIndexService"
@@ -335,23 +335,7 @@ async function assertReplacementSnapshot(
 
 function createMockConfig(cwd: string) {
 	const taskState = new TaskState()
-	const callbacks = {
-		say: sinon.stub().resolves(undefined),
-		ask: sinon.stub().resolves(undefined),
-		askStatus: sinon.stub().resolves(undefined),
-		askCompletion: sinon.stub().resolves(undefined),
-		askProgress: sinon.stub().resolves(undefined),
-		askError: sinon.stub().resolves(undefined),
-		askWarning: sinon.stub().resolves(undefined),
-		askInfo: sinon.stub().resolves(undefined),
-		shouldAutoApproveToolWithPath: sinon.stub().resolves(true),
-		resolveToolPathPermission: sinon.stub().resolves("auto_approve"),
-		removeLastPartialMessageIfExistsWithType: sinon.stub().resolves(),
-		sayAndCreateMissingParamError: sinon.stub().resolves("missing_param_error"),
-		cancelTask: sinon.stub().resolves(),
-		setActiveHookExecution: sinon.stub().resolves(),
-		clearActiveHookExecution: sinon.stub().resolves(),
-	}
+	const callbacks = createMockCallbacks()
 
 	return {
 		taskId: "test-task",
@@ -362,6 +346,9 @@ function createMockConfig(cwd: string) {
 		isSubagentExecution: false,
 		autoApprover: { isUnrestrictedAutoApprove: () => true },
 		messageState: { getApiConversationHistory: sinon.stub().returns([]) },
+		hooksEnabled: false,
+		providerId: "openai",
+		model: { id: "test-model", info: { supportsImages: false } },
 		api: { getModel: () => ({ id: "test-model", info: { supportsImages: false } }) },
 		services: {
 			stateManager: {
@@ -382,6 +369,7 @@ function createMockConfig(cwd: string) {
 			},
 			diffViewProvider: {
 				editType: undefined,
+				readText: sinon.stub().callsFake(async (absolutePath: string) => fs.readFile(absolutePath, "utf-8")),
 				open: sinon.stub().resolves(),
 				update: sinon.stub().resolves(),
 				reset: sinon.stub().resolves(),
@@ -399,17 +387,7 @@ function createMockConfig(cwd: string) {
 			} as any,
 		},
 		context: createMockContext(),
-		taskMessenger: {
-			createCard: sinon.stub().resolves({
-				id: "mock-card-id",
-				update: sinon.stub().resolves(),
-				finalize: sinon.stub().resolves(),
-				waitForInteraction: sinon.stub().resolves({ action: "approve" }),
-				appendBody: sinon.stub().resolves(),
-			}),
-			upsertText: sinon.stub().resolves(),
-			streamText: sinon.stub().resolves({ write: sinon.stub(), end: sinon.stub() }),
-		},
+		taskMessenger: createMockTaskMessenger(),
 	} as any
 }
 
