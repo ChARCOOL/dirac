@@ -1,5 +1,6 @@
 import { EventEmitter } from "events"
-import * as http from "http"
+// Default import yields the real module object; a namespace import is a frozen getter copy sinon cannot stub.
+import http from "http"
 import { afterEach, describe, it } from "mocha"
 import sinon from "sinon"
 import "should"

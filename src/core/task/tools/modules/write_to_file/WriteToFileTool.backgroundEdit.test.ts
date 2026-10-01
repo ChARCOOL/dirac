@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert"
 import { afterEach, beforeEach, describe, it } from "mocha"
 import sinon from "sinon"
 import { DiracAskResponse } from "@shared/WebviewMessage"
-import { telemetryService } from "@/services/telemetry"
+import * as telemetryModule from "@/services/telemetry"
 import type { ToolPermissionDisposition } from "../../autoApprove"
 import { WriteToFileTool } from "./WriteToFileTool"
 
@@ -67,8 +67,11 @@ const scenarios = [
 describe("WriteToFileTool background editing", () => {
 	const sandbox = sinon.createSandbox()
 	beforeEach(() => {
-		sandbox.stub(telemetryService, "captureAiOutputAccepted")
-		sandbox.stub(telemetryService, "captureAiOutputRejected")
+		// telemetryService is a Proxy without own properties, so replace the export rather than its methods.
+		sandbox.stub(telemetryModule, "telemetryService").value({
+			captureAiOutputAccepted: sandbox.stub(),
+			captureAiOutputRejected: sandbox.stub(),
+		})
 	})
 	afterEach(() => sandbox.restore())
 

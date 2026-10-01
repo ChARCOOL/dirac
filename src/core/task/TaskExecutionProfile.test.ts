@@ -58,7 +58,7 @@ describe("Task execution profiles", () => {
 
 		assert.match(instructions ?? "", /user opening it during the run can quickly understand/)
 		assert.match(instructions ?? "", /Most should remain private; synthesize only information/)
-		assert.match(instructions ?? "", /post merely because a heartbeat occurred/)
+		assert.match(instructions ?? "", /Do not mechanically forward child messages or narrate routine tool activity/)
 		assert.match(instructions ?? "", /normally one sentence, sometimes two, and only rarely three/)
 	})
 

@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert"
 import { afterEach, describe, it } from "mocha"
 import sinon from "sinon"
 import { TaskController } from "./TaskController"
+import { HostProvider } from "@/hosts/host-provider"
 import { Logger } from "@/shared/services/Logger"
 
 describe("TaskController task replacement", () => {
@@ -59,7 +60,7 @@ describe("TaskController task replacement", () => {
 	it("retains the approved replacement and surfaces replacement initialization failure", async () => {
 		const controller = createController()
 		const replacement = { context: "replacement context" }
-		const task = { taskState: { pendingTaskReplacement: replacement } } as any
+		const task = { taskState: { pendingTaskReplacement: replacement }, getWorkingConfiguration: () => ({}) } as any
 		controller.task = task
 		const initializationFailure = new Error("replacement initialization failed")
 		sinon.stub(controller, "initTask").rejects(initializationFailure)
@@ -152,7 +153,8 @@ describe("TaskController task replacement", () => {
 		)
 
 		sinon.assert.calledOnce(clearTaskSettings)
-		sinon.assert.calledOnce(task.abortTask)
+		sinon.assert.callOrder(task.abortTask, clearTaskSettings)
+		sinon.assert.calledOnce(task.retirePersistence)
 		assert.equal(controller.task, undefined)
 	})
 
@@ -180,7 +182,8 @@ describe("TaskController task replacement", () => {
 		)
 
 		sinon.assert.calledOnce(clearTaskSettings)
-		sinon.assert.calledOnce(task.abortTask)
+		sinon.assert.callOrder(task.abortTask, clearTaskSettings)
+		sinon.assert.calledOnce(task.retirePersistence)
 		assert.equal(controller.task, undefined)
 	})
 
@@ -202,7 +205,8 @@ describe("TaskController task replacement", () => {
 
 		await assert.rejects(start, /history restoration timed out after 30 seconds/)
 		sinon.assert.calledOnce(clearTaskSettings)
-		sinon.assert.calledOnce(task.abortTask)
+		sinon.assert.callOrder(task.abortTask, clearTaskSettings)
+		sinon.assert.calledOnce(task.retirePersistence)
 		assert.equal(controller.task, undefined)
 	})
 
@@ -374,13 +378,15 @@ describe("TaskController task isolation", () => {
 			sinon.stub().resolves({ acquired: false, skipped: true }),
 			sinon.stub().resolves(workspaceManager),
 		) as TaskController
+		// Stop Task construction at its first host access, independent of suites that leave HostProvider initialized.
+		sinon.stub(HostProvider, "get").throws(new Error("HostProvider not setup"))
 
 		await assert.rejects(
 			() =>
 				controller.initTask("test", undefined, undefined, undefined, { mode: "act" }, undefined, undefined, {
 					runtimeConfigurationOverrides: { mode: "plan" },
 				}),
-			/HostProvider|Either historyItem|undefined/,
+			/HostProvider not setup/,
 		)
 		assert.deepEqual(order.slice(0, 3), ["load", "persisted", "capture"])
 	})

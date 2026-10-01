@@ -37,13 +37,15 @@ describe("openAiCodexModels", () => {
 		openAiCodexModels["gpt-5.5"].description!.should.containEql("Dec 01, 2025")
 	})
 
-	it("configures GPT-6 Astra like GPT-5.6 Sol", () => {
+	it("configures GPT-6 Astra with GPT-5.6 Sol capabilities and its own pricing", () => {
 		const nativeAstra = openAiNativeModels["gpt-6-astra"]
 		const nativeSol = openAiNativeModels["gpt-5.6-sol"]
 		nativeAstra.maxTokens!.should.equal(nativeSol.maxTokens!)
 		nativeAstra.contextWindow!.should.equal(nativeSol.contextWindow!)
-		nativeAstra.inputPrice.should.equal(nativeSol.inputPrice)
-		nativeAstra.outputPrice.should.equal(nativeSol.outputPrice)
+		nativeAstra.inputPrice.should.equal(10)
+		nativeAstra.outputPrice.should.equal(50)
+		nativeAstra.cacheReadsPrice!.should.equal(1)
+		nativeAstra.cacheWritesPrice!.should.equal(12.5)
 		nativeAstra.fastModePriceMultiplier.should.equal(nativeSol.fastModePriceMultiplier)
 		nativeAstra.supportsPersistedReasoning.should.equal(true)
 

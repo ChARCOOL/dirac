@@ -8,6 +8,8 @@ import { AnchorStateManager } from "@utils/AnchorStateManager"
 import { getDelimiter } from "@utils/line-hashing"
 import { afterEach, beforeEach, describe, it } from "mocha"
 import sinon from "sinon"
+import { HostProvider } from "@/hosts/host-provider"
+import { setVscodeHostProviderMock } from "@/test/host-provider-test-utils"
 import { execRipgrep, formatResults, type RipgrepProcessSpawner } from "../index"
 
 let tmpDir: string
@@ -26,6 +28,10 @@ function fakeRipgrepProcess() {
 }
 
 describe("Ripgrep process lifecycle", () => {
+	// execRipgrep verifies the resolved binary exists before spawning; point it at a real file.
+	beforeEach(() => setVscodeHostProviderMock({ getBinaryLocation: async () => process.execPath }))
+	afterEach(() => HostProvider.reset())
+
 	it("resolves capped output without waiting for child close", async () => {
 		const { process: child, stdout, kill } = fakeRipgrepProcess()
 		const spawnProcess: RipgrepProcessSpawner = () => child
