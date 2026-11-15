@@ -19,6 +19,7 @@ import { normalizeUserApprovedCommands, type UserApprovedCommand } from "@shared
 import { LanguageModelChatSelector } from "@shared/vsCodeSelectorUtils"
 import { DEFAULT_SUBAGENT_ROLES, type SubagentRole, validateSubagentRoles } from "@shared/subagentRoles"
 import { DEFAULT_SANDBOX_SETTINGS, type SandboxSettings } from "@shared/SandboxSettings"
+import { isValidAutoCondensePercent } from "@shared/context-management"
 
 // ============================================================================
 // SINGLE SOURCE OF TRUTH FOR STORAGE KEYS
@@ -281,8 +282,7 @@ const USER_SETTINGS_FIELDS = {
 	/** Compact at this percent of the model's context window; a per-provider token limit wins. */
 	autoCondenseContextPercent: {
 		default: undefined as number | undefined,
-		transform: (percent: number | undefined) =>
-			typeof percent === "number" && percent > 0 && percent <= 100 ? percent : undefined,
+		transform: (percent: number | undefined) => (isValidAutoCondensePercent(percent) ? percent : undefined),
 	},
 	subagentsEnabled: { default: false as boolean },
 	diracWebToolsEnabled: { default: true as boolean },
