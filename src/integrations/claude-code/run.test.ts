@@ -107,6 +107,28 @@ describe("Claude Code Integration", () => {
 		expect(params).to.include("--no-session-persistence")
 	})
 
+	it("pins the official API endpoint so a local proxy in the user's settings is bypassed", async () => {
+		process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"
+		try {
+			const cProcess = runClaudeCode({
+				systemPrompt: "test",
+				messages: [],
+				modelId: "test",
+				path: scriptPath,
+			})
+			for await (const _chunk of cProcess) {
+				// drain the generator so runProcess (and execa) is invoked
+			}
+		} finally {
+			delete process.env.ANTHROPIC_BASE_URL
+		}
+
+		const [, params, options] = mockExeca.lastCall.args
+		const settings = JSON.parse(params[params.indexOf("--settings") + 1])
+		expect(settings).to.deep.equal({ env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" } })
+		expect(options.env).to.not.have.property("ANTHROPIC_BASE_URL")
+	})
+
 	const itCallsTheScriptWithAFile = (systemPrompt: string) => {
 		it("calls the script using with a file", async () => {
 			const cProcess = runClaudeCode({

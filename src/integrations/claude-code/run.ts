@@ -175,6 +175,8 @@ Anthropic is aware of this issue and is considering a fix: https://github.com/an
 }
 
 const CLAUDE_CODE_TIMEOUT = 600000 // 10 minutes
+const ANTHROPIC_API_URL = "https://api.anthropic.com"
+
 // https://github.com/sindresorhus/execa/blob/main/docs/api.md#optionsmaxbuffer
 const BUFFER_SIZE = 20_000_000 // 20 MB
 
@@ -203,6 +205,11 @@ function runProcess(
 		"--strict-mcp-config",
 		"--disable-slash-commands",
 		"--no-session-persistence",
+		// The user's ~/.claude/settings.json env block routes the CLI through a local proxy
+		// (ANTHROPIC_BASE_URL) and outranks the process env, so only --settings can pin the
+		// official endpoint for this child.
+		"--settings",
+		JSON.stringify({ env: { ANTHROPIC_BASE_URL: ANTHROPIC_API_URL } }),
 		// Disable all built-in tools; tool selection is driven by the --json-schema
 		// structured-output contract instead. ("" disables the entire built-in set.)
 		"--tools",
@@ -240,6 +247,7 @@ function runProcess(
 	// We don't want to consume the user's ANTHROPIC_API_KEY,
 	// and will allow Claude Code to resolve auth by itself
 	delete env["ANTHROPIC_API_KEY"]
+	delete env["ANTHROPIC_BASE_URL"]
 
 	const claudeCodeProcess = execa(claudePath, args, {
 		stdin: "pipe",
