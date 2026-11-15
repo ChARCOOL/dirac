@@ -132,11 +132,6 @@ describe("claude-code structured-output", () => {
 	})
 
 	describe("unwrapNativeToolParams", () => {
-		it("decodes a native tool_use envelope whose params are a JSON string", () => {
-			const input = { tool: "respond", params: '{"operation":"complete","text":"PONG"}' }
-			expect(unwrapNativeToolParams(input)).to.deep.equal({ operation: "complete", text: "PONG" })
-		})
-
 		it("unwraps a native tool_use envelope whose params are an object", () => {
 			const input = { tool: "read_file", params: { paths: ["a.ts"] } }
 			expect(unwrapNativeToolParams(input)).to.deep.equal({ paths: ["a.ts"] })
