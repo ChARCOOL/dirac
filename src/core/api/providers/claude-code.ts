@@ -4,6 +4,7 @@ import {
 	buildStructuredToolSchema,
 	extractStructuredToolCalls,
 	STRUCTURED_OUTPUT_TOOL_NAME,
+	unwrapNativeToolParams,
 } from "@/integrations/claude-code/structured-output"
 import { ClaudeCodeModelId, claudeCodeDefaultModelId, claudeCodeModels, getAnthropicReasoningEffort } from "@/shared/api"
 import { DiracStorageMessage } from "@/shared/messages/content"
@@ -158,7 +159,11 @@ export class ClaudeCodeHandler implements ApiHandler {
 			type: "tool_calls",
 			tool_call: {
 				call_id: content.id,
-				function: { id: content.id, name: content.name, arguments: JSON.stringify(content.input) },
+				function: {
+					id: content.id,
+					name: content.name,
+					arguments: JSON.stringify(unwrapNativeToolParams(content.input)),
+				},
 			},
 		}
 	}

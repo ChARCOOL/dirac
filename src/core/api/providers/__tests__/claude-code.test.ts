@@ -302,6 +302,19 @@ describe("ClaudeCodeHandler", () => {
 			toolCalls[0].function.name.should.equal("respond")
 			JSON.parse(toolCalls[0].function.arguments).should.deepEqual({ operation: "complete", text: "done" })
 		})
+
+		it("decodes a native tool_use envelope whose params are a JSON string", async () => {
+			const toolCalls = await collectToolCalls({
+				type: "tool_use",
+				id: "toolu_2",
+				name: "respond",
+				input: { tool: "respond", params: '{"operation":"complete","text":"PONG"}' },
+			})
+
+			toolCalls.should.have.length(1)
+			toolCalls[0].function.name.should.equal("respond")
+			JSON.parse(toolCalls[0].function.arguments).should.deepEqual({ operation: "complete", text: "PONG" })
+		})
 	})
 
 	describe("getModel", () => {

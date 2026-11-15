@@ -1,7 +1,13 @@
+import { expect } from "chai"
 import { describe, it } from "mocha"
 import "should"
 import { DiracDefaultTool } from "@shared/tools"
-import { buildStructuredToolSchema, extractStructuredToolCalls, STRUCTURED_OUTPUT_TOOL_NAME } from "./structured-output"
+import {
+	buildStructuredToolSchema,
+	extractStructuredToolCalls,
+	STRUCTURED_OUTPUT_TOOL_NAME,
+	unwrapNativeToolParams,
+} from "./structured-output"
 
 describe("claude-code structured-output", () => {
 	describe("buildStructuredToolSchema", () => {
@@ -122,6 +128,28 @@ describe("claude-code structured-output", () => {
 			extractStructuredToolCalls({ tool_calls: [{ noTool: true }, { tool: "ok", params: {} }] }).should.deepEqual([
 				{ tool: "ok", params: {} },
 			])
+		})
+	})
+
+	describe("unwrapNativeToolParams", () => {
+		it("decodes a native tool_use envelope whose params are a JSON string", () => {
+			const input = { tool: "respond", params: '{"operation":"complete","text":"PONG"}' }
+			expect(unwrapNativeToolParams(input)).to.deep.equal({ operation: "complete", text: "PONG" })
+		})
+
+		it("unwraps a native tool_use envelope whose params are an object", () => {
+			const input = { tool: "read_file", params: { paths: ["a.ts"] } }
+			expect(unwrapNativeToolParams(input)).to.deep.equal({ paths: ["a.ts"] })
+		})
+
+		it("passes flat tool parameters through unchanged", () => {
+			const input = { paths: ["a.ts"] }
+			expect(unwrapNativeToolParams(input)).to.equal(input)
+		})
+
+		it("leaves an envelope with undecodable params unchanged so the tool reports it", () => {
+			const input = { tool: "respond", params: "not json" }
+			expect(unwrapNativeToolParams(input)).to.equal(input)
 		})
 	})
 

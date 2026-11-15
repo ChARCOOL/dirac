@@ -101,3 +101,37 @@ export function extractStructuredToolCalls(input: unknown): StructuredToolCall[]
 
 	return []
 }
+
+/**
+ * A native tool_use block named after a Dirac tool can carry the call as an envelope,
+ * `{ tool, params }`, with `params` JSON-encoded as a string. Dirac's tool validation reads
+ * the parameters from the top level (e.g. `operation`), so the envelope is unwrapped here.
+ * Any other input already is the tool's parameters and passes through. An envelope that
+ * cannot be decoded also passes through, so the tool's own validation reports it to the model.
+ */
+export function unwrapNativeToolParams(input: unknown): unknown {
+	if (!isRecord(input) || !("params" in input)) {
+		return input
+	}
+	if (Object.keys(input).some((key) => key !== "tool" && key !== "params")) {
+		return input
+	}
+
+	const { params } = input
+	if (isRecord(params)) {
+		return params
+	}
+	if (typeof params !== "string") {
+		return input
+	}
+	try {
+		const decoded: unknown = JSON.parse(params)
+		return isRecord(decoded) ? decoded : input
+	} catch {
+		return input
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
