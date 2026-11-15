@@ -200,7 +200,7 @@ function convertAssistantMessage(
 	const contentText =
 		nonToolMessages.length > 0
 			? nonToolMessages
-					.filter((part): part is DiracTextContentBlock => part.type === "text" && Boolean((part as DiracTextContentBlock).text))
+					.filter((part): part is DiracTextContentBlock => part.type === "text" && Boolean(part.text))
 					.map((part) => part.text)
 					.join("\n")
 			: undefined
