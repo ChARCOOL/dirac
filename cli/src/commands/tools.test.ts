@@ -39,7 +39,7 @@ describe("createToolConfiguration", () => {
 		const profileTool = tool("profile_tool", {
 			exposure: { kind: "profile_only", profiles: ["goal_coordinator"] },
 		})
-		const goalTool = tool("start_task")
+		const goalTool = tool("update_goal")
 
 		expect(
 			createToolConfiguration(

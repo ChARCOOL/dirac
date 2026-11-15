@@ -134,13 +134,6 @@ export function createMockCallbacks(): TaskCallbacks {
 		resetTransientState: sinon.stub().resolves(),
 		notifyContextCompacted: sinon.stub(),
 		createUtilityModelRunner: sinon.stub(),
-		createSubagentRuntime: sinon.stub().returns({
-			providerId: "test-provider",
-			model: { id: "test-model", info: {} },
-			supportsNativeWebSearch: false,
-			createMessage: sinon.stub(),
-			abort: sinon.stub(),
-		}),
 	}
 }
 
@@ -203,10 +196,8 @@ export function createMockTaskConfig(options: MockTaskConfigOptions = {}) {
 		strictPlanModeEnabled: false,
 		yoloModeToggled: true,
 		lowVerbosityEnabled: true,
-		doubleCheckCompletionEnabled: false,
 		vscodeTerminalExecutionMode: "backgroundExec" as const,
 		enableParallelToolCalling: true,
-		isSubagentExecution: true,
 		backgroundEditEnabled: false,
 		providerId: "test-provider",
 		customPrompt: undefined,
@@ -215,7 +206,6 @@ export function createMockTaskConfig(options: MockTaskConfigOptions = {}) {
 		useAutoCondense: true,
 		utilityModelEnabled: false,
 		utilityModelUseCondense: true,
-		utilityModelUseNewTask: true,
 		utilityModelSelection: undefined,
 		globalSkillsToggles: {},
 		localSkillsToggles: {},

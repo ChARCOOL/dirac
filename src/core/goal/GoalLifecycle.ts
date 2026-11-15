@@ -3,7 +3,6 @@ import {
 	type GoalStatus,
 	type GoalStatusTransition,
 	isActiveGoalStatus,
-	isTerminalGoalChildStatus,
 	isSettledGoalStatus,
 } from "@shared/goal"
 
@@ -32,7 +31,7 @@ export function goalActiveDurationAt(record: GoalRecord, now: number): number {
 
 export function goalWallDurationAt(record: GoalRecord, now: number): number {
 	assertTransitionTime(record, now)
-	const end = isSettledGoalStatus(record.status) ? record.updatedAt : now
+	const end = isSettledGoalStatus(record.status) ? (record.settledAt ?? record.updatedAt) : now
 	return end - record.createdAt
 }
 
@@ -58,22 +57,8 @@ export function applyGoalStatusTransition(record: GoalRecord, transition: GoalSt
 
 	if (transition.status === "paused") record.lastPausedAt = now
 	record.status = transition.status
+	record.settledAt = isSettledGoalStatus(transition.status) ? now : undefined
 	record.statusReason = transition.statusReason?.trim() || undefined
 	record.updatedAt = now
 	return true
-}
-
-/** Marks every child that could have owned work before a process boundary inert. */
-export function interruptNonterminalGoalChildren(record: GoalRecord, now: number): boolean {
-	assertTransitionTime(record, now)
-	let changed = false
-	for (const child of record.children) {
-		if (isTerminalGoalChildStatus(child.status)) continue
-		if (now < child.lastActivityAt) throw new Error(`Goal child ${child.id} activity timestamp is in the future`)
-		child.status = "interrupted"
-		child.endedAt = now
-		child.pendingInteraction = undefined
-		changed = true
-	}
-	return changed
 }

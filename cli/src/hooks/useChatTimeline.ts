@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import type { Dispatch, SetStateAction } from "react"
 import { combineCardSequences } from "@shared/combineCardSequences"
-import { DiracMessageType, isFinalStatus, type TaskStatus } from "@shared/ExtensionMessage"
 import type { DiracMessage } from "@shared/ExtensionMessage"
-import { useTranscriptPartition } from "./useTranscriptPartition"
+import { DiracMessageType, isFinalStatus, type TaskStatus } from "@shared/ExtensionMessage"
+import { getSubagentUsage } from "@shared/subagentUsage"
+import { getTaskletUsage } from "@shared/taskletUsage"
+import type { Dispatch, SetStateAction } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { ChatLayoutRows } from "../utils/chat-layout"
 import type { CardBodySuppressionPolicy } from "../utils/quiet-mode"
 import {
@@ -11,6 +12,7 @@ import {
 	estimateTimelineMessageBodyRows,
 	estimateTimelineMessageRows,
 } from "../utils/timeline-rows"
+import { useTranscriptPartition } from "./useTranscriptPartition"
 
 export type TimelineMessageKind = "card" | "markdown" | "reasoning" | "checkpoint"
 
@@ -62,7 +64,7 @@ interface ChatTimelineOptions {
 	showHeader: boolean
 	layoutRows: ChatLayoutRows
 	terminalColumns: number
-	scrollOffset?: number
+	scrollFromTop?: number
 	shouldSuppressCardBody: CardBodySuppressionPolicy
 }
 
@@ -78,7 +80,7 @@ export function useChatTimeline({
 	showHeader,
 	layoutRows,
 	terminalColumns,
-	scrollOffset = 0,
+	scrollFromTop = 0,
 	shouldSuppressCardBody,
 }: ChatTimelineOptions): ChatTimelineResult {
 	const [taskSwitchKey, setTaskSwitchKey] = useState(0)
@@ -105,12 +107,13 @@ export function useChatTimeline({
 			rowBudget: layoutRows.activeContentRows,
 			estimateRows,
 		},
+		{
+			key: (message) => (message.content.type === DiracMessageType.CARD ? message.content.card.id : message.id),
+			revision: () => undefined,
+		},
 	)
 
-	const staticItems = useMemo(
-		() => createStaticTimelineItems(staticPrefix, showHeader),
-		[staticPrefix, showHeader],
-	)
+	const staticItems = useMemo(() => createStaticTimelineItems(staticPrefix, showHeader), [staticPrefix, showHeader])
 
 	const dynamicPlan = useMemo(
 		() =>
@@ -119,10 +122,10 @@ export function useChatTimeline({
 				activeVoiceStreamId,
 				layoutRows,
 				terminalColumns,
-				scrollOffset,
+				scrollFromTop,
 				shouldSuppressCardBody,
 			),
-		[dynamicTail, activeVoiceStreamId, layoutRows, terminalColumns, scrollOffset, shouldSuppressCardBody],
+		[dynamicTail, activeVoiceStreamId, layoutRows, terminalColumns, scrollFromTop, shouldSuppressCardBody],
 	)
 
 	return {
@@ -137,14 +140,18 @@ export function useChatTimeline({
 }
 
 export function prepareTranscriptMessages(messages: DiracMessage[]): DiracMessage[] {
-	const transcriptMessages = messages.filter((message) => message.content?.type !== DiracMessageType.API_STATUS)
+	const transcriptMessages = messages.filter(
+		(message) =>
+			message.content.type !== DiracMessageType.API_STATUS &&
+			(message.content.type !== DiracMessageType.CARD ||
+				(message.content.card.rawInput?.isTasklet !== true &&
+					!getTaskletUsage(message.content.card) &&
+					!getSubagentUsage(message.content.card))),
+	)
 	return combineCardSequences(transcriptMessages)
 }
 
-function createStaticTimelineItems(
-	staticMessages: DiracMessage[],
-	showHeader: boolean,
-): TimelineStaticItem[] {
+function createStaticTimelineItems(staticMessages: DiracMessage[], showHeader: boolean): TimelineStaticItem[] {
 	const items: TimelineStaticItem[] = []
 
 	if (showHeader) {
@@ -160,7 +167,7 @@ export function createDynamicTimelineItems(
 	_activeVoiceStreamId: string | undefined,
 	layoutRows: ChatLayoutRows,
 	terminalColumns: number,
-	scrollOffset = 0,
+	scrollFromTop = 0,
 	shouldSuppressCardBody: CardBodySuppressionPolicy,
 ): DynamicTimelinePlan {
 	if (dynamicMessages.length === 0) return { items: [], maxScrollOffset: 0 }
@@ -169,7 +176,7 @@ export function createDynamicTimelineItems(
 	const latestMessage = dynamicMessages[dynamicMessages.length - 1]
 	const latestRows = estimateMessageRows(latestMessage, terminalColumns, shouldSuppressCardBody)
 	if (latestRows >= rowBudget) {
-		return createExclusiveMessagePlan(latestMessage, rowBudget, terminalColumns, scrollOffset, shouldSuppressCardBody)
+		return createExclusiveMessagePlan(latestMessage, rowBudget, terminalColumns, scrollFromTop, shouldSuppressCardBody)
 	}
 
 	let remainingRows = rowBudget
@@ -195,7 +202,7 @@ function createExclusiveMessagePlan(
 	message: DiracMessage,
 	rowBudget: number,
 	terminalColumns: number,
-	scrollOffset: number,
+	scrollFromTop: number,
 	shouldSuppressCardBody: CardBodySuppressionPolicy,
 ): DynamicTimelinePlan {
 	const suppressCardBody = shouldSuppressCardBody(message)
@@ -214,7 +221,8 @@ function createExclusiveMessagePlan(
 			{
 				...createMessageItem(message),
 				maxContentLines: bodyLineBudget,
-				scrollOffset: Math.min(scrollOffset, maxScrollOffset),
+				// The clipping renderer measures from the bottom; the viewport is anchored at the top.
+				scrollOffset: Math.max(0, maxScrollOffset - scrollFromTop),
 			},
 		],
 		scrollMessageId: maxScrollOffset > 0 ? message.id : undefined,
@@ -265,12 +273,12 @@ function createTurnSeparatedMessageItems(
 	const items: Array<TimelineMessageItem | TimelineBoundaryItem> = []
 	let hasRenderedMessage = false
 
-	for (const message of messages) {
+	for (const [index, message] of messages.entries()) {
 		if (hasRenderedMessage && startsNewChatTurn(message)) {
-			items.push({ key: `${keyPrefix}-turn-boundary-${message.id}`, type: "boundary" })
+			items.push({ key: `${keyPrefix}-turn-boundary-${index}-${message.id}`, type: "boundary" })
 		}
 
-		items.push(createMessageItem(message))
+		items.push({ ...createMessageItem(message), key: `${keyPrefix}-${index}-${message.id}` })
 		hasRenderedMessage = true
 	}
 

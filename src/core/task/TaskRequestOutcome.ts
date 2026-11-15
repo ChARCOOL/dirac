@@ -1,5 +1,5 @@
-import { setTimeout as setTimeoutPromise } from "node:timers/promises"
 import type { ApiHandler } from "@core/api"
+import { getApiRequestRetryDelay, MAX_API_REQUEST_RETRIES } from "@core/api/ApiRequestRetryPolicy"
 import type { ApiStream } from "@core/api/transform/stream"
 import { formatResponse } from "@core/formatResponse"
 import type { ICheckpointManager } from "@integrations/checkpoints/types"
@@ -12,12 +12,13 @@ import type { Mode } from "@shared/storage/types"
 import { isMutatingTool } from "@shared/tools"
 import { DiracAskResponse } from "@shared/WebviewMessage"
 import pWaitFor from "p-wait-for"
+import { sleep } from "@/utils/retry"
 import type { MessageStateHandler } from "./message-state"
 import type { StreamingMetricsManager } from "./StreamingMetricsManager"
 import type { TaskMessenger } from "./TaskMessenger"
 import type { TaskState } from "./TaskState"
+import { clearAskResponse } from "./TaskUserInput"
 import { ToolSkippedByUserMessage } from "./tools/types/ToolSkippedByUserMessage"
-import { updateApiReqMsg } from "./utils"
 import type { TaskExecutionProfile } from "./TaskExecutionProfile"
 
 export interface TaskRequestOutcomeContext {
@@ -34,7 +35,7 @@ export interface TaskRequestOutcomeContext {
 	handleContextWindowExceededError: () => Promise<void>
 	reinitExistingTaskFromId: () => Promise<void>
 	attemptApiRequest: (previousApiReqIndex: number, lastApiReqIndex: number, shouldCompact?: boolean) => ApiStream
-	recursivelyMakeDiracRequests: (userContent: DiracContent[], includeFileDetails?: boolean) => Promise<boolean>
+	recursivelyMakeDiracRequests: (userContent: DiracContent[], includeFileDetails?: boolean, onUserContentPersisted?: () => void) => Promise<boolean>
 	handleEmptyAssistantResponse: (params: {
 		modelInfo: DiracMessageModelInfo
 		taskMetrics: {
@@ -74,10 +75,10 @@ export async function handleApiRequestError(
 
 	const streamingFailedMessage = diracError.serialize()
 
+	// Preserve observed usage while waiting for an intervention or a retry decision.
+	await params.metricsManager.updateApiReqMsgFromMetrics("streaming_failed", streamingFailedMessage)
+
 	const lastApiStatus = ctx.messageStateHandler.getLatestApiStatusMessage()
-	const lastApiReqStartedIndex = lastApiStatus
-		? ctx.messageStateHandler.findMessageIndexById(lastApiStatus.id)
-		: -1
 	if (lastApiStatus?.content.type === DiracMessageType.API_STATUS) {
 		await ctx.messageStateHandler.patchApiStatusById(
 			lastApiStatus.id,
@@ -90,23 +91,10 @@ export async function handleApiRequestError(
 	const isPaymentError = diracError.isErrorType(DiracErrorType.Payment)
 
 	let response: DiracAskResponse
-	if (!isAuthError && !isPaymentError && ctx.taskState.apiErrorRetryAttempts < 3) {
+	if (!isAuthError && !isPaymentError && ctx.taskState.apiErrorRetryAttempts < MAX_API_REQUEST_RETRIES) {
 		ctx.taskState.apiErrorRetryAttempts++
-		const delay = 2000 * 2 ** (ctx.taskState.apiErrorRetryAttempts - 1)
+		const delay = getApiRequestRetryDelay(ctx.taskState.apiErrorRetryAttempts)
 
-		await updateApiReqMsg({
-			messageStateHandler: ctx.messageStateHandler,
-			lastApiReqIndex: lastApiReqStartedIndex,
-			inputTokens: 0,
-			reasoningTokens: 0,
-			outputTokens: 0,
-			cacheWriteTokens: 0,
-			cacheReadTokens: 0,
-			totalCost: undefined,
-			api: ctx.api,
-			cancelReason: "streaming_failed",
-			streamingFailedMessage,
-		})
 		await ctx.messageStateHandler.saveDiracMessagesAndUpdateHistory()
 		await ctx.postStateToWebview()
 
@@ -114,7 +102,7 @@ export async function handleApiRequestError(
 		const autoRetryCard = await ctx.taskMessenger.createCard({
 			status: CardStatus.PENDING,
 			header: "API Error (Retrying)",
-			body: `API Error (attempt ${ctx.taskState.apiErrorRetryAttempts}/3). Retrying in ${delay / 1000}s...`,
+			body: `API Error (retry ${ctx.taskState.apiErrorRetryAttempts}/${MAX_API_REQUEST_RETRIES}). Retrying in ${delay / 1000}s...`,
 		})
 
 		const autoRetryApiStatus = ctx.messageStateHandler.getLatestApiStatusMessage()
@@ -124,25 +112,25 @@ export async function handleApiRequestError(
 
 		const deadline = Date.now() + delay
 		while (Date.now() < deadline && !ctx.taskState.abort) {
-			await setTimeoutPromise(Math.min(200, deadline - Date.now()))
+			await sleep(Math.min(200, deadline - Date.now()))
 		}
 		// If the user aborted during the retry delay, stop retrying
 		if (ctx.taskState.abort) {
 			await autoRetryCard.update({
 				header: "API Error (Cancelled)",
-				body: `API Error (attempt ${ctx.taskState.apiErrorRetryAttempts}/3). Cancelled.`,
+				body: `API Error (retry ${ctx.taskState.apiErrorRetryAttempts}/${MAX_API_REQUEST_RETRIES}). Cancelled.`,
 			})
 			await autoRetryCard.finalize(CardStatus.CANCELLED)
 			throw new Error("Task instance aborted")
 		}
-		await autoRetryCard.update({ body: `API Error (attempt ${ctx.taskState.apiErrorRetryAttempts}/3). Retrying...` })
+		await autoRetryCard.update({ body: `API Error (retry ${ctx.taskState.apiErrorRetryAttempts}/${MAX_API_REQUEST_RETRIES}). Retrying...` })
 		await autoRetryCard.finalize(CardStatus.ERROR)
 	} else {
 		if (!isAuthError && !isPaymentError) {
 			await ctx.taskMessenger.createCard({
 				status: CardStatus.ERROR,
 				header: "API Error (Retries Exhausted)",
-				body: `The API request failed after 3 attempts. ${diracError.toDisplayMessage()}`,
+				body: `The API request failed after ${MAX_API_REQUEST_RETRIES} retries. ${diracError.toDisplayMessage()}`,
 			})
 		}
 		if (isPaymentError) {
@@ -203,6 +191,8 @@ export async function handleApiRequestError(
 		await ctx.messageStateHandler.patchApiStatusById(manualRetryApiStatus.id, {}, ["streamingFailedMessage"])
 	}
 
+	await params.metricsManager.archiveForRetry()
+
 	await ctx.taskMessenger.upsertText("Retrying API request...")
 
 	return true
@@ -221,10 +211,7 @@ export async function processStreamResult(
 	},
 ): Promise<boolean> {
 	if (params.assistantHasContent) {
-		ctx.taskState.askResponse = undefined
-		ctx.taskState.askResponseText = undefined
-		ctx.taskState.askResponseImages = undefined
-		ctx.taskState.askResponseFiles = undefined
+		clearAskResponse(ctx.taskState)
 		ctx.taskState.status = TaskStatus.AWAITING_USER_INPUT
 
 		await pWaitFor(() => ctx.taskState.userMessageContentReady)
@@ -263,25 +250,29 @@ export async function processStreamResult(
 			(ctx.taskState.pendingUserImages?.length ?? 0) > 0 ||
 			(ctx.taskState.pendingUserFiles?.length ?? 0) > 0
 		) {
-			if (ctx.taskState.pendingUserMessage) {
+			// Detach this batch before attachment I/O; later chat belongs to the next turn.
+			const text = ctx.taskState.pendingUserMessage
+			const images = ctx.taskState.pendingUserImages
+			const files = ctx.taskState.pendingUserFiles
+			ctx.taskState.pendingUserMessage = undefined
+			ctx.taskState.pendingUserImages = undefined
+			ctx.taskState.pendingUserFiles = undefined
+			if (text) {
 				ctx.taskState.userMessageContent.push({
 					type: "text",
-					text: `<feedback>\n${ctx.taskState.pendingUserMessage}\n</feedback>`,
+					text: `<feedback>\n${text}\n</feedback>`,
 					isUserInput: true,
 				} as DiracTextContentBlock)
 			}
-			if (ctx.taskState.pendingUserImages?.length) {
-				ctx.taskState.userMessageContent.push(...formatResponse.imageBlocks(ctx.taskState.pendingUserImages))
+			if (images?.length) {
+				ctx.taskState.userMessageContent.push(...formatResponse.imageBlocks(images))
 			}
-			if (ctx.taskState.pendingUserFiles?.length) {
-				const fileContent = await processFilesIntoText(ctx.taskState.pendingUserFiles)
+			if (files?.length) {
+				const fileContent = await processFilesIntoText(files)
 				if (fileContent) {
 					ctx.taskState.userMessageContent.push({ type: "text", text: fileContent } as DiracTextContentBlock)
 				}
 			}
-			ctx.taskState.pendingUserMessage = undefined
-			ctx.taskState.pendingUserImages = undefined
-			ctx.taskState.pendingUserFiles = undefined
 		}
 
 		return await ctx.recursivelyMakeDiracRequests(ctx.taskState.userMessageContent)

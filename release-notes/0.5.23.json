@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "version": "0.5.23",
+  "kind": "patch",
+  "announce": true,
+  "sourceTag": "v0.5.22",
+  "analyzedCommit": "b47e6024042058152716d94270614f39ba3de02b",
+  "headline": "Updates and improvements",
+  "highlights": [
+    {
+      "id": "feat-32e458e6",
+      "title": "versioned architecture boards with interactive diagrams and review feedback",
+      "category": "feat",
+      "evidence": [
+        "32e458e6916a4b3a89292c3d7adf0ee532d04cc7"
+      ]
+    },
+    {
+      "id": "fix-ce434189",
+      "title": "preserve input during terminal-to-API transitions",
+      "category": "fix",
+      "evidence": [
+        "ce4341890fb69c0c2edeec53db0fbfa2395d95f8"
+      ]
+    },
+    {
+      "id": "fix-19c81dfb",
+      "title": "preserve complete execution details in tool results",
+      "category": "fix",
+      "evidence": [
+        "19c81dfbbf6c0fb7f5cca8b98d640cd9ad21fb6f"
+      ]
+    },
+    {
+      "id": "fix-449afabb",
+      "title": "use one subagent setting",
+      "category": "fix",
+      "evidence": [
+        "449afabb879bada9f7d8ae5b8b59908dc01fdd96"
+      ]
+    },
+    {
+      "id": "fix-5b2f0405",
+      "title": "accept VERIFICATION: SUCCESS with trailing explanation in verifier subagent",
+      "category": "fix",
+      "evidence": [
+        "5b2f040564607ffb9973dcfa7a74229b6deec428"
+      ]
+    }
+  ]
+}

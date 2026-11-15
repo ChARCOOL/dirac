@@ -1,5 +1,6 @@
 import { DiracApiReqInfo, DiracMessage } from "./ExtensionMessage"
 import { getSubagentUsage } from "./subagentUsage"
+import { getTaskletUsage, taskletUsageAvailability, type TaskletUsageAvailability } from "./taskletUsage"
 
 export interface ApiMetrics {
 	totalTokensIn: number
@@ -12,6 +13,52 @@ export interface ApiMetrics {
 	cacheHitRate: number
 }
 
+/** Availability is separate from numeric incurred counters, whose unknown fields retain placeholder zeroes. */
+export function getApiUsageKnowledge(messages: DiracMessage[]): { usageObserved: boolean; usageAvailability: TaskletUsageAvailability } {
+	const fields = {
+		inputTokens: "tokensIn", outputTokens: "tokensOut", reasoningTokens: "reasoningTokens",
+		cacheWrites: "cacheWrites", cacheReads: "cacheReads", cost: "cost",
+	} as const
+	const sources: TaskletUsageAvailability[] = []
+	for (const message of messages) {
+		if (message.content.type === "api_status") {
+			const status = message.content.status
+			const currentObserved = status.usageAvailability?.inputTokens || status.usageAvailability?.outputTokens ||
+				Object.values(fields).some((key) => (status[key] ?? 0) > 0 || (!status.usageAvailability && status[key] !== undefined))
+			const archivedObserved = status.deletedUsageAvailability?.inputTokens || status.deletedUsageAvailability?.outputTokens ||
+				Object.values(fields).some((key) => (status.deletedMetrics?.[key] ?? 0) > 0 ||
+					(!status.deletedUsageAvailability && status.deletedMetrics?.[key] !== undefined))
+			for (const archived of [false, true]) {
+				if (!(archived ? archivedObserved : currentObserved)) continue
+				const availability = {} as TaskletUsageAvailability
+				for (const field of Object.keys(fields) as Array<keyof typeof fields>) {
+					availability[field] = archived
+						? (status.deletedUsageAvailability?.[field] ??
+							((field === "inputTokens" || field === "outputTokens") && status.deletedMetrics?.[fields[field]] !== undefined))
+						: (status.usageAvailability?.[field] ?? status[fields[field]] !== undefined)
+				}
+				sources.push(availability)
+			}
+		} else if (message.content.type === "card") {
+			const usage = getTaskletUsage(message.content.card)
+			if (usage && usage.usageObserved !== false) sources.push(taskletUsageAvailability(usage))
+			const legacy = getSubagentUsage(message.content.card)
+			if (legacy) sources.push({ inputTokens: true, outputTokens: true, reasoningTokens: false, cacheWrites: false, cacheReads: false, cost: false })
+		}
+	}
+	return {
+		usageObserved: sources.length > 0,
+		usageAvailability: {
+			inputTokens: sources.every((source) => source.inputTokens),
+			outputTokens: sources.every((source) => source.outputTokens),
+			reasoningTokens: sources.every((source) => source.reasoningTokens),
+			cacheWrites: sources.every((source) => source.cacheWrites),
+			cacheReads: sources.every((source) => source.cacheReads),
+			cost: sources.every((source) => source.cost),
+		},
+	}
+}
+
 /**
  * Calculates API metrics from an array of DiracMessages.
  *
@@ -20,6 +67,7 @@ export interface ApiMetrics {
  * - 'api_req_started' messages that have been combined with their corresponding 'api_req_finished' messages
  * - 'deleted_api_reqs' messages, which are aggregated from deleted messages
  * - 'subagent_usage' messages, which are aggregated usage snapshots emitted by subagent batches
+ * - structured tasklet accounting cards, one replaceable cumulative contribution per child
  * It extracts and sums up the tokensIn, tokensOut, cacheWrites, cacheReads, and cost from these messages.
  *
  * @param messages - An array of DiracMessage objects to process.
@@ -74,15 +122,19 @@ export function getApiMetrics(messages: DiracMessage[]): ApiMetrics {
 					result.totalCacheWrites = (result.totalCacheWrites ?? 0) + deletedMetrics.cacheWrites
 				if (typeof deletedMetrics.cacheReads === "number")
 					result.totalCacheReads = (result.totalCacheReads ?? 0) + deletedMetrics.cacheReads
+				if (typeof deletedMetrics.cost === "number") result.totalCost += deletedMetrics.cost
+				if (typeof deletedMetrics.reasoningTokens === "number") result.totalReasoningTokens += deletedMetrics.reasoningTokens
 			}
 		} else if (message.content.type === "card") {
-			const usage = getSubagentUsage(message.content.card)
+			const taskletUsage = getTaskletUsage(message.content.card)
+			const usage = taskletUsage ?? getSubagentUsage(message.content.card)
 			if (!usage) return
 			result.totalTokensIn += usage.tokensIn
 			result.totalTokensOut += usage.tokensOut
-			result.totalCacheWrites = (result.totalCacheWrites ?? 0) + usage.cacheWrites
-			result.totalCacheReads = (result.totalCacheReads ?? 0) + usage.cacheReads
+			if (usage.cacheWrites !== undefined) result.totalCacheWrites = (result.totalCacheWrites ?? 0) + usage.cacheWrites
+			if (usage.cacheReads !== undefined) result.totalCacheReads = (result.totalCacheReads ?? 0) + usage.cacheReads
 			result.totalCost += usage.cost
+			result.totalReasoningTokens += taskletUsage?.reasoningTokens ?? 0
 		}
 	})
 

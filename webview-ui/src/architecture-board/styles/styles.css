@@ -1,0 +1,220 @@
+/* Shared plumbing, measurement and accessibility; each directory owns its visual choices. */
+
+
+.architecture-board[data-board-style][data-board-style] {
+	--board-bg: var(--style-bg);
+	--board-surface: var(--style-fill);
+	--board-fg: var(--style-text);
+	--board-muted: var(--style-muted);
+	--board-border: var(--style-group-stroke);
+	--board-accent: var(--style-accent);
+	--board-action: var(--board-fg);
+	--board-action-fg: var(--board-bg);
+	--board-action-hover: color-mix(in srgb, var(--board-fg) 85%, var(--board-bg));
+	--board-grid: var(--style-grid);
+	--board-blue: var(--style-blue);
+	--board-teal: var(--style-teal);
+	--board-amber: var(--style-amber);
+	--board-violet: var(--style-violet);
+	--board-edge-api_call: var(--style-blue);
+	--board-edge-data_flow: var(--style-teal);
+	--board-edge-dependency: var(--style-amber);
+	--board-edge-aggregation: var(--style-violet);
+	--board-edge-transition: var(--style-rose);
+	--board-edge-message: var(--style-message);
+}
+
+.architecture-board[data-board-style][data-board-style] .board-node {
+	--node-face: var(--style-node-fill, var(--style-fill));
+	--node-outline: var(--style-stroke);
+	--node-accent: var(--style-accent);
+}
+
+.architecture-board[data-board-style][data-board-style] .kind-group.board-node {
+	--node-face: color-mix(in srgb, var(--style-group-fill) 60%, transparent);
+	--node-outline: var(--style-group-stroke);
+}
+
+.architecture-board[data-board-style][data-board-style] .kind-group.board-node[data-nested="true"] {
+	--node-face: color-mix(in srgb, var(--style-group-fill) 48%, transparent);
+}
+
+/* Shared fixed leaf bounds keep palette/font changes independent of layout. */
+.architecture-board .node-measure {
+	position: absolute;
+	visibility: hidden;
+	pointer-events: none;
+}
+
+.architecture-board .node-content {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	padding: inherit;
+	pointer-events: none;
+	min-width: 0;
+}
+
+.architecture-board .board-node:has(> .proposal)>.node-content {
+	bottom: 27px;
+}
+
+.architecture-board .node-content .node-title {
+	font-family: var(--style-font, system-ui, sans-serif);
+	font-size: 16px;
+	line-height: 1.3;
+	text-align: center;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	overflow: hidden;
+}
+
+.architecture-board .kind-function .node-content .node-title {
+	-webkit-line-clamp: 2;
+}
+
+.architecture-board .kind-class .node-content {
+	justify-content: center;
+	padding: 58px 24px 24px;
+}
+
+.architecture-board .kind-class .node-content .node-title {
+	text-align: center;
+	white-space: normal;
+}
+
+.architecture-board .class-header-glyph {
+	position: absolute;
+	top: 23px;
+	left: 0;
+	right: 0;
+	text-align: center;
+	color: var(--node-accent);
+	font:
+		12px/16px ui-monospace,
+		monospace;
+}
+
+/* Interaction shapes keep labels inside their silhouette in every theme. */
+.architecture-board[data-board-style] .board-node.kind-state .node-content {
+	padding: 16px 24px;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+}
+
+.architecture-board[data-board-style] .board-node.kind-actor .node-content {
+	inset: 26px;
+	padding: 0;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+}
+
+.architecture-board[data-board-style] :is(.kind-state, .kind-actor) .node-content .node-title {
+	-webkit-line-clamp: 3;
+}
+
+.architecture-board[data-board-style] :is(.kind-state, .kind-actor) :is(.earth-kind, .linen-kind) {
+	justify-content: center;
+}
+
+.architecture-board .interaction-kind {
+	color: var(--node-accent);
+	font: 600 9px/14px system-ui, sans-serif;
+	letter-spacing: 1.1px;
+	text-transform: uppercase;
+}
+
+.architecture-board .kind-group .node-content {
+	justify-content: flex-start;
+	align-items: flex-start;
+	padding: 0 24px;
+}
+
+.architecture-board .kind-group .node-content .node-title {
+	font-size: 14px;
+	line-height: 24px;
+	margin-top: -12px;
+	text-align: left;
+	display: block;
+	color: var(--board-fg);
+}
+
+.architecture-board[data-board-style][data-board-style] .legend-silhouette {
+	--node-face: var(--style-node-fill, var(--style-fill));
+	--node-outline: var(--style-stroke);
+	--node-accent: var(--style-accent);
+}
+
+.architecture-board[data-board-style][data-board-style] :is(input, textarea) {
+	color: var(--board-fg);
+	background: var(--board-surface);
+	border-color: var(--board-border);
+}
+
+/* High contrast is a capability override, not another palette. Never rely on color alone. */
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .architecture-board[data-board-style] {
+	--board-bg: var(--vscode-editor-background, #000);
+	--board-surface: var(--vscode-editor-background, #000);
+	--board-fg: var(--vscode-editor-foreground, #fff);
+	--board-muted: var(--board-fg);
+	--board-border: var(--board-fg);
+	--board-accent: var(--vscode-focusBorder, #ffff00);
+	--board-edge-api_call: var(--board-fg);
+	--board-edge-data_flow: var(--board-fg);
+	--board-edge-dependency: var(--board-fg);
+	--board-edge-aggregation: var(--board-fg);
+	--board-edge-transition: var(--board-fg);
+	--board-edge-message: var(--board-fg);
+	--board-edge-idle-opacity: 1;
+	--style-bg: var(--board-bg);
+	--style-fill: var(--board-bg);
+	--style-text: var(--board-fg);
+	--style-muted: var(--board-fg);
+	--style-stroke: var(--board-fg);
+	--style-accent: var(--board-accent);
+	--style-group-fill: var(--board-bg);
+	--style-group-stroke: var(--board-fg);
+	--style-grid: transparent;
+	--style-node-shadow: none;
+	--style-selected-shadow: none;
+	--object-selected-ink: var(--board-accent);
+	--board-action: var(--board-fg);
+	--board-action-fg: var(--board-bg);
+	--board-action-hover: var(--board-fg);
+	--board-danger: var(--board-fg);
+	--board-success: var(--board-fg);
+	--board-warning: var(--board-fg);
+}
+
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .architecture-board[data-board-style] :is(.board-node, .legend-silhouette) {
+	--node-face: var(--board-bg);
+	--node-outline: var(--board-fg);
+	--node-accent: var(--board-fg);
+	--node-surface-fill: var(--board-bg);
+	--node-surface-top: var(--board-bg);
+	--node-surface-bottom: var(--board-bg);
+	--object-text: var(--board-fg);
+	--object-label: var(--board-fg);
+	--object-ink: var(--board-fg);
+	--group-ink: var(--board-fg);
+}
+
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .architecture-board[data-board-style] .node-silhouette {
+	filter: none;
+}
+
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .architecture-board[data-board-style] .kind-group.board-node {
+	--node-face: transparent;
+	--node-surface-fill: transparent;
+	--group-fill: transparent;
+}
+
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) .architecture-board[data-board-style] .kind-group .node-title {
+	color: var(--board-fg);
+	background: var(--board-bg);
+}

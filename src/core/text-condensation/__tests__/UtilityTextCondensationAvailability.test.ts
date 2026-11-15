@@ -4,7 +4,6 @@ import { isUtilityTextCondensationAvailable } from "../UtilityTextCondensationAv
 import {
 	CONVERSATION_CONTINUATION_TEMPLATE_ID,
 	createDefaultTextCondensationTemplateRegistry,
-	TASK_HANDOFF_TEMPLATE_ID,
 } from "../templates"
 
 describe("Utility text condensation availability", () => {
@@ -14,35 +13,29 @@ describe("Utility text condensation availability", () => {
 	it("uses the condensation checkbox only for conversation condensation", () => {
 		const settings = {
 			utilityModelUseCondense: false,
-			utilityModelUseNewTask: true,
 			utilityModelSelection: utilitySelection,
 		}
 
 		assert.equal(isUtilityTextCondensationAvailable(settings, CONVERSATION_CONTINUATION_TEMPLATE_ID, templates), false)
-		assert.equal(isUtilityTextCondensationAvailable(settings, TASK_HANDOFF_TEMPLATE_ID, templates), true)
 	})
 
-	it("uses the new-task checkbox only for task handoffs", () => {
+	it("enables conversation condensation independently", () => {
 		const settings = {
 			utilityModelUseCondense: true,
-			utilityModelUseNewTask: false,
 			utilityModelSelection: utilitySelection,
 		}
 
 		assert.equal(isUtilityTextCondensationAvailable(settings, CONVERSATION_CONTINUATION_TEMPLATE_ID, templates), true)
-		assert.equal(isUtilityTextCondensationAvailable(settings, TASK_HANDOFF_TEMPLATE_ID, templates), false)
 	})
 
 	it("prefers explicit use-case settings over the legacy switch", () => {
 		const settings = {
 			utilityModelEnabled: true,
 			utilityModelUseCondense: false,
-			utilityModelUseNewTask: true,
 			utilityModelSelection: utilitySelection,
 		}
 
 		assert.equal(isUtilityTextCondensationAvailable(settings, CONVERSATION_CONTINUATION_TEMPLATE_ID, templates), false)
-		assert.equal(isUtilityTextCondensationAvailable(settings, TASK_HANDOFF_TEMPLATE_ID, templates), true)
 	})
 
 	it("uses the legacy switch only when independent use-case settings are absent", () => {
@@ -59,7 +52,6 @@ describe("Utility text condensation availability", () => {
 			isUtilityTextCondensationAvailable(enabledLegacySettings, CONVERSATION_CONTINUATION_TEMPLATE_ID, templates),
 			true,
 		)
-		assert.equal(isUtilityTextCondensationAvailable(enabledLegacySettings, TASK_HANDOFF_TEMPLATE_ID, templates), true)
 		assert.equal(
 			isUtilityTextCondensationAvailable(disabledLegacySettings, CONVERSATION_CONTINUATION_TEMPLATE_ID, templates),
 			false,

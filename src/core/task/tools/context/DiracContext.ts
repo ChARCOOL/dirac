@@ -1,11 +1,12 @@
 import * as fs from "node:fs/promises"
-import * as os from "node:os"
 import * as path from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import { AnchorStateManager, PersistedAnchorDocument, PersistedAnchorState } from "@utils/AnchorStateManager"
+import { getTaskScopedStateKey } from "@shared/taskletId"
 import Mutex from "p-mutex"
 import { z } from "zod"
+import { diracHomeDir } from "@/shared/config/environment"
 import { safeParseJson } from "@/shared/safe-json-parse"
-import { StateManager } from "../../../storage/StateManager"
 import { GlobalFileNames } from "../../../storage/fileNames"
 import {
 	appendOperationRecords,
@@ -14,7 +15,8 @@ import {
 	replayOperationRecords,
 	writeFramedBaseline,
 } from "../../../storage/operationLog"
-import { AnchorStateManager, PersistedAnchorDocument, PersistedAnchorState } from "@utils/AnchorStateManager"
+import { StateManager } from "../../../storage/StateManager"
+import { getTaskDirectoryPath, type TaskStorageAddress } from "../../../storage/taskDirectory"
 import { IDiracContext } from "../interfaces/IDiracContext"
 
 const ANCHOR_STATE_KEY = "anchorState"
@@ -41,6 +43,7 @@ export class DiracContext implements IDiracContext {
 	private taskPath: string
 	private baselinePath: string
 	private operationPath: string
+	private readonly anchorStateKey: string
 	private loaded = false
 	private anchorStateLoaded = false
 	private operationOffset = -1
@@ -51,12 +54,17 @@ export class DiracContext implements IDiracContext {
 	private stateMutex = new Mutex()
 
 	constructor(
-		private taskId: string,
+		address: string | TaskStorageAddress,
 		private stateManager: StateManager,
-		private conversationUlid: string,
+		conversationUlid: string,
 	) {
-		const diracHome = process.env.DIRAC_DIR || path.join(os.homedir(), ".dirac")
-		const taskDirectory = path.join(diracHome, "data", "tasks", taskId)
+		const addressedDirectory = getTaskDirectoryPath(address)
+		this.anchorStateKey = getTaskScopedStateKey(conversationUlid, address)
+		// Root contexts retain their historical base until a separate storage migration is approved.
+		const taskDirectory =
+			typeof address !== "string" && address.kind === "tasklet"
+				? addressedDirectory
+				: path.join(diracHomeDir(), "data", "tasks", typeof address === "string" ? address : address.taskId)
 		this.taskPath = path.join(taskDirectory, GlobalFileNames.toolContext)
 		this.baselinePath = path.join(taskDirectory, GlobalFileNames.toolContextBaseline)
 		this.operationPath = path.join(taskDirectory, GlobalFileNames.toolContextOperations)
@@ -106,8 +114,7 @@ export class DiracContext implements IDiracContext {
 			version: 1,
 			documents: [],
 		}
-		const absolutePath =
-			operation.type === "set_anchor_document" ? operation.document.absolutePath : operation.absolutePath
+		const absolutePath = operation.type === "set_anchor_document" ? operation.document.absolutePath : operation.absolutePath
 		const documentIndex = anchorState.documents.findIndex((document) => document.absolutePath === absolutePath)
 		if (documentIndex !== -1) anchorState.documents.splice(documentIndex, 1)
 		if (operation.type === "set_anchor_document") {
@@ -120,7 +127,7 @@ export class DiracContext implements IDiracContext {
 	private ensureAnchorStateLoaded(): void {
 		if (this.anchorStateLoaded) return
 		const persistedAnchorState = this.taskData[ANCHOR_STATE_KEY] as PersistedAnchorState | undefined
-		AnchorStateManager.hydrate(this.conversationUlid, persistedAnchorState)
+		AnchorStateManager.hydrate(this.anchorStateKey, persistedAnchorState)
 		this.anchorStateLoaded = true
 	}
 
@@ -142,7 +149,7 @@ export class DiracContext implements IDiracContext {
 
 	private snapshotTaskData(): Record<string, unknown> {
 		const snapshot = structuredClone(this.taskData) as Record<string, unknown>
-		if (this.anchorStateLoaded) snapshot[ANCHOR_STATE_KEY] = AnchorStateManager.exportState(this.conversationUlid)
+		if (this.anchorStateLoaded) snapshot[ANCHOR_STATE_KEY] = AnchorStateManager.exportState(this.anchorStateKey)
 		return snapshot
 	}
 
@@ -151,7 +158,7 @@ export class DiracContext implements IDiracContext {
 			this.queueOperation({
 				type: "set",
 				key: ANCHOR_STATE_KEY,
-				value: AnchorStateManager.exportState(this.conversationUlid),
+				value: AnchorStateManager.exportState(this.anchorStateKey),
 			})
 			this.completeAnchorStateDirty = false
 			this.dirtyAnchorPaths.clear()
@@ -159,7 +166,7 @@ export class DiracContext implements IDiracContext {
 		}
 
 		for (const absolutePath of this.dirtyAnchorPaths) {
-			const document = AnchorStateManager.exportDocument(absolutePath, this.conversationUlid)
+			const document = AnchorStateManager.exportDocument(absolutePath, this.anchorStateKey)
 			if (document) this.queueOperation({ type: "set_anchor_document", document })
 			else this.queueOperation({ type: "delete_anchor_document", absolutePath })
 		}
@@ -276,8 +283,8 @@ export class DiracContext implements IDiracContext {
 			if (key === ANCHOR_STATE_KEY) {
 				wroteAnchorState = true
 				const anchorState = this.anchorStateLoaded
-					? AnchorStateManager.exportState(this.conversationUlid)
-					: value as PersistedAnchorState
+					? AnchorStateManager.exportState(this.anchorStateKey)
+					: (value as PersistedAnchorState)
 				yield { type: "anchor", version: anchorState.version }
 				for (const document of anchorState.documents) yield { type: "anchor_document", document }
 				continue
@@ -291,7 +298,7 @@ export class DiracContext implements IDiracContext {
 			yield { type: "value", key, value }
 		}
 		if (this.anchorStateLoaded && !wroteAnchorState) {
-			const anchorState = AnchorStateManager.exportState(this.conversationUlid)
+			const anchorState = AnchorStateManager.exportState(this.anchorStateKey)
 			yield { type: "anchor", version: anchorState.version }
 			for (const document of anchorState.documents) yield { type: "anchor_document", document }
 		}
@@ -373,7 +380,7 @@ export class DiracContext implements IDiracContext {
 		await this.withStateLock(async () => {
 			await this.loadTaskData()
 			this.ensureAnchorStateLoaded()
-			this.taskData = { [ANCHOR_STATE_KEY]: AnchorStateManager.exportState(this.conversationUlid) }
+			this.taskData = { [ANCHOR_STATE_KEY]: AnchorStateManager.exportState(this.anchorStateKey) }
 			this.completeAnchorStateDirty = false
 			this.dirtyAnchorPaths.clear()
 			this.queueOperation({ type: "reset", values: this.taskData })

@@ -1,0 +1,26 @@
+{
+	"title": "Architecture and interaction visual vocabulary",
+	"summary": "Illustrative, not an implementation diagram. Nine node kinds and six relationship kinds together: silhouette and color identify nodes; line pattern, arrowhead and color distinguish relationships. Node and edge colors are independent vocabularies. States describe conditions, not live execution status.",
+	"nodes": [
+		{ "id": "system", "kind": "group", "label": "Task execution subsystem" },
+		{ "id": "module", "kind": "component", "label": "Task orchestration", "parentId": "system" },
+		{ "id": "class", "kind": "class", "label": "TaskRunner", "parentId": "system" },
+		{ "id": "function", "kind": "function", "label": "joinResults", "parentId": "system" },
+		{ "id": "interface", "kind": "api_endpoint", "label": "Submit task", "parentId": "system" },
+		{ "id": "service", "kind": "service", "label": "Execution service", "parentId": "system" },
+		{ "id": "storage", "kind": "database", "label": "Task records", "parentId": "system" },
+		{ "id": "human", "kind": "actor", "label": "Human", "description": "Participant who initiates a request, not a state or a container." },
+		{ "id": "harness", "kind": "actor", "label": "Dirac harness", "description": "Software participant. Actor geometry does not imply a human subtype." },
+		{ "id": "pending", "kind": "state", "label": "Feedback pending", "description": "Saved comments have not been submitted to the conversation." },
+		{ "id": "submitted", "kind": "state", "label": "Feedback submitted", "description": "Feedback is durably accepted, not necessarily consumed or addressed." }
+	],
+	"edges": [
+		{ "id": "invoke", "source": "module", "target": "interface", "kind": "api_call", "label": "submit task" },
+		{ "id": "request", "source": "interface", "target": "service", "kind": "api_call", "label": "dispatch request" },
+		{ "id": "owns-runner", "source": "service", "target": "class", "kind": "aggregation", "label": "owns runner for this task" },
+		{ "id": "uses-join", "source": "class", "target": "function", "kind": "dependency", "label": "uses result joiner" },
+		{ "id": "store", "source": "function", "target": "storage", "kind": "data_flow", "label": "completed results" },
+		{ "id": "send-feedback", "source": "human", "target": "harness", "kind": "message", "label": "feedback comments", "description": "Communication between participants does not assert synchronous invocation or consumption." },
+		{ "id": "accept-feedback", "source": "pending", "target": "submitted", "kind": "transition", "label": "Send Feedback [owner available]", "description": "Human initiates submission; the harness persists feedback before acknowledging acceptance." }
+	]
+}

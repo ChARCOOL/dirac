@@ -39,16 +39,13 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 			const content = this.preprocessContent(rawContent, env, relPath)
 
 			// 3. Create card
-			if (!env.config.isSubagentExecution) {
-				const lineCount = content.split("\n").length
-				card = await env.ui.createCard({
-					header: `Writing ${displayPath}`,
-					icon: DiracIcon.FILE_WRITE,
-					status: CardStatus.RUNNING,
-					collapsed: true,
-					diffs: [{ path: displayPath, oldText: originalContent, newText: content }],
-				})
-			}
+			card = await env.ui.createCard({
+				header: `Writing ${displayPath}`,
+				icon: DiracIcon.FILE_WRITE,
+				status: CardStatus.RUNNING,
+				collapsed: true,
+				diffs: [{ path: displayPath, oldText: originalContent, newText: content }],
+			})
 
 			// 4. Handle approval and save
 			const utilityPermissionHandlingEnabled = env.config.permissionDecisionBinding !== undefined
@@ -92,41 +89,35 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 		const toolId = this.spec().id
 
 		if (!relPath) {
-			env.orchestration.setTaskState("consecutiveMistakeCount", env.config.taskState.consecutiveMistakeCount + 1)
-			if (!env.config.isSubagentExecution) {
-				await env.ui.upsertText("Missing value for required parameter 'path'.")
-			}
+			env.orchestration.setTaskState("consecutiveMistakeCount", env.orchestration.getTaskState("consecutiveMistakeCount") + 1)
+			await env.ui.upsertText("Missing value for required parameter 'path'.")
 			return { error: formatResponse.missingToolParameterError("path") }
 		}
 
 		if (!rawContent) {
-			env.orchestration.setTaskState("consecutiveMistakeCount", env.config.taskState.consecutiveMistakeCount + 1)
+			env.orchestration.setTaskState("consecutiveMistakeCount", env.orchestration.getTaskState("consecutiveMistakeCount") + 1)
 			if (toolId === DiracDefaultTool.FILE_NEW) {
 				return {
-					error: formatResponse.writeToFileMissingContentError(relPath, env.config.taskState.consecutiveMistakeCount),
+					error: formatResponse.writeToFileMissingContentError(relPath, env.orchestration.getTaskState("consecutiveMistakeCount")),
 				}
 			}
-			if (!env.config.isSubagentExecution) {
-				await env.ui.upsertText("Missing value for required parameter 'content'.")
-			}
+			await env.ui.upsertText("Missing value for required parameter 'content'.")
 			return { error: formatResponse.missingToolParameterError("content") }
 		}
 
 		const { absolutePath, displayPath } = await env.workspace.resolvePath(relPath)
 
 		if (!env.config.services.diracIgnoreController.validateAccess(relPath)) {
-			env.orchestration.setTaskState("consecutiveMistakeCount", env.config.taskState.consecutiveMistakeCount + 1)
+			env.orchestration.setTaskState("consecutiveMistakeCount", env.orchestration.getTaskState("consecutiveMistakeCount") + 1)
 			await env.ui.upsertText(`Access to '${relPath}' is blocked by .diracignore`)
 			return { error: formatResponse.toolError(formatResponse.diracIgnoreError(relPath)) }
 		}
 
 		const fileInfo = await env.workspace.getFileInfo(absolutePath)
 		if (fileInfo.exists && !fileInfo.isFile) {
-			env.orchestration.setTaskState("consecutiveMistakeCount", env.config.taskState.consecutiveMistakeCount + 1)
+			env.orchestration.setTaskState("consecutiveMistakeCount", env.orchestration.getTaskState("consecutiveMistakeCount") + 1)
 			const errorMsg = `Cannot write to '${relPath}' because it is a directory.`
-			if (!env.config.isSubagentExecution) {
-				await env.ui.upsertText(`Dirac tried to write to '${relPath}', but it is a directory.`)
-			}
+			await env.ui.upsertText(`Dirac tried to write to '${relPath}', but it is a directory.`)
 			return { error: formatResponse.toolError(errorMsg) }
 		}
 
@@ -167,6 +158,7 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 		const toolId = this.spec().id
 		const { modelId, providerId } = getModelInfo(env.config)
 		let reviewShown = false
+		let reviewRequested = false
 		let approvedContent = content
 
 		try {
@@ -174,12 +166,16 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 				await card.update({ status: CardStatus.RUNNING })
 			}
 
-			if (permissionDisposition !== "auto_approve") {
+			if (permissionDisposition === "auto_approve" && card) {
+				await card.update({ body: `${fileExists ? "Updating" : "Creating"} file...` })
+			}
+			while (permissionDisposition !== "auto_approve") {
 				const permissionCard = await env.ui.createCard({
 					header: "Permission Request",
 					body: `Dirac wants to ${fileExists ? "edit" : "create"} ${displayPath}`,
 					status: CardStatus.WAITING_FOR_INPUT,
 					requireApproval: true,
+					permissionOperation: { kind: "paths", paths: [displayPath] },
 					permissionRequestKind:
 						utilityPermissionHandlingEnabled && permissionDisposition === "manual_only" ? "manual_tool" : "tool",
 					collapsed: false,
@@ -188,14 +184,30 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 					rawInput: { path: displayPath, content },
 				})
 
-				// Resolve automatic approval before opening the manual review.
-				if (permissionCard.requiresUserInteraction !== false) {
+				// Approval remains required in background mode; editor focus requires an explicit request.
+				if (permissionCard.requiresUserInteraction !== false && env.config.backgroundEditEnabled && !reviewRequested) {
+					await permissionCard.update({
+						actions: [
+							{ label: "Approve", value: DiracAskResponse.APPROVE, primary: true },
+							{ label: "Reject", value: DiracAskResponse.REJECT, style: "danger" },
+							{ label: "View diff", value: DiracAskResponse.VIEW, style: "secondary" },
+						]
+					})
+				}
+				if (permissionCard.requiresUserInteraction !== false && (!env.config.backgroundEditEnabled || reviewRequested)) {
 					reviewShown = true
-					await env.editor.showReview([{ absolutePath, displayPath, content, originalContent }])
+					await env.editor.showReview([{ absolutePath, displayPath, content, originalContent }], permissionCard)
 					await env.editor.scrollToFirstDiff()
 				}
 
 				const result = await permissionCard.waitForInteraction()
+				if (result.action === DiracAskResponse.VIEW || result.action === DiracAskResponse.EDIT) {
+					await permissionCard.finalize(CardStatus.CANCELLED)
+					if (reviewShown) await env.editor.hideReview()
+					reviewShown = false
+					reviewRequested = true
+					continue
+				}
 				const approved = result.action === DiracAskResponse.APPROVE
 				const reason = result.value
 
@@ -228,8 +240,7 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 					return reason ? formatResponse.toolDeniedWithFeedback(reason) : formatResponse.toolDenied()
 				}
 				approvedContent = result.userEdits?.[displayPath] ?? result.userEdits?.[absolutePath] ?? content
-			} else if (card) {
-				await card.update({ body: `${fileExists ? "Updating" : "Creating"} file...` })
+				break
 			}
 
 			env.config.callbacks.assertMutationAuthorized(toolId)
@@ -278,17 +289,13 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 	) {
 		const toolId = this.spec().id
 		await env.editor.reset()
-		await env.diagnostics.prepare([absolutePath])
-		const diagnostics = await env.diagnostics.getRaw([absolutePath])
-		const problemCount = diagnostics.reduce((count, file) => count + file.diagnostics.length, 0)
-		const newProblemsMessage = problemCount > 0 ? `Diagnostics: ${problemCount} problem(s) in ${relPath}.` : undefined
+		const newProblemsMessage = await this.collectDiagnosticsMessage(env, absolutePath, relPath)
 
 		env.telemetry.captureCustomMetadata({
 			toolId,
 			relPath,
 			fileExists,
 			shouldAutoApprove,
-			isSubagentExecution: env.config.isSubagentExecution,
 			filesCreated: fileExists ? 0 : 1,
 		})
 
@@ -308,8 +315,17 @@ export abstract class BaseWriteFileTool implements IDiracTool<WriteFileArgs> {
 		)
 	}
 
+	private async collectDiagnosticsMessage(env: IToolEnvironment, absolutePath: string, relPath: string): Promise<string | undefined> {
+		if (!env.diagnostics) return "Diagnostics not available on this host."
+
+		await env.diagnostics.prepare([absolutePath])
+		const diagnostics = await env.diagnostics.getRaw([absolutePath])
+		const problemCount = diagnostics.reduce((count, file) => count + file.diagnostics.length, 0)
+		return problemCount > 0 ? `Diagnostics: ${problemCount} problem(s) in ${relPath}.` : undefined
+	}
+
 	private async finalizeCardWithError(error: any, env: IToolEnvironment, card?: any): Promise<string> {
-		env.orchestration.setTaskState("consecutiveMistakeCount", env.config.taskState.consecutiveMistakeCount + 1)
+		env.orchestration.setTaskState("consecutiveMistakeCount", env.orchestration.getTaskState("consecutiveMistakeCount") + 1)
 
 		if (card) {
 			await card.update({

@@ -247,6 +247,14 @@ export function normalizeApiConfiguration(
 		case "deepseek":
 			return getProviderData(deepSeekModels, deepSeekDefaultModelId)
 		case "unbiased":
+			// Preserve discovered Pareto versions even when their metadata is not available here.
+			if (modelId?.startsWith("pareto-")) {
+				return {
+					selectedProvider: provider,
+					selectedModelId: modelId,
+					selectedModelInfo: dynamicModelInfoDefaults,
+				}
+			}
 			return getProviderData(unbiasedModels, unbiasedDefaultModelId)
 		case "qwen":
 			const qwenModels = apiConfiguration?.qwenApiLine === "china" ? mainlandQwenModels : internationalQwenModels
@@ -286,10 +294,12 @@ export function normalizeApiConfiguration(
 				currentMode === "plan" ? apiConfiguration?.planModeOpenAiModelId : apiConfiguration?.actModeOpenAiModelId
 			const openAiModelInfo =
 				currentMode === "plan" ? apiConfiguration?.planModeOpenAiModelInfo : apiConfiguration?.actModeOpenAiModelInfo
+			const profileName = currentMode === "plan" ? apiConfiguration?.planModeOpenAiProfileName : apiConfiguration?.actModeOpenAiProfileName
+			const profile = apiConfiguration?.openAiCompatibleProfiles?.find((entry) => entry.name === profileName)
 			return {
 				selectedProvider: provider,
-				selectedModelId: openAiModelId || "",
-				selectedModelInfo: openAiModelInfo || openAiModelInfoSaneDefaults,
+				selectedModelId: openAiModelId || profile?.modelId || "",
+				selectedModelInfo: openAiModelInfo || ((!openAiModelId || openAiModelId === profile?.modelId) ? profile?.modelInfo : undefined) || openAiModelInfoSaneDefaults,
 			}
 		case "lmstudio":
 			const lmStudioModelId =
@@ -374,8 +384,8 @@ export function normalizeApiConfiguration(
 				selectedModelInfo: basetenModelInfo ||
 					basetenModels[finalBasetenModelId as keyof typeof basetenModels] ||
 					basetenModels[basetenDefaultModelId] || {
-						description: "Baseten model",
-					},
+					description: "Baseten model",
+				},
 			}
 		}
 		case "huawei-cloud-maas":
@@ -391,6 +401,12 @@ export function normalizeApiConfiguration(
 				selectedProvider: provider,
 				selectedModelId: huaweiCloudMaasModelId || huaweiCloudMaasDefaultModelId,
 				selectedModelInfo: huaweiCloudMaasModelInfo || huaweiCloudMaasModels[huaweiCloudMaasDefaultModelId],
+			}
+		case "together":
+			return {
+				selectedProvider: provider,
+				selectedModelId: (currentMode === "plan" ? apiConfiguration?.planModeTogetherModelId : apiConfiguration?.actModeTogetherModelId) ?? "",
+				selectedModelInfo: dynamicModelInfoDefaults,
 			}
 		case "dify":
 			return {
@@ -566,7 +582,7 @@ export async function syncModeConfigurations(
 	const configuredInferenceSpeed = sourceFields.inferenceSpeed ?? "default"
 	const inferenceSpeed =
 		(configuredInferenceSpeed === "fast" && !modelSupportsInferenceSpeed(apiProvider, selectedModelId)) ||
-		(configuredInferenceSpeed === "standard" && !providerSupportsInferenceSpeed(apiProvider))
+			(configuredInferenceSpeed === "standard" && !providerSupportsInferenceSpeed(apiProvider))
 			? "default"
 			: configuredInferenceSpeed
 

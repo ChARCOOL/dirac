@@ -9,17 +9,19 @@ import { ModularCardHeader } from "./components/ModularCardHeader"
 interface ModularCardProps {
 	card: Card
 	isActive?: boolean
-	onAction?: (value: string) => void
+	onAction?: (value: string, commandApprovalChoiceId?: string) => void
 }
 
-const initialCollapsedState = (card: Card) => card.collapsed ?? (isFinalStatus(card.status) && !card.do_not_auto_collapse)
+const initialCollapsedState = (card: Card) =>
+	!!card.communication || (card.collapsed ?? (isFinalStatus(card.status) && !card.do_not_auto_collapse))
 
 export const ModularCard: React.FC<ModularCardProps> = ({ card, isActive, onAction }) => {
 	const storedCollapsed = useChatStore((state) => state.cardCollapsedStates[card.id])
 	const userToggled = useChatStore((state) => state.cardUserToggledStates[card.id] ?? false)
 	const setCardCollapsedState = useChatStore((state) => state.setCardCollapsedState)
-	const terminalAutoCollapse = isFinalStatus(card.status) && !card.do_not_auto_collapse && !userToggled
-	const protocolOrAutomaticState = card.collapsed ?? (terminalAutoCollapse ? true : undefined)
+	const terminalAutoCollapse = !card.communication && isFinalStatus(card.status) && !card.do_not_auto_collapse && !userToggled
+	// Legacy producers forced communication cards open; only a user's disclosure choice overrides the new default.
+	const protocolOrAutomaticState = card.communication ? true : (card.collapsed ?? (terminalAutoCollapse ? true : undefined))
 	const isCollapsed = userToggled
 		? (storedCollapsed ?? initialCollapsedState(card))
 		: (protocolOrAutomaticState ?? storedCollapsed ?? initialCollapsedState(card))

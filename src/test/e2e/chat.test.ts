@@ -34,16 +34,16 @@ e2e("Chat - can send messages and switch between modes", async ({ helper, sideba
 	// === slash commands preserve following text ===
 	await expect(inputbox).toHaveValue("")
 	// Type partial slash command to trigger menu
-	await inputbox.fill("/newt")
+	await inputbox.fill("/smo")
 
 	// Wait for menu to be visible and click on menu item
 	await inputbox.focus()
-	await sidebar.getByText("newtask", { exact: false }).click()
-	await expect(inputbox).toHaveValue("/newtask ")
+	await sidebar.getByText("smol", { exact: false }).click()
+	await expect(inputbox).toHaveValue("/smol ")
 
 	// Add following text to verify it works correctly
 	await inputbox.pressSequentially("following text should be preserved")
-	await expect(inputbox).toHaveValue("/newtask following text should be preserved")
+	await expect(inputbox).toHaveValue("/smol following text should be preserved")
 
 	// === @ mentions preserve following text ===
 	await inputbox.fill("")

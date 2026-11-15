@@ -31,7 +31,6 @@ export class MentionContextLoader {
 		includePathContext: boolean,
 		availableSkills: SkillMetadata[],
 		conversationCondensationAvailable: boolean,
-		taskHandoffCondensationAvailable: boolean,
 	): Promise<EnrichContextResult> {
 		const parsedText = await parseMentions(text, cwd, this.urlContentFetcher, this.fileContextTracker, this.workspaceManager)
 		const { processedText, needsDiracrulesFileCheck, isDirectResponse, directResponseText, directAction } =
@@ -46,7 +45,6 @@ export class MentionContextLoader {
 				this.dependencies.extensionPath,
 				this.dependencies.sourceDir,
 				conversationCondensationAvailable,
-				taskHandoffCondensationAvailable,
 			)
 
 		// Handle /reloadtools direct response: trigger tool registry refresh

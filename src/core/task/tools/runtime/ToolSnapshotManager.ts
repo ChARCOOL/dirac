@@ -1,3 +1,4 @@
+import { meetsHostCapabilityRequirement } from "@hosts/host-capabilities"
 import { DiracToolSet } from "@core/prompts/system-prompt/registry/DiracToolSet"
 import type { SystemPromptContext } from "@core/prompts/system-prompt/types"
 import { DiracDefaultTool } from "@/shared/tools"
@@ -15,7 +16,7 @@ import { Logger } from "@/shared/services/Logger"
 
 interface ToolSnapshotManagerOptions {
 	createTaskConfig: (coordinator: ToolExecutorCoordinator) => TaskConfig
-	getTaskId: () => string
+	getTaskToolOwnerKey: () => string
 	getWorkspaceRoot: () => string | undefined
 	getToggles: () => Record<string, boolean>
 	getSelectionPolicy: () => ToolSelectionPolicy | undefined
@@ -61,10 +62,10 @@ export class ToolSnapshotManager {
 			// this request's detached toggles before deriving enabled membership.
 			registry.loadToggles(this.options.getToggles())
 			const inventory = this.getInventorySnapshot(registry)
-			const activeSkills = this.options.getActiveSkills()
+			const activeSkills = this.options.getActiveSkills().filter(meetsHostCapabilityRequirement)
 			const skillTools = registry.resolveSkillDependencyTools(
 				activeSkills,
-				this.options.getTaskId(),
+				this.options.getTaskToolOwnerKey(),
 				this.options.getWorkspaceRoot(),
 			)
 			const selectedConfiguredTools = applyToolSelectionPolicy(
@@ -72,19 +73,13 @@ export class ToolSnapshotManager {
 				inventory.enabledTools,
 				this.options.getSelectionPolicy(),
 			)
-			const effectiveTools = this.mergeTools(selectedConfiguredTools, skillTools).filter(
-				(tool) => this.options.isToolAvailable?.(tool) ?? true,
-			)
+			const effectiveTools = this.mergeTools(selectedConfiguredTools, skillTools)
+				.filter((tool) => meetsHostCapabilityRequirement(tool.spec) && (this.options.isToolAvailable?.(tool) ?? true))
 			const promptVisibleSpecs = this.buildPromptVisibleSpecs(effectiveTools, context)
 			const nativeTools = DiracToolSet.convertSpecsToNativeTools(promptVisibleSpecs, context)
-			const dynamicSubagentToolNames = new Set(
-				promptVisibleSpecs
-					.filter((spec) => spec.id === DiracDefaultTool.USE_SUBAGENTS && spec.name !== DiracDefaultTool.USE_SUBAGENTS)
-					.map((spec) => spec.name),
-			)
 			const coordinator = this.buildCoordinator(effectiveTools)
 			this.validateInventoryCoordinator(effectiveTools, coordinator)
-			const executableToolNames = new Set([...effectiveTools.map((tool) => tool.spec.name), ...dynamicSubagentToolNames])
+			const executableToolNames = new Set(effectiveTools.map((tool) => tool.spec.name))
 
 			const snapshot: ToolRequestSnapshot = {
 				inventoryVersion: inventory.version,
@@ -96,7 +91,6 @@ export class ToolSnapshotManager {
 				nativeTools,
 				coordinator,
 				executableToolNames,
-				dynamicSubagentToolNames,
 			}
 
 			validateToolRequestSnapshot(snapshot)
@@ -118,18 +112,23 @@ export class ToolSnapshotManager {
 
 	private getInventorySnapshot(registry: ToolRegistry): ToolInventorySnapshot {
 		const registryVersion = registry.getVersion()
-		if (!this.inventoryDirty && !this.togglesDirty && this.inventorySnapshot && registryVersion === this.cachedRegistryVersion) {
+		if (
+			!this.inventoryDirty &&
+			!this.togglesDirty &&
+			this.inventorySnapshot &&
+			registryVersion === this.cachedRegistryVersion
+		) {
 			return this.inventorySnapshot
 		}
 
 		// Detach the inventory before releasing the process-global registry lock.
 		// Tool definitions are immutable runtime descriptors; copying the arrays is
 		// sufficient to prevent later per-Task toggle loads from changing membership.
-		const ownerTaskId = this.options.getTaskId()
+		const ownerTaskId = this.options.getTaskToolOwnerKey()
 		const workspaceRoot = this.options.getWorkspaceRoot()
 		const tools = [...registry.getAllTools(ownerTaskId, workspaceRoot)]
 		const enabledTools = [...registry.getEnabledTools(ownerTaskId, workspaceRoot)].filter(
-			(tool) => this.options.isToolAvailable?.(tool) ?? true,
+			(tool) => meetsHostCapabilityRequirement(tool.spec) && (this.options.isToolAvailable?.(tool) ?? true),
 		)
 		const coordinator = this.buildCoordinator(enabledTools)
 		this.validateInventoryCoordinator(enabledTools, coordinator)
@@ -162,9 +161,7 @@ export class ToolSnapshotManager {
 	}
 
 	private buildCoordinator(enabledTools: DiscoveredTool[]): ToolExecutorCoordinator {
-		const coordinator = new ToolExecutorCoordinator(
-			this.options.environmentFactory ?? new SurfaceToolEnvironmentFactory(),
-		)
+		const coordinator = new ToolExecutorCoordinator(this.options.environmentFactory ?? new SurfaceToolEnvironmentFactory())
 		const config = this.options.createTaskConfig(coordinator)
 
 		for (const tool of enabledTools) {
@@ -186,7 +183,22 @@ export class ToolSnapshotManager {
 		const contextFilteredSpecs = enabledTools
 			.map((tool) => tool.spec)
 			.filter((spec) => !spec.contextRequirements || spec.contextRequirements(context))
+			.map((spec) =>
+				context.executionProfile === "tasklet" && spec.name === DiracDefaultTool.RESPOND
+					? {
+						...spec,
+						parameters: spec.parameters?.map((parameter) =>
+							parameter.name === "operation"
+								? {
+									...parameter,
+									enum: parameter.enum.filter((operation: string) => operation !== "plan"),
+								}
+								: parameter,
+						),
+					}
+					: spec,
+			)
 
-		return DiracToolSet.withDynamicSubagentToolSpecs(contextFilteredSpecs, context)
+		return DiracToolSet.withSubagentRoleSpecs(contextFilteredSpecs, context)
 	}
 }

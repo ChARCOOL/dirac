@@ -1,5 +1,6 @@
 import type { WatcherFactory } from "@core/ignore/DiracIgnoreController"
 import { getTaskMetadata, readTaskHistoryFromState, updateTaskMetadata } from "@core/storage/disk"
+import type { TaskStorageAddress } from "@core/storage/taskDirectory"
 import { DiracMessage, DiracMessageType } from "@shared/ExtensionMessage"
 import chokidar, { FSWatcher } from "chokidar"
 import * as path from "path"
@@ -36,6 +37,7 @@ export class FileContextTracker {
 	// File tracking and watching
 	private fileWatchers = new Map<string, FSWatcher>()
 	private readonly watcherCloser = new ChokidarWatcherCloser()
+	private disposed = false
 	private recentlyModifiedFiles = new Set<string>()
 	private recentlyEditedByDirac = new Set<string>()
 
@@ -43,6 +45,7 @@ export class FileContextTracker {
 		stateStore: FileContextStateStore,
 		taskId: string,
 		private watcherFactory: WatcherFactory = chokidar.watch,
+		private readonly storageAddress?: TaskStorageAddress,
 	) {
 		this.stateStore = stateStore
 		this.taskId = taskId
@@ -52,10 +55,12 @@ export class FileContextTracker {
 	 * File watchers are set up for each file that is tracked in the task metadata.
 	 */
 	async setupFileWatcher(filePath: string) {
+		if (this.disposed) return
 		await this.watcherCloser.closeAll()
-		if (this.fileWatchers.has(filePath)) return
+		if (this.disposed || this.fileWatchers.has(filePath)) return
 
 		const cwd = await getCwd()
+		if (this.disposed || this.fileWatchers.has(filePath)) return
 		if (!cwd) {
 			Logger.info("No workspace folder available - cannot determine current working directory")
 			return
@@ -104,8 +109,10 @@ export class FileContextTracker {
 	 * This is the main entry point for FileContextTracker and is called when a file is passed to Dirac via a tool, mention, or edit.
 	 */
 	async trackFileContext(filePath: string, operation: "read_tool" | "user_edited" | "dirac_edited" | "file_mentioned") {
+		if (this.disposed) return
 		try {
 			const cwd = await getCwd()
+			if (this.disposed) return
 			if (!cwd) {
 				Logger.info("No workspace folder available - cannot determine current working directory")
 				return
@@ -128,7 +135,7 @@ export class FileContextTracker {
 	 */
 	async addFileToFileContextTracker(taskId: string, filePath: string, source: FileMetadataEntry["record_source"]) {
 		try {
-			await updateTaskMetadata(taskId, (metadata) => {
+			await updateTaskMetadata(this.storageAddress ?? taskId, (metadata) => {
 				const now = Date.now()
 
 				metadata.files_in_context.forEach((entry) => {
@@ -193,6 +200,7 @@ export class FileContextTracker {
 	 * Disposes all file watchers
 	 */
 	async dispose(): Promise<void> {
+		this.disposed = true
 		const watchers = Array.from(this.fileWatchers.values())
 		this.fileWatchers.clear()
 		await this.watcherCloser.closeAll(watchers)
@@ -207,7 +215,7 @@ export class FileContextTracker {
 
 		try {
 			// Check task metadata for files that were edited by Dirac or users after the message timestamp
-			const taskMetadata = await getTaskMetadata(this.taskId)
+			const taskMetadata = await getTaskMetadata(this.storageAddress ?? this.taskId)
 
 			if (taskMetadata?.files_in_context) {
 				for (const fileEntry of taskMetadata.files_in_context) {
@@ -242,12 +250,17 @@ export class FileContextTracker {
 		return [...new Set(editedFiles)]
 	}
 
-	/**
-	 * Stores pending file context warning in workspace state so it persists across task reinitialization
-	 */
+	private get pendingWarningKey(): string {
+		const address = this.storageAddress
+		const suffix =
+			address?.kind === "tasklet" ? `${address.rootTaskId}/tasklets/${address.taskletId}` : (address?.taskId ?? this.taskId)
+		return `pendingFileContextWarning_${suffix}`
+	}
+
+	/** Stores warnings in workspace state across task reinitialization. */
 	async storePendingFileContextWarning(files: string[]): Promise<void> {
 		try {
-			const key = `pendingFileContextWarning_${this.taskId}`
+			const key = this.pendingWarningKey
 			this.stateStore.setWorkspaceState(key, files)
 		} catch (error) {
 			Logger.error("Error storing pending file context warning:", error)
@@ -259,7 +272,7 @@ export class FileContextTracker {
 	 */
 	async retrievePendingFileContextWarning(): Promise<string[] | undefined> {
 		try {
-			const key = `pendingFileContextWarning_${this.taskId}`
+			const key = this.pendingWarningKey
 			const files = this.stateStore.getWorkspaceStateKey(key) as string[] | undefined
 			return files
 		} catch (error) {
@@ -275,7 +288,7 @@ export class FileContextTracker {
 		try {
 			const files = await this.retrievePendingFileContextWarning()
 			if (files) {
-				this.stateStore.setWorkspaceState(`pendingFileContextWarning_${this.taskId}`, undefined)
+				this.stateStore.setWorkspaceState(this.pendingWarningKey, undefined)
 				return files
 			}
 		} catch (error) {
@@ -298,7 +311,8 @@ export class FileContextTracker {
 
 			const orphanedPendingContextTasks: string[] = []
 			for (const key of pendingWarningKeys) {
-				const taskId = key.replace("pendingFileContextWarning_", "")
+				// Contained executions have no history entry; their warnings live with the owning root.
+				const taskId = key.replace("pendingFileContextWarning_", "").split("/tasklets/")[0]
 				if (!existingTaskIds.has(taskId)) {
 					orphanedPendingContextTasks.push(key)
 				}

@@ -1,3 +1,4 @@
+import { meetsHostCapabilityRequirement } from "@hosts/host-capabilities"
 import { GlobalFileNames } from "@core/storage/disk"
 import { USER_CONTENT_TAGS } from "@shared/messages/constants"
 import { DiracContent, DiracTextContentBlock } from "@shared/messages/content"
@@ -7,8 +8,9 @@ import { getOrDiscoverSkills } from "../context/instructions/user-instructions/s
 import { refreshWorkflowToggles } from "../context/instructions/user-instructions/workflows"
 import { FileContextLoader } from "./context/FileContextLoader"
 import { MentionContextLoader } from "./context/MentionContextLoader"
+import { isSkillAvailableToTaskProfile } from "./TaskExecutionProfile"
 import { ContextLoaderDependencies } from "./types/context-loader"
-import { CONVERSATION_CONTINUATION_TEMPLATE_ID, TASK_HANDOFF_TEMPLATE_ID } from "@core/text-condensation/templates"
+import { CONVERSATION_CONTINUATION_TEMPLATE_ID } from "@core/text-condensation/templates"
 import type { SlashCommandDirectAction } from "@core/slash-commands"
 
 export class ContextLoader {
@@ -51,8 +53,6 @@ export class ContextLoader {
 		const parsedTextMetadata: Array<ParsedTextMetadata | undefined> = []
 		const conversationCondensationAvailable =
 			this.dependencies.isTextCondensationAvailable?.(CONVERSATION_CONTINUATION_TEMPLATE_ID) ?? false
-		const taskHandoffCondensationAvailable =
-			this.dependencies.isTextCondensationAvailable?.(TASK_HANDOFF_TEMPLATE_ID) ?? false
 
 		// Parse a single text block through mention/slash enrichment and retain metadata by input order.
 		const parseTextBlock = async (text: string, blockIndex: number): Promise<string> => {
@@ -66,7 +66,6 @@ export class ContextLoader {
 				includeFileDetails,
 				availableSkills,
 				conversationCondensationAvailable,
-				taskHandoffCondensationAvailable,
 			)
 			parsedTextMetadata[blockIndex] = {
 				needsDiracrulesFileCheck: result.needsDiracrulesFileCheck,
@@ -115,7 +114,8 @@ export class ContextLoader {
 		const { settings, workspaceConfiguration } = this.dependencies.getRequestRuntime().workingConfiguration
 		const globalToggles = settings.globalSkillsToggles ?? {}
 		const localToggles = workspaceConfiguration.localSkillsToggles ?? {}
-		return providerSkills.filter((skill) => {
+		return providerSkills.filter(meetsHostCapabilityRequirement).filter((skill) => {
+			if (!isSkillAvailableToTaskProfile(this.dependencies.executionProfile, skill)) return false
 			if (settings.yoloModeToggled && skill.interactiveOnly) return false
 			if (skill.source === "builtin") return true
 			const toggles = skill.source === "global" ? globalToggles : localToggles

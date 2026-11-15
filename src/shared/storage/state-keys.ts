@@ -16,7 +16,9 @@ import { WorkspaceRoot } from "@shared/multi-root/types"
 import { InferenceSpeed, Mode, normalizeInferenceSpeed } from "@shared/storage/types"
 import { TelemetrySetting } from "@shared/TelemetrySetting"
 import { normalizeUserApprovedCommands, type UserApprovedCommand } from "@shared/UserApprovedCommand"
-import { LanguageModelChatSelector } from "vscode"
+import { LanguageModelChatSelector } from "@shared/vsCodeSelectorUtils"
+import { DEFAULT_SUBAGENT_ROLES, type SubagentRole, validateSubagentRoles } from "@shared/subagentRoles"
+import { DEFAULT_SANDBOX_SETTINGS, type SandboxSettings } from "@shared/SandboxSettings"
 
 // ============================================================================
 // SINGLE SOURCE OF TRUTH FOR STORAGE KEYS
@@ -50,7 +52,6 @@ export type ConfiguredAPIKeys = Partial<Record<ApiProvider, boolean>>
 /** Independently controls which sidecar operations may use the Utility model. */
 export interface UtilityModelUseCases {
 	condense: boolean
-	newTask: boolean
 	generateCommitMessage: boolean
 	permissionHandling: boolean
 }
@@ -68,6 +69,7 @@ const GLOBAL_STATE_FIELDS = {
 	},
 	isNewUser: { default: true as boolean },
 	welcomeViewCompleted: { default: undefined as boolean | undefined },
+	unbiasedWelcomeOfferStatus: { default: undefined as "pending" | "dismissed" | "ineligible" | undefined },
 	workspaceRoots: { default: undefined as WorkspaceRoot[] | undefined },
 	primaryRootIndex: { default: 0 as number },
 	multiRootEnabled: { default: true as boolean },
@@ -80,6 +82,8 @@ const GLOBAL_STATE_FIELDS = {
 	// Path to worktree that should auto-open Dirac sidebar when launched
 	worktreeAutoOpenPath: { default: undefined as string | undefined },
 	uiActionState: { default: undefined as UIActionState | undefined },
+	unbiasedOAuthApiKeyHash: { default: undefined as string | undefined },
+	unbiasedOAuthWorkloadName: { default: undefined as string | undefined },
 } satisfies FieldDefinitions
 
 // Fields that map directly to ApiHandlerOptions in @shared/api.ts
@@ -222,17 +226,21 @@ const API_HANDLER_SETTINGS_FIELDS = {
 
 const USER_SETTINGS_FIELDS = {
 	// Settings that are NOT part of ApiHandlerOptions
+	// User-global evidence of explicit setup for providers with no required saved fields.
+	addedApiProviders: { default: [] as ApiProvider[] },
 	acpDisabledProviders: { default: {} as Record<string, string> },
 	acpProviderApiTypes: { default: {} as Record<string, string> },
 	modelProviderPresets: { default: [] as import("@shared/api").ModelProviderPreset[] },
 	// Retained only to migrate configurations written before Utility use cases were independent.
 	utilityModelEnabled: { default: false as boolean },
 	utilityModelUseCondense: { default: true as boolean },
-	utilityModelUseNewTask: { default: true as boolean },
 	utilityModelUseGenerateCommitMessage: { default: true as boolean },
 	utilityModelUsePermissionHandling: { default: false as boolean },
 	utilityModelPermissionPolicy: { default: "" as string },
 	utilityModelSelection: { default: undefined as ModelProviderSelection | undefined },
+	subagentRoles: { default: DEFAULT_SUBAGENT_ROLES as SubagentRole[], transform: validateSubagentRoles },
+	// Preserve invalid persisted configuration: command/status boundaries report it without disabling the host.
+	sandboxSettings: { default: DEFAULT_SANDBOX_SETTINGS as SandboxSettings },
 	autoApprovalSettings: {
 		default: DEFAULT_AUTO_APPROVAL_SETTINGS as AutoApprovalSettings,
 	},
@@ -284,9 +292,9 @@ const USER_SETTINGS_FIELDS = {
 	customPrompt: { default: undefined as "compact" | undefined },
 	backgroundEditEnabled: { default: false as boolean },
 	optOutOfRemoteConfig: { default: false as boolean },
-	doubleCheckCompletionEnabled: { default: false as boolean },
 	lowVerbosityEnabled: { default: true as boolean },
 	cliTerminalColorMode: { default: undefined as "dark" | "light" | undefined },
+	cliVimMode: { default: false as boolean },
 
 	// OpenTelemetry configuration
 	openTelemetryEnabled: { default: true as boolean },

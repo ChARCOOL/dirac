@@ -12,6 +12,8 @@ import type * as acp from "@agentclientprotocol/sdk"
 import { isSuccessfulTaskCompletionCard } from "@shared/cardIdentity"
 import type { DiracMessage } from "@shared/ExtensionMessage"
 import { CardStatus, DiracMessageType, isFinalStatus } from "@shared/ExtensionMessage"
+import { getSubagentUsage } from "@shared/subagentUsage"
+import { getTaskletUsage } from "@shared/taskletUsage"
 import { getBrowserActionKind } from "./browserActionTranslator.js"
 import type { AcpSessionState, TranslatedMessage } from "./types.js"
 import { AcpSessionStatus } from "./types.js"
@@ -47,8 +49,7 @@ const TOOL_KIND_MAP: Record<string, acp.ToolKind> = {
 	condense: "think",
 	use_skill: "other",
 	useSkill: "other",
-	use_subagents: "other",
-	useSubagents: "other",
+	subagents: "other",
 	execute_command: "execute",
 }
 
@@ -280,6 +281,8 @@ function translateCardMessage(
 		return { updates: [], requiresPermission: false }
 	}
 	const card = message.content.card
+	// Accounting cards contribute usage separately; they are not tool activity.
+	if (getTaskletUsage(card) || getSubagentUsage(card)) return { updates: [], requiresPermission: false }
 	const toolCallId = card.id
 	const updates: acp.SessionUpdate[] = []
 	let requiresPermission = false
@@ -374,21 +377,15 @@ function translateCardMessage(
 			status: "pending" as acp.ToolCallStatus,
 			locations,
 		}
-		const isNewTaskTransition = card.rawInput?.tool === "new_task"
 		requiresPermission = true
 		permissionRequest = {
 			toolCall: existingToolCall as acp.ToolCall,
-			options: isNewTaskTransition
-				? [
-					{ kind: "allow_once", optionId: "new_task", name: card.actions?.[0]?.label ?? "Start new task" },
-					{ kind: "reject_once", optionId: "reject_once", name: "Keep current task" },
-				]
-				: [
-					{ kind: "allow_once", optionId: "allow_once", name: "Approve once" },
-					{ kind: "allow_always", optionId: "allow_always", name: "Always approve" },
-					{ kind: "reject_once", optionId: "reject_once", name: "Reject once" },
-					{ kind: "reject_always", optionId: "reject_always", name: "Always reject" },
-				]
+			options: [
+				{ kind: "allow_once", optionId: "allow_once", name: "Approve once" },
+				...(card.approvalScope === "once" ? [] : [{ kind: "allow_always" as const, optionId: "allow_always", name: "Always approve" }]),
+				{ kind: "reject_once", optionId: "reject_once", name: "Reject once" },
+				...(card.approvalScope === "once" ? [] : [{ kind: "reject_always" as const, optionId: "reject_always", name: "Always reject" }]),
+			]
 		}
 	}
 

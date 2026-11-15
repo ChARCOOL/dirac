@@ -696,12 +696,6 @@ export const ResumeTask = quickStory(
 	"Shows resume task option for continuing interrupted work.",
 )
 
-export const NewTaskWithContext = quickStory(
-	"New Task",
-	"new_task",
-	"Start a new task with the current conversation context",
-	"Shows new task creation with context preservation option.",
-)
 
 export const ApiRequestActive: Story = {
 	decorators: [

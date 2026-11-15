@@ -1,8 +1,6 @@
 import { type DiracMessage, type UIActionButton, UIActionButtonType } from "@shared/ExtensionMessage"
 import { VSCodeButton } from "@vscode/webview-ui-toolkit/react"
 import React, { useCallback, useEffect, useState } from "react"
-import { isNewTaskCard } from "../../utils/newTaskCard"
-import { useChatStore } from "@/features/chat/store/chatStore"
 import type { ChatState, MessageHandlers } from "../types/chatTypes"
 import { ButtonActionType } from "../utils/buttonConfig"
 
@@ -29,34 +27,14 @@ const ActionButtons: React.FC<ActionButtonsProps> = ({ task, chatState, messageH
 	} = chatState
 	const [isProcessing, setIsProcessing] = useState(false)
 
-	const { lastMessage, secondLastMessage } = chatState
-	const activeCard = useChatStore((state) => {
-		const activeCardId = state.uiActionState?.activeCardId
-		const activeCardIndex = activeCardId ? state.messageIndexById.get(activeCardId) : undefined
-		const message = activeCardIndex === undefined ? undefined : state.diracMessages[activeCardIndex]
-		return message?.content.type === "card" ? message.content.card : undefined
-	})
 
 	// Single effect to handle all configuration updates
 	useEffect(() => {
 		if (uiActionState) {
-			setSendingDisabled(uiActionState.sendingDisabled)
+			setSendingDisabled(uiActionState.pendingApprovalCardIds?.length ? false : uiActionState.sendingDisabled)
 		}
 	}, [uiActionState, setSendingDisabled])
 
-	// Clear input when transitioning from command_output to api_req
-	// This happens when user provides feedback during command execution
-	useEffect(() => {
-		if (
-			lastMessage?.content.type === "api_status" &&
-			secondLastMessage?.content.type === "card" &&
-			secondLastMessage.content.card.icon === "terminal"
-		) {
-			chatState.setInputValue("")
-			chatState.setSelectedImages([])
-			chatState.setSelectedFiles([])
-		}
-	}, [lastMessage, secondLastMessage, chatState])
 
 	const handleActionClick = useCallback(
 		async (action: ButtonActionType, value?: string, text?: string, images?: string[], files?: string[]) => {
@@ -78,7 +56,6 @@ const ActionButtons: React.FC<ActionButtonsProps> = ({ task, chatState, messageH
 
 	// Keyboard event handler
 	const globalButtons = uiActionState?.globalButtons || []
-	const promotedCardButtons = activeCard && isNewTaskCard(activeCard) ? (uiActionState?.cardButtons ?? []) : []
 	const hasActiveButtons = globalButtons.length > 0
 
 	const handleKeyDown = useCallback(
@@ -104,8 +81,7 @@ const ActionButtons: React.FC<ActionButtonsProps> = ({ task, chatState, messageH
 
 	const { showScrollToBottom, scrollToBottomSmooth, scrollToTop } = scrollBehavior
 
-	const allButtons = [...promotedCardButtons, ...globalButtons]
-	const hasButtons = allButtons.length > 0
+	const hasButtons = globalButtons.length > 0
 	const isStreaming = isApiRequestActive || !!activeVoiceStreamId
 	const canInteract = !isStreaming && !isProcessing
 
@@ -132,7 +108,7 @@ const ActionButtons: React.FC<ActionButtonsProps> = ({ task, chatState, messageH
 
 	return (
 		<div className="flex px-3 gap-2" style={{ opacity }}>
-			{allButtons.map((button: UIActionButton) => (
+			{globalButtons.map((button: UIActionButton) => (
 				<VSCodeButton
 					appearance={button.primary ? "primary" : "secondary"}
 					className="flex-1"

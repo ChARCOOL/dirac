@@ -1,8 +1,5 @@
 import { getConfiguredUtilityModelSelection } from "@core/utility-model/UtilityModelSelection"
-import {
-	CONVERSATION_CONTINUATION_TEMPLATE_ID,
-	TASK_HANDOFF_TEMPLATE_ID,
-} from "./templates"
+import { CONVERSATION_CONTINUATION_TEMPLATE_ID } from "./templates"
 import type { TextCondensationTemplateId } from "./TextCondenser"
 import type { TextCondensationTemplateRegistry } from "./TextCondensationTemplateRegistry"
 
@@ -10,7 +7,6 @@ export interface UtilityTextCondensationSettings {
 	/** Used only while reading an unmigrated legacy configuration. */
 	utilityModelEnabled?: unknown
 	utilityModelUseCondense?: unknown
-	utilityModelUseNewTask?: unknown
 	utilityModelSelection: unknown
 }
 
@@ -20,12 +16,7 @@ export function isUtilityModelUseCaseEnabled(
 	settings: UtilityTextCondensationSettings,
 	template: TextCondensationTemplateId,
 ): boolean {
-	const useCaseEnabled =
-		template === CONVERSATION_CONTINUATION_TEMPLATE_ID
-			? settings.utilityModelUseCondense
-			: template === TASK_HANDOFF_TEMPLATE_ID
-				? settings.utilityModelUseNewTask
-				: false
+	const useCaseEnabled = template === CONVERSATION_CONTINUATION_TEMPLATE_ID ? settings.utilityModelUseCondense : false
 	if (useCaseEnabled !== undefined) return useCaseEnabled === true
 
 	// Configurations written before the migration contain only the legacy switch.

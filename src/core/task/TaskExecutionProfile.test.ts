@@ -2,7 +2,9 @@ import { strict as assert } from "node:assert"
 import type { DiracDefaultTool, DiracToolSpec } from "@shared/tools"
 import { describe, it } from "mocha"
 import {
+	GOAL_TOOL_NAMES,
 	isDiscoveredToolAvailableToTaskProfile,
+	isSkillAvailableToTaskProfile,
 	isToolAvailableToTaskProfile,
 	type TaskExecutionProfile,
 	taskProfileSystemInstructions,
@@ -22,54 +24,87 @@ function profileTool(profiles: readonly TaskExecutionProfile[]): DiscoveredTool 
 	}
 }
 
+const profiles = ["standalone", "goal_coordinator", "goal_followup", "tasklet"] as const
+
 describe("Task execution profiles", () => {
-	it("centrally excludes new_task from every Goal-owned profile", () => {
-		assert.equal(isToolAvailableToTaskProfile("standalone", "new_task"), true)
-		assert.equal(isToolAvailableToTaskProfile("goal_coordinator", "new_task"), false)
-		assert.equal(isToolAvailableToTaskProfile("goal_followup", "new_task"), false)
-		assert.equal(isToolAvailableToTaskProfile("goal_child", "new_task"), false)
+	it("keeps the two Goal operations exclusive to coordinator and follow-up roots", () => {
+		assert.deepEqual(GOAL_TOOL_NAMES, ["update_goal", "block_goal"])
+		for (const profile of profiles) {
+			for (const toolName of GOAL_TOOL_NAMES) {
+				assert.equal(isToolAvailableToTaskProfile(profile, toolName), profile === "goal_coordinator" || profile === "goal_followup")
+			}
+		}
 	})
 
-	it("makes Goal tools available to coordinator and follow-up turns", () => {
-		assert.equal(isToolAvailableToTaskProfile("standalone", "start_task"), false)
-		assert.equal(isToolAvailableToTaskProfile("goal_coordinator", "start_task"), true)
-		assert.equal(isToolAvailableToTaskProfile("goal_followup", "start_task"), true)
-		assert.equal(isToolAvailableToTaskProfile("goal_child", "start_task"), false)
+	it("permits shared delegation and supervision for every root, never for tasklets", () => {
+		for (const profile of profiles) {
+			assert.equal(isToolAvailableToTaskProfile(profile, "subagents"), profile !== "tasklet")
+			assert.equal(isToolAvailableToTaskProfile(profile, "tasklets"), false)
+			assert.equal(isToolAvailableToTaskProfile(profile, "read_file"), true)
+		}
 	})
 
 	it("enforces declared profile-only exposure independently of tool naming", () => {
-		const tool = profileTool(["goal_child"])
+		const tool = profileTool(["tasklet"])
 		assert.equal(isDiscoveredToolAvailableToTaskProfile("standalone", tool), false)
 		assert.equal(isDiscoveredToolAvailableToTaskProfile("goal_coordinator", tool), false)
-		assert.equal(isDiscoveredToolAvailableToTaskProfile("goal_child", tool), true)
+		assert.equal(isDiscoveredToolAvailableToTaskProfile("tasklet", tool), true)
 	})
 
-	it("asks contained Goal Tasks for concise private trajectory updates", () => {
-		const instructions = taskProfileSystemInstructions("goal_child")
-
-		assert.match(instructions ?? "", /Keep the parent meaningfully informed during non-trivial work/)
-		assert.match(instructions ?? "", /substantive finding or milestone/)
-		assert.match(instructions ?? "", /not routine tool narration or a timed cadence/)
-		assert.match(instructions ?? "", /normally one sentence, sometimes two, and only rarely three/)
+	it("keeps tasklet communication parent-directed in Act mode without Goal authority", () => {
+		const instructions = taskProfileSystemInstructions("tasklet") ?? ""
+		assert.match(instructions, /Use respond to report questions, progress, and assignment completion to Dirac/)
+		assert.match(instructions, /Dirac owns planning, integration, and the final response to the user/)
+		assert.doesNotMatch(instructions, /do not address the end user|user timeline|privately|private worker/)
+		assert.match(instructions, /Act execution does not grant authority beyond Dirac's current restrictions/)
+		assert.match(instructions, /Do not broaden scope without asking Dirac/)
+		assert.match(instructions, /always execute in Act mode/)
+		assert.match(instructions, /cannot delegate/)
+		assert.doesNotMatch(instructions, /GOAL COORDINATOR/)
+		assert.equal(isToolAvailableToTaskProfile("tasklet", "update_goal"), false)
 	})
+
+	it("keeps foreground-only skills root-owned while retaining ordinary worker skills", () => {
+		for (const profile of profiles) {
+			const skill = { name: "fixture", description: "Fixture", path: "/fixture/SKILL.md", source: "builtin" as const }
+			assert.equal(isSkillAvailableToTaskProfile(profile, skill), true)
+			assert.equal(isSkillAvailableToTaskProfile(profile, { ...skill, foregroundOnly: true }), profile !== "tasklet")
+		}
+	})
+
+	for (const profile of ["goal_coordinator", "goal_followup"] as const) {
+		it(`leaves ${profile} delegation controls to the shared system template`, () => {
+			const instructions = taskProfileSystemInstructions(profile, true) ?? ""
+			assert.match(instructions, /tasklet/)
+			assert.doesNotMatch(instructions, /operation=create|subagents|start_task|list_tasks|wait_for_goal_events|CONTAINED GOAL TASK/)
+		})
+
+		it(`does not mention delegation in ${profile} when disabled or unspecified`, () => {
+			for (const enabled of [false, undefined]) {
+				const instructions = taskProfileSystemInstructions(profile, enabled) ?? ""
+				assert.doesNotMatch(instructions, /subagents|tasklet|child|delegat|parent/i)
+				assert.match(instructions, /progress update compact/)
+			}
+		})
+	}
 
 	it("asks the Goal coordinator to synthesize concise user-visible progress", () => {
-		const instructions = taskProfileSystemInstructions("goal_coordinator")
-
+		const instructions = taskProfileSystemInstructions("goal_coordinator", true)
 		assert.match(instructions ?? "", /user opening it during the run can quickly understand/)
-		assert.match(instructions ?? "", /Most should remain private; synthesize only information/)
-		assert.match(instructions ?? "", /Do not mechanically forward child messages or narrate routine tool activity/)
+		assert.match(instructions ?? "", /Synthesize child updates into meaningful user-facing summaries/)
+		assert.match(instructions ?? "", /Do not repeat individual communication cards or narrate routine tool activity/)
+		assert.doesNotMatch(instructions ?? "", /remain private/)
 		assert.match(instructions ?? "", /normally one sentence, sometimes two, and only rarely three/)
 	})
 
 	it("keeps follow-up completion separate from durable Goal lifecycle", () => {
-		const instructions = taskProfileSystemInstructions("goal_followup")
-
+		const instructions = taskProfileSystemInstructions("goal_followup", true)
 		assert.match(instructions ?? "", /durable Goal lifecycle status is authoritative/)
 		assert.match(instructions ?? "", /respond with complete finishes only this follow-up turn/)
 		assert.match(instructions ?? "", /block_goal ends only this follow-up turn/)
 		assert.match(instructions ?? "", /explicitly resume paused, blocked, or stopped Goal pursuit/)
 		assert.match(instructions ?? "", /An achieved Goal cannot be resumed/)
+		assert.match(instructions ?? "", /Both require all tasklets to be terminal/)
 	})
 
 	it("does not add Goal progress guidance to standalone Tasks", () => {

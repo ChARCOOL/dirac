@@ -17,6 +17,7 @@ import type { DiracMemento } from "@/shared/storage/DiracStorage"
 import type { StorageContext } from "@/shared/storage/storage-context"
 import { StateManager } from "../StateManager"
 import { TEST_MODEL_IDS } from "@test/fixtures/model-ids"
+import { expectLoggerErrors } from "@test/loggerGuard"
 
 import {
 	buildEffectiveApiConfigurationFromCache,
@@ -70,10 +71,11 @@ describe("StateManager", () => {
 
 		storage = {
 			globalState: createMockMemento({ mode: "plan", taskHistory: [] }),
-			globalStateBackingStore: createMockFileStorage({ mode: "plan", taskHistory: [] }),
+			globalStateBackingStore: createMockFileStorage({ mode: "plan", taskHistory: [], addedApiProviders: [] }),
 			secrets: createMockFileStorage({}),
 			workspaceState: createMockFileStorage({}),
 			dataDir: tempDir,
+			diracDir: tempDir,
 			workspaceStoragePath: tempDir,
 		}
 
@@ -122,6 +124,47 @@ describe("StateManager", () => {
 	})
 
 	// ---------------------------------------------------------------
+	describe("legacy keyless provider membership migration", () => {
+		it("persists legacy membership before selections change and does not migrate again", async () => {
+			storage.globalStateBackingStore.delete("addedApiProviders")
+			await storage.globalState.update("planModeApiProvider", "claude-code")
+			await storage.globalState.update("actModeApiProvider", "lmstudio")
+			const sm = await StateManager.initialize(storage)
+			expect(storage.globalStateBackingStore.get("addedApiProviders")).to.deep.equal(["claude-code", "lmstudio"])
+			expect(sm.getSystemDefaultSettingsKey("addedApiProviders")).to.deep.equal(["claude-code", "lmstudio"])
+			sm.setApiConfiguration({ planModeApiProvider: "anthropic", actModeApiProvider: "anthropic" })
+			await sm.flushPendingState()
+			// The production Memento reads the backing store; reconnect the test doubles for restart.
+			storage.globalState.get = storage.globalStateBackingStore.get.bind(storage.globalStateBackingStore)
+			const write = sandbox.spy(storage.globalStateBackingStore, "setBatch")
+			await sm.reInitialize()
+			expect(StateManager.get().getSystemDefaultSettingsKey("addedApiProviders")).to.deep.equal(["claude-code", "lmstudio"])
+			sinon.assert.notCalled(write)
+		})
+
+		it("marks fresh storage migrated without turning selection defaults into providers", async () => {
+			storage.globalStateBackingStore.delete("addedApiProviders")
+			await StateManager.initialize(storage)
+			expect(storage.globalStateBackingStore.get("addedApiProviders")).to.deep.equal([])
+		})
+
+		it("preserves explicitly stored membership", async () => {
+			await storage.globalState.update("planModeApiProvider", "claude-code")
+			const write = sandbox.spy(storage.globalStateBackingStore, "setBatch")
+			const sm = await StateManager.initialize(storage)
+			expect(sm.getSystemDefaultSettingsKey("addedApiProviders")).to.deep.equal([])
+			sinon.assert.notCalled(write)
+		})
+
+		it("does not publish initialized state if durable migration fails", async () => {
+			expectLoggerErrors()
+			storage.globalStateBackingStore.delete("addedApiProviders")
+			sandbox.stub(storage.globalStateBackingStore, "setBatch").throws(new Error("membership write failed"))
+			await StateManager.initialize(storage).should.be.rejectedWith("membership write failed")
+			expect(StateManager.isInitialized()).to.equal(false)
+		})
+	})
+
 	describe("utility model migration", () => {
 		async function setPersistedUtilitySetting(key: string, value: boolean): Promise<void> {
 			await storage.globalState.update(key, value)
@@ -134,7 +177,6 @@ describe("StateManager", () => {
 			const sm = await StateManager.initialize(storage)
 
 			sm.getGlobalSettingsKey("utilityModelUseCondense").should.equal(true)
-			sm.getGlobalSettingsKey("utilityModelUseNewTask").should.equal(true)
 			sm.getGlobalSettingsKey("utilityModelUseGenerateCommitMessage").should.equal(true)
 			sinon.assert.notCalled(setBatch)
 		})
@@ -145,7 +187,6 @@ describe("StateManager", () => {
 			const sm = await StateManager.initialize(storage)
 
 			sm.getGlobalSettingsKey("utilityModelUseCondense").should.equal(true)
-			sm.getGlobalSettingsKey("utilityModelUseNewTask").should.equal(true)
 			sm.getGlobalSettingsKey("utilityModelUseGenerateCommitMessage").should.equal(true)
 		})
 
@@ -155,7 +196,6 @@ describe("StateManager", () => {
 			const sm = await StateManager.initialize(storage)
 
 			sm.getGlobalSettingsKey("utilityModelUseCondense").should.equal(false)
-			sm.getGlobalSettingsKey("utilityModelUseNewTask").should.equal(false)
 			sm.getGlobalSettingsKey("utilityModelUseGenerateCommitMessage").should.equal(false)
 		})
 
@@ -166,21 +206,18 @@ describe("StateManager", () => {
 			const sm = await StateManager.initialize(storage)
 
 			sm.getGlobalSettingsKey("utilityModelUseCondense").should.equal(false)
-			sm.getGlobalSettingsKey("utilityModelUseNewTask").should.equal(true)
 			sm.getGlobalSettingsKey("utilityModelUseGenerateCommitMessage").should.equal(true)
 		})
 
 		it("does not rewrite configurations with every independent use case persisted", async () => {
 			await setPersistedUtilitySetting("utilityModelEnabled", false)
 			await setPersistedUtilitySetting("utilityModelUseCondense", true)
-			await setPersistedUtilitySetting("utilityModelUseNewTask", false)
 			await setPersistedUtilitySetting("utilityModelUseGenerateCommitMessage", true)
 			const setBatch = sandbox.spy(storage.globalStateBackingStore, "setBatch")
 
 			const sm = await StateManager.initialize(storage)
 
 			sm.getGlobalSettingsKey("utilityModelUseCondense").should.equal(true)
-			sm.getGlobalSettingsKey("utilityModelUseNewTask").should.equal(false)
 			sm.getGlobalSettingsKey("utilityModelUseGenerateCommitMessage").should.equal(true)
 			sinon.assert.notCalled(setBatch)
 		})

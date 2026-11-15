@@ -1,3 +1,5 @@
+import { prepareSandboxSettingsUpdate } from "@shared/SandboxSettings"
+import { convertProtoToSubagentRoles } from "@shared/proto-conversions/subagent-roles"
 import type { TaskWorkingConfiguration, TaskWorkingConfigurationPatch } from "@core/task/runtime/TaskWorkingConfiguration"
 import type { ApiConfiguration } from "@shared/api"
 import { Empty } from "@shared/proto/dirac/common"
@@ -53,13 +55,16 @@ function buildCliSettingsPersistencePatch(
 		utilityModelEnabled,
 		utilityModelSelection,
 		utilityModelUseCondense,
-		utilityModelUseNewTask,
 		utilityModelUseGenerateCommitMessage,
 		utilityModelUsePermissionHandling,
 		utilityModelPermissionPolicy,
+		subagentRoles,
+		sandboxSettings,
 		...simpleSettings
 	} = settings
 	const globalSettings = filterSimpleSettingsBatch(simpleSettings)
+	if (subagentRoles !== undefined) globalSettings.subagentRoles = convertProtoToSubagentRoles(subagentRoles)
+	if (sandboxSettings !== undefined) globalSettings.sandboxSettings = prepareSandboxSettingsUpdate(controller.stateManager.getSystemDefaultSettingsKey("sandboxSettings"), sandboxSettings)
 
 	Logger.log("autoApprovalSettings", controller.stateManager.getGlobalSettingsKey("autoApprovalSettings"))
 	if (autoApprovalSettings) {
@@ -84,7 +89,6 @@ function buildCliSettingsPersistencePatch(
 		globalSettings.utilityModelSelection = convertProtoToModelProviderSelection(utilityModelSelection)
 	}
 	if (utilityModelUseCondense !== undefined) globalSettings.utilityModelUseCondense = utilityModelUseCondense
-	if (utilityModelUseNewTask !== undefined) globalSettings.utilityModelUseNewTask = utilityModelUseNewTask
 	if (utilityModelUseGenerateCommitMessage !== undefined) {
 		globalSettings.utilityModelUseGenerateCommitMessage = utilityModelUseGenerateCommitMessage
 	}
@@ -127,10 +131,10 @@ function persistCliConfiguration(
 	const previousSecrets: Partial<Secrets> = {}
 
 	for (const key of globalKeys) {
-		;(previousGlobalSettings as Record<string, unknown>)[key] = structuredClone(stateManager.getSystemDefaultSettingsKey(key))
+		; (previousGlobalSettings as Record<string, unknown>)[key] = structuredClone(stateManager.getSystemDefaultSettingsKey(key))
 	}
 	for (const key of secretKeys) {
-		;(previousSecrets as Record<string, unknown>)[key] = stateManager.getSecretKey(key)
+		; (previousSecrets as Record<string, unknown>)[key] = stateManager.getSecretKey(key)
 	}
 
 	const updatesSessionMode = patch.sessionMode !== undefined
@@ -223,10 +227,11 @@ function buildActiveTaskPatch(
 			utilityModelEnabled,
 			utilityModelSelection,
 			utilityModelUseCondense,
-			utilityModelUseNewTask,
 			utilityModelUseGenerateCommitMessage,
 			utilityModelUsePermissionHandling,
 			utilityModelPermissionPolicy,
+			subagentRoles: _subagentRoles,
+			sandboxSettings: _sandboxSettings,
 			...simpleSettings
 		} = settings
 
@@ -269,7 +274,6 @@ function buildActiveTaskPatch(
 		if (utilityModelSelection !== undefined)
 			settingsPatch.utilityModelSelection = convertProtoToModelProviderSelection(utilityModelSelection)
 		if (utilityModelUseCondense !== undefined) settingsPatch.utilityModelUseCondense = utilityModelUseCondense
-		if (utilityModelUseNewTask !== undefined) settingsPatch.utilityModelUseNewTask = utilityModelUseNewTask
 		if (utilityModelUseGenerateCommitMessage !== undefined)
 			settingsPatch.utilityModelUseGenerateCommitMessage = utilityModelUseGenerateCommitMessage
 		if (utilityModelUsePermissionHandling !== undefined)
@@ -304,11 +308,15 @@ export async function updateSettingsCli(controller: Controller, request: UpdateS
 	}
 
 	let previousActiveTerminalProfile: string | undefined
-	const taskPatch = controller.task
+	const addressedPatch = buildActiveTaskPatch(settings, secrets, planModeApiProvider, actModeApiProvider)
+	const addressesActiveTask = Object.keys(addressedPatch.settings ?? {}).length > 0 ||
+		Object.keys(addressedPatch.apiConfiguration ?? {}).length > 0 ||
+		settings?.autoApprovalSettings !== undefined || settings?.browserSettings !== undefined
+	const taskPatch = controller.task && addressesActiveTask
 		? (current: TaskWorkingConfiguration) => {
-				previousActiveTerminalProfile = current.settings.defaultTerminalProfile
-				return buildActiveTaskPatch(settings, secrets, planModeApiProvider, actModeApiProvider, current)
-			}
+			previousActiveTerminalProfile = current.settings.defaultTerminalProfile
+			return buildActiveTaskPatch(settings, secrets, planModeApiProvider, actModeApiProvider, current)
+		}
 		: undefined
 	let terminalProfileChange: TerminalProfileChangeResult | undefined
 	const persist = () => {

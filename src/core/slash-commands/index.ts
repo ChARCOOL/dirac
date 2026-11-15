@@ -28,7 +28,6 @@ export async function parseSlashCommands(
 	extensionPath?: string,
 	sourceDir: string = getExtensionSourceDir(),
 	conversationCondensationAvailable = false,
-	taskHandoffCondensationAvailable = false,
 ): Promise<ParseSlashCommandResult> {
 	const match = findSlashCommandInTags(text)
 	if (!match) return { processedText: text, needsDiracrulesFileCheck: false }
@@ -41,7 +40,6 @@ export async function parseSlashCommands(
 		extensionPath,
 		sourceDir,
 		conversationCondensationAvailable,
-		taskHandoffCondensationAvailable,
 	)
 	if (builtinResult) return builtinResult
 

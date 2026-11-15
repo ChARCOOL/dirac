@@ -12,6 +12,7 @@ import {
 	SteeringDeliveryState,
 	SteeringMessage,
 } from "./steering"
+import { materializeModelBoundInput } from "./TaskInputMaterialization"
 import type { TaskMessenger } from "./TaskMessenger"
 import type { TaskState } from "./TaskState"
 
@@ -19,15 +20,17 @@ export interface TaskSteeringContext {
 	taskState: TaskState
 	messageStateHandler: MessageStateHandler
 	taskMessenger: TaskMessenger
-	allowWhileWaitingForInteraction?: boolean
+	getCompletionBlocker?: () => string | undefined
+	onCompletionCommitted?: () => void
 	postStateToWebview: () => void | Promise<void>
 	withStateLock: <T>(fn: () => T | Promise<T>) => Promise<T>
+	onUserInputAccepted?: () => void
 }
 
 export function canAcceptSteeringMessage(ctx: TaskSteeringContext): boolean {
 	if (ctx.taskState.completionCommitted) return false
-	if (ctx.taskState.abort || ctx.taskState.pendingTaskReplacement) return false
-	if (ctx.taskState.waitingCardIds.length > 0 && !ctx.allowWhileWaitingForInteraction) return false
+	if (ctx.taskState.abort) return false
+	// Guidance queues independently of card decisions, including while permission is pending.
 	return ![TaskStatus.IDLE, TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.CANCELLING].includes(ctx.taskState.status)
 }
 
@@ -61,6 +64,7 @@ export async function enqueueSteeringMessage(ctx: TaskSteeringContext, text: str
 		}
 		await ctx.messageStateHandler.addToDiracMessages(transcriptMessage)
 		ctx.taskState.steeringMessages.push(message)
+		ctx.onUserInputAccepted?.()
 		return message
 	})
 
@@ -145,8 +149,8 @@ export async function rollbackSteeringClaim(ctx: TaskSteeringContext, claimId: s
 	})
 }
 
-export function isSlashCommandSteeringMessage(message: Pick<SteeringMessage, "text">): boolean {
-	return findSlashCommandInTags(formatSteeringMessages([message])) !== null
+export function isSlashCommandSteeringMessage(message: Pick<SteeringMessage, "text" | "contextual">): boolean {
+	return !message.contextual && findSlashCommandInTags(formatSteeringMessages([message])) !== null
 }
 
 export async function releaseSteeringClaimSuffix(
@@ -167,6 +171,16 @@ export async function releaseSteeringClaimSuffix(
 	return { ...claim, messages: retainedMessages }
 }
 
+function steeringContent(messages: SteeringMessage[]): DiracTextContentBlock[] {
+	// Keep contextual blocks separate even when raw chat and feedback share a claim.
+	return messages.map((message) => ({
+		type: "text",
+		text: formatSteeringMessages([message]),
+		isUserInput: !message.contextual,
+		steeringMessageIds: [message.transcriptMessageId],
+	}))
+}
+
 export async function appendQueuedSteeringToUserContent(
 	ctx: TaskSteeringContext,
 	userContent: DiracContent[],
@@ -175,23 +189,13 @@ export async function appendQueuedSteeringToUserContent(
 	if (!steeringClaim) return undefined
 	const commandIndex = steeringClaim.messages.findIndex((message) => isSlashCommandSteeringMessage(message))
 	if (commandIndex === -1) {
-		userContent.push({
-			type: "text",
-			text: formatSteeringMessages(steeringClaim.messages),
-			isUserInput: true,
-			steeringMessageIds: steeringClaim.messages.map((message) => message.transcriptMessageId),
-		})
+		userContent.push(...steeringContent(steeringClaim.messages))
 		return steeringClaim
 	}
 
 	const retainedCount = commandIndex === 0 ? 1 : commandIndex
 	const requestClaim = await releaseSteeringClaimSuffix(ctx, steeringClaim, retainedCount)
-	userContent.push({
-		type: "text",
-		text: formatSteeringMessages(requestClaim.messages),
-		isUserInput: true,
-		steeringMessageIds: requestClaim.messages.map((message) => message.transcriptMessageId),
-	})
+	userContent.push(...steeringContent(requestClaim.messages))
 	return requestClaim
 }
 
@@ -206,32 +210,18 @@ export async function appendQueuedSteeringToNextApiRequest(
 		return
 	}
 
-	const messageIds = steeringClaim.messages.map((message) => message.transcriptMessageId)
-	const steeringBlock: DiracTextContentBlock = {
-		type: "text",
-		text: formatSteeringMessages(steeringClaim.messages),
-		steeringMessageIds: messageIds,
-	}
-	const outboundUserMessage = outboundHistory.at(-1)
-	if (!outboundUserMessage || outboundUserMessage.role !== "user") {
-		await rollbackSteeringClaim(ctx, steeringClaim.id)
-		throw new Error("Cannot steer a model request without a final user message")
-	}
-
-	let userMessagePersisted = false
 	try {
-		const persistedUserMessage = await ctx.messageStateHandler.appendToLastApiConversationUserMessage(steeringBlock)
-		userMessagePersisted = true
-		if (outboundUserMessage !== persistedUserMessage) {
-			if (typeof outboundUserMessage.content === "string") {
-				outboundUserMessage.content = [{ type: "text", text: outboundUserMessage.content }, steeringBlock]
-			} else {
-				outboundUserMessage.content.push(steeringBlock)
-			}
-		}
-		await settleConsumedSteeringClaim(ctx, steeringClaim)
+		await materializeModelBoundInput(
+			ctx.messageStateHandler,
+			outboundHistory,
+			steeringContent(steeringClaim.messages),
+			"steeringMessageIds",
+			() => settleConsumedSteeringClaim(ctx, steeringClaim),
+		)
 	} catch (error) {
-		if (!userMessagePersisted) await rollbackSteeringClaim(ctx, steeringClaim.id)
+		// A staged write may still need flushing. Release the claim so a retry reuses
+		// its conversation identity and finishes persistence before recording inclusion.
+		await rollbackSteeringClaim(ctx, steeringClaim.id)
 		throw error
 	}
 }
@@ -244,13 +234,15 @@ export async function commitAttemptCompletion(
 		const hasQueuedSteering = ctx.taskState.steeringMessages.some(
 			(message) => message.deliveryState === SteeringDeliveryState.QUEUED,
 		)
-		if (hasQueuedSteering) {
+		const blocker = hasQueuedSteering ? "Completion was superseded by queued user steering." : ctx.getCompletionBlocker?.()
+		if (blocker) {
 			ctx.taskState.didAttemptCompletion = false
-			return { committed: false, error: "Completion was superseded by queued user steering." }
+			return { committed: false, error: blocker }
 		}
 		ctx.taskState.completionCommitted = true
 		ctx.taskState.didAttemptCompletion = true
-		ctx.taskState.completionResponse = response
+		ctx.taskState.commitCompletionResponse(response)
+		ctx.onCompletionCommitted?.()
 		return { committed: true }
 	})
 }

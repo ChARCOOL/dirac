@@ -1,168 +1,129 @@
+import assert from "node:assert/strict"
 import { describe, it } from "mocha"
-import "should"
-import { isSafeCommand } from "../CommandSafetyChecker"
+import sinon from "sinon"
+import {
+	classifyCommandCapabilities,
+	COMMAND_CAPABILITY_CATEGORIES,
+	DEFAULT_COMMAND_CAPABILITIES,
+	getMissingCommandCapabilities,
+	isSafeCommand,
+	mergeCommandCapabilities,
+} from "../CommandSafetyChecker"
+import { LEGACY_READ_COMMANDS } from "./legacyReadCommands"
 
+// Classify strings only. Never execute candidate commands.
 describe("CommandSafetyChecker", () => {
-	describe("isSafeCommand", () => {
-		// Positive cases
-		it("should allow simple safe commands", () => {
-			isSafeCommand("ls").should.equal(true)
-			isSafeCommand("pwd").should.equal(true)
-			isSafeCommand("date").should.equal(true)
-			isSafeCommand("whoami").should.equal(true)
+	for (const command of [
+		"git diff --ext-diff", "git log --ext-diff", "git show --textconv",
+		"git hash-object file.txt", "git hash-object --path=file.txt file.txt",
+		"gi''t diff --ext-''diff", "pwd && git diff --ext-diff", "(git show --textconv)",
+	]) {
+		it(`requires approval for underclassified Git helpers: ${JSON.stringify(command)}`, () => {
+			assert.equal(classifyCommandCapabilities(command), -1)
+			assert.equal(isSafeCommand(command, (1 << 30) - 1), false)
 		})
+	}
 
-		it("should allow safe commands with arguments", () => {
-			isSafeCommand("ls -la").should.equal(true)
-			isSafeCommand("grep 'search term' file.txt").should.equal(true)
-			isSafeCommand("cat README.md").should.equal(true)
-			isSafeCommand("head -n 20 file.ts").should.equal(true)
-		})
+	it("keeps explicit helper-free Git diff automatic", () => {
+		assert.equal(isSafeCommand("git diff --no-ext-diff --no-textconv"), true)
+	})
 
-		it("should allow piped safe commands", () => {
-			isSafeCommand("ls | grep ts").should.equal(true)
-			isSafeCommand("cat file.txt | sort | uniq").should.equal(true)
+	for (const platform of ["win32", "android", "unknown"]) {
+		it(`does not apply Bash capabilities on unsupported platform ${platform}`, () => {
+			const stub = sinon.stub(process, "platform").value(platform)
+			try {
+				assert.equal(classifyCommandCapabilities("echo safe # & del important.txt"), -1)
+				assert.equal(isSafeCommand("echo safe # & del important.txt", (1 << 30) - 1), false)
+				assert.equal(isSafeCommand("git status"), false)
+			} finally {
+				stub.restore()
+			}
 		})
+	}
 
-		it("should allow commands with 2>/dev/null", () => {
-			isSafeCommand("ls 2>/dev/null").should.equal(true)
-			isSafeCommand("find . -name '*.ts' 2>/dev/null").should.equal(true)
-		})
+	it("packs the exact ten-category default policy", () => {
+		assert.deepEqual(COMMAND_CAPABILITY_CATEGORIES, [
+			"filesystem", "network", "processes", "execution", "credentials", "software",
+			"configuration", "devices", "remote_resources", "system",
+		])
+		assert.deepEqual(
+			COMMAND_CAPABILITY_CATEGORIES.map((_, index) => (DEFAULT_COMMAND_CAPABILITIES >>> (index * 3)) & 7),
+			[3, 0, 3, 0, 0, 3, 3, 1, 0, 3],
+		)
+	})
 
-		it("should allow safe git subcommands", () => {
-			isSafeCommand("git status").should.equal(true)
-			isSafeCommand("git log").should.equal(true)
-			isSafeCommand("git diff").should.equal(true)
-			isSafeCommand("git show").should.equal(true)
-			isSafeCommand("git branch").should.equal(true)
-			isSafeCommand("git branch -a").should.equal(true)
-			isSafeCommand("git remote").should.equal(true)
-			isSafeCommand("git remote -v").should.equal(true)
+	for (const command of ["ls -la", "git status", "cat README.md", "ps", "uname -a", "pwd && ls | head -20"]) {
+		it(`approves known default capabilities: ${JSON.stringify(command)}`, () => {
+			assert.equal(isSafeCommand(command), true)
 		})
+	}
 
-		it("should allow newly added safe commands", () => {
-			isSafeCommand("which node").should.equal(true)
-			isSafeCommand("type ls").should.equal(true)
-		})
+	it("reports only above-default capabilities, ordered mutate/read/use then category", () => {
+		const required = (7 << 0) | (1 << 3) | (7 << 6) | (3 << 12) | (1 << 24)
+		assert.deepEqual(getMissingCommandCapabilities(required), [
+			{ category: "filesystem", index: 0, access: 7 },
+			{ category: "processes", index: 2, access: 7 },
+			{ category: "credentials", index: 4, access: 3 },
+			{ category: "network", index: 1, access: 1 },
+			{ category: "remote_resources", index: 8, access: 1 },
+		])
+	})
 
-		it("should allow safe sed commands (read-only)", () => {
-			isSafeCommand("sed -n '1p' file.txt").should.equal(true)
-			isSafeCommand("sed -n '1787,1790p' src/core/task/index.ts").should.equal(true)
-			isSafeCommand("sed -e 's/foo/bar/' file.txt").should.equal(true)
-			isSafeCommand("sed -n '1,5p' file.txt | head -20").should.equal(true)
-		})
+	it("identifies known execution, filesystem and network deficits", () => {
+		assert.deepEqual(getMissingCommandCapabilities(classifyCommandCapabilities("npm test")), [
+			{ category: "execution", index: 3, access: 1 },
+		])
+		assert.deepEqual(getMissingCommandCapabilities(classifyCommandCapabilities("ls > out.txt")), [
+			{ category: "filesystem", index: 0, access: 7 },
+		])
+		assert.deepEqual(getMissingCommandCapabilities(classifyCommandCapabilities("curl https://example.com")), [
+			{ category: "remote_resources", index: 8, access: 3 },
+			{ category: "network", index: 1, access: 1 },
+		])
+	})
 
-		it("should allow grep with BRE alternation (backslash-pipe) in patterns", () => {
-			isSafeCommand("grep -n 'foo\\|bar' file.txt").should.equal(true)
-			isSafeCommand("grep -rn 'partialMessage\\|partial_message' src/ --include='*.ts' | head -30").should.equal(true)
-			isSafeCommand("grep -rn 'a\\|b\\|c' src/ --include='*.ts' --include='*.tsx' | head -30").should.equal(true)
-		})
+	it("merges grants monotonically and only covers the requested capabilities", () => {
+		const execution = 1 << 9
+		const grants = mergeCommandCapabilities(DEFAULT_COMMAND_CAPABILITIES, execution)
+		assert.equal(isSafeCommand("npm test", grants), true)
+		assert.equal(isSafeCommand("rm file.txt", grants), false)
+		assert.equal(mergeCommandCapabilities(grants, 0), grants)
+		assert.equal(mergeCommandCapabilities(grants, 3 << 9), grants | (3 << 9))
+		assert.throws(() => mergeCommandCapabilities(DEFAULT_COMMAND_CAPABILITIES, -1), /cannot be granted/)
+	})
 
-		it("should allow stderr redirection mid-pipe (2>/dev/null)", () => {
-			isSafeCommand("grep -n 'foo' file.zig 2>/dev/null | head -40").should.equal(true)
-			isSafeCommand("grep -rn 'TODO' src/ 2>/dev/null | tail -20").should.equal(true)
-			isSafeCommand("grep -c 'import' src/ 2>/dev/null | wc -l").should.equal(true)
-			isSafeCommand("grep -rn 'foo' src/ 2>/dev/null | sort | uniq -c 2>/dev/null | head -10").should.equal(true)
+	for (const command of [
+		"unknown_command_xyz", "ls $OPTIONS", "ls *.ts", "ls $(pwd)",
+		"ls && unknown_command_xyz", "ls | unknown_command_xyz", "bash -c 'unknown_command_xyz'",
+		"pwd && npm test -- --runInBand 2>&1",
+	]) {
+		it(`keeps the whole unknown input manual: ${JSON.stringify(command)}`, () => {
+			assert.equal(classifyCommandCapabilities(command), -1)
+			assert.equal(getMissingCommandCapabilities(classifyCommandCapabilities(command)), undefined)
+			assert.equal(isSafeCommand(command, (1 << 30) - 1), false)
 		})
+	}
 
-		it("should allow stderr redirection to stdout (2>&1)", () => {
-			isSafeCommand("ls 2>&1").should.equal(true)
-			isSafeCommand("ls 2>&1 | head -5").should.equal(true)
-		})
+	it("uses the published whole-command shell model, not legacy body extraction", () => {
+		assert.equal(isSafeCommand("(ls)"), true)
+		assert.equal(isSafeCommand("cat < file.txt"), true)
+		assert.equal(isSafeCommand("find . ! -delete"), false)
+		assert.equal(isSafeCommand("bash -c 'ls'"), false)
+	})
 
-		it("should allow grep/awk with comparison operators inside quotes", () => {
-			isSafeCommand("grep -E 'version >= 2' README.md").should.equal(true)
-			isSafeCommand("awk -F',' '{if ($3 > 100) print $1}' data.csv").should.equal(true)
-			isSafeCommand("grep -E '<div|<span' template.html").should.equal(true)
-		})
-
-		it("should allow backslash-escaped pipe in grep patterns", () => {
-			isSafeCommand("grep -E foo\\|bar src/file.ts").should.equal(true)
-		})
-
-		it("should allow awk commands (read-only)", () => {
-			isSafeCommand("awk '{print $1}' file.txt").should.equal(true)
-			isSafeCommand("awk -F: '{print $1}' /etc/passwd").should.equal(true)
-		})
-
-		it("should still block stderr strip followed by real redirection", () => {
-			isSafeCommand("cat file 2>/dev/null > output.txt").should.equal(false)
-			isSafeCommand("echo test 2>/dev/null > malicious.txt").should.equal(false)
-		})
-
-		it("should reject commands with unmatched quotes", () => {
-			isSafeCommand("echo 'unterminated > redirect").should.equal(false)
-		})
-
-		// Negative cases
-		it("should reject output redirection", () => {
-			isSafeCommand("ls > files.txt").should.equal(false)
-			isSafeCommand("ls >> files.txt").should.equal(false)
-			isSafeCommand("echo 'hello' > greeting.txt").should.equal(false)
-		})
-
-		it("should reject input redirection", () => {
-			isSafeCommand("cat < /etc/passwd").should.equal(false)
-			isSafeCommand("grep foo < file.txt").should.equal(false)
-		})
-
-		it("should reject command substitution", () => {
-			isSafeCommand("echo $(whoami)").should.equal(false)
-			isSafeCommand("echo `whoami`").should.equal(false)
-			isSafeCommand("ls $(pwd)").should.equal(false)
-		})
-
-		it("should reject process substitution", () => {
-			isSafeCommand("diff <(ls folder1) <(ls folder2)").should.equal(false)
-		})
-
-		it("should reject dangerous find flags", () => {
-			isSafeCommand("find . -delete").should.equal(false)
-			isSafeCommand("find . -exec rm {} \\;").should.equal(false)
-			isSafeCommand("find . -execdir touch {} \\;").should.equal(false)
-			isSafeCommand("find . -ok rm {} \\;").should.equal(false)
-		})
-
-		it("should reject dangerous sort flags", () => {
-			isSafeCommand("sort -o important.txt file.txt").should.equal(false)
-			isSafeCommand("sort --output=important.txt file.txt").should.equal(false)
-		})
-
-		it("should reject sed with in-place edit flags", () => {
-			isSafeCommand("sed -i 's/foo/bar/' file.txt").should.equal(false)
-			isSafeCommand("sed -i.bak 's/foo/bar/' file.txt").should.equal(false)
-			isSafeCommand("sed -i'' 's/foo/bar/' file.txt").should.equal(false)
-			isSafeCommand("sed -in 's/foo/bar/' file.txt").should.equal(false)
-			isSafeCommand("sed -ni '1p' file.txt").should.equal(false)
-			isSafeCommand("sed --in-place 's/foo/bar/' file.txt").should.equal(false)
-			isSafeCommand("sed --in-place=.bak 's/foo/bar/' file.txt").should.equal(false)
-		})
-
-		it("should reject dangerous git operations", () => {
-			isSafeCommand("git checkout master").should.equal(false)
-			isSafeCommand("git branch -D old-branch").should.equal(false)
-			isSafeCommand("git remote add origin url").should.equal(false)
-			isSafeCommand("git push").should.equal(false)
-			isSafeCommand("git commit").should.equal(false)
-		})
-
-		it("should reject unsafe base commands", () => {
-			isSafeCommand("rm -rf /").should.equal(false)
-			isSafeCommand("mv file1 file2").should.equal(false)
-			isSafeCommand("cp file1 file2").should.equal(false)
-			isSafeCommand("mkdir new_folder").should.equal(false)
-			isSafeCommand("touch new_file").should.equal(false)
-			isSafeCommand("npm install").should.equal(false)
-		})
-
-		it("should reject chained unsafe commands", () => {
-			isSafeCommand("ls ; rm -rf /").should.equal(false)
-			isSafeCommand("ls && rm -rf /").should.equal(false)
-			isSafeCommand("ls || rm -rf /").should.equal(false)
-		})
-
-		it("should reject environment variable prefixing", () => {
-			isSafeCommand("NODE_ENV=production ls").should.equal(false)
-		})
+	it("migrates the 116 legacy read fixtures to 108 automatic and eight prompted commands", () => {
+		const prompted = LEGACY_READ_COMMANDS.filter((command) => !isSafeCommand(command))
+		assert.equal(LEGACY_READ_COMMANDS.length, 116)
+		assert.equal(LEGACY_READ_COMMANDS.length - prompted.length, 108)
+		assert.deepEqual(prompted, [
+			"git branch",
+			"nl -ba src/index.ts | sed -n '115,250p'",
+			"sed -n '1p' file.txt",
+			"sed -n '1787,1790p' src/core/task/index.ts",
+			"sed -e '1,5p' file.txt",
+			"sed -n '1,5p' file.txt | head -20",
+			"sed -n '1,$p' input.txt",
+			"nl -ba src/index.ts | sed -n '1,20p'",
+		])
 	})
 })

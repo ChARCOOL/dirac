@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert"
+import { HookFactory } from "@core/hooks/hook-factory"
+import { HookCleanupError } from "@core/hooks/HookCleanupError"
 import { describe, it } from "mocha"
 import sinon from "sinon"
 import { ApiConversationManager } from "../ApiConversationManager"
@@ -386,6 +388,7 @@ describe("ApiConversationManager steering delivery", () => {
 			contextManager: {
 				getTruncatedMessages: sinon.stub().callsFake((messages: any[]) => messages),
 			},
+			stateManager: { getGlobalSettingsKey: sinon.stub() },
 			runUserPromptSubmitHook: sinon.stub().resolves({}),
 			loadContext: sinon.stub().resolves([
 				[{ type: "text", text: "search current information" }],
@@ -461,13 +464,14 @@ describe("ApiConversationManager steering delivery", () => {
 			]
 			let providerState: any = {}
 			const compactConversation = sinon.stub().resolves({ input: [{ type: "compaction", encrypted_content: "opaque" }] })
-			const settings: Record<string, unknown> = { hooksEnabled: false }
 			const dependencies: any = {
 				taskState,
-				api: { compactConversation, getModel: () => ({ id: "model", info: { contextWindow: 200_000 } }) },
-				settings,
-				getWorkingConfiguration: () => ({ settings }),
 				getRequestRuntime: () => undefined,
+				getWorkingConfiguration: () => ({
+					settings: Object.fromEntries(["hooksEnabled", "useAutoCondense", "autoCondenseContextLimits"].map((key) => [key, dependencies.stateManager.getGlobalSettingsKey(key)])),
+					apiConfiguration: {},
+				}),
+				api: { compactConversation },
 				contextManager: {
 					getTruncatedMessages: sinon.stub().callsFake((messages: any[]) => messages),
 					getNextTruncationRange: sinon.stub().returns([0, 1]),
@@ -482,9 +486,76 @@ describe("ApiConversationManager steering delivery", () => {
 					getDiracMessages: sinon.stub().returns([]),
 					saveDiracMessagesAndUpdateHistory: sinon.stub().resolves(),
 				},
+				stateManager: {
+					getGlobalSettingsKey: sinon.stub().callsFake((key: string) => (key === "hooksEnabled" ? false : undefined)),
+				},
 				getCurrentProviderInfo: () => ({ providerId: "openai-codex" }),
 			}
 			return { dependencies, history, compactConversation, getProviderState: () => providerState }
+		}
+
+		for (const fatal of [false, true]) {
+			it(`${fatal ? "propagates fatal cleanup" : "fails open for ordinary errors"} through emergency truncation's real PreCompact caller`, async () => {
+				if (!fatal) expectLoggerErrors()
+				const { dependencies } = createCompactionDependencies()
+				Object.assign(dependencies, {
+					taskId: "task", ulid: "ulid",
+					taskMessenger: { createCard: sinon.stub().resolves({ id: "hook" }) },
+					setActiveHookExecution: sinon.stub().resolves(), clearActiveHookExecution: sinon.stub().resolves(),
+					postStateToWebview: sinon.stub().resolves(), cancelTask: sinon.stub().resolves(),
+				})
+				dependencies.api.getModel = () => ({ id: "model" })
+				dependencies.messageStateHandler.findMessageIndexById = () => -1
+				dependencies.stateManager.getGlobalSettingsKey.withArgs("hooksEnabled").returns(true)
+				const disk = require("@core/storage/disk")
+				sinon.stub(disk, "writeConversationHistoryJson").resolves("context.json")
+				sinon.stub(disk, "writeConversationHistoryText").resolves("context.txt")
+				const cleanup = sinon.stub(disk, "cleanupConversationHistoryFile").resolves()
+				sinon.stub(HookFactory.prototype, "hasHook").resolves(true)
+				sinon.stub(HookFactory.prototype, "getHookInfo").resolves({ scriptPaths: ["PreCompact"] })
+				const failure = fatal ? new HookCleanupError([new Error("termination failed")], "hook cleanup failed") : new Error("ordinary hook failure")
+				sinon.stub(HookFactory.prototype, "createWithStreaming").resolves({ run: async () => { throw failure } } as any)
+				try {
+					const pending = new ApiConversationManager(dependencies).handleContextWindowExceededError()
+					if (fatal) {
+						await assert.rejects(pending, (error) => error === failure)
+						assert.equal(dependencies.taskState.conversationHistoryDeletedRange, undefined)
+						sinon.assert.notCalled(dependencies.messageStateHandler.overwriteApiConversationProviderState)
+						sinon.assert.notCalled(dependencies.messageStateHandler.saveDiracMessagesAndUpdateHistory)
+					} else {
+						await pending
+						assert.deepEqual(dependencies.taskState.conversationHistoryDeletedRange, [0, 1])
+					}
+					sinon.assert.calledOnce(dependencies.setActiveHookExecution)
+					sinon.assert.calledOnce(dependencies.clearActiveHookExecution)
+					sinon.assert.calledTwice(cleanup)
+				} finally {
+					sinon.restore()
+				}
+			})
+		}
+
+		for (const contained of [false, true]) {
+			it(`forwards ${contained ? "contained" : "legacy"} storage to emergency PreCompact without changing payload identity`, async () => {
+				const { dependencies } = createCompactionDependencies()
+				const address = contained ? { kind: "tasklet", rootTaskId: "root", taskletId: "tasklet_00000000-0000-4000-8000-000000000001" } : undefined
+				Object.assign(dependencies, {
+					taskId: "logical-task", storageAddress: address,
+					setActiveHookExecution: sinon.stub(), clearActiveHookExecution: sinon.stub(),
+					postStateToWebview: sinon.stub(), cancelTask: sinon.stub(),
+				})
+				dependencies.api.getModel = () => ({ id: "model" })
+				dependencies.stateManager.getGlobalSettingsKey.withArgs("hooksEnabled").returns(true)
+				const hook = sinon.stub(require("@core/hooks/precompact-executor"), "executePreCompactHookWithCleanup").resolves({})
+				try {
+					await new ApiConversationManager(dependencies).handleContextWindowExceededError()
+					assert.equal(hook.callCount, 1)
+					assert.equal(hook.firstCall.args[0].taskId, dependencies.taskId)
+					assert.equal(hook.firstCall.args[0].storageAddress, address)
+				} finally {
+					hook.restore()
+				}
+			})
 		}
 
 		it("enables native web search only for a capable provider with the skill active", async () => {
@@ -501,13 +572,10 @@ describe("ApiConversationManager steering delivery", () => {
 			})
 			assert.equal(enabledDispatch.options.enableNativeWebSearch, true)
 
-			dependencies.api.supportsNativeWebSearch = () => false
-			const disabledDispatch = await new ApiConversationManager(dependencies).prepareProviderConversationDispatch({
-				systemPrompt: "system",
-				tools: [],
-				truncatedMessages: history,
-				providerId: "unsupported",
-				modelId: "model",
+			const { dependencies: unsupported, history: unsupportedHistory } = createCompactionDependencies()
+			unsupported.api.supportsNativeWebSearch = () => false
+			const disabledDispatch = await new ApiConversationManager(unsupported).prepareProviderConversationDispatch({
+				systemPrompt: "system", tools: [], truncatedMessages: unsupportedHistory, providerId: "unsupported", modelId: "model",
 			})
 			assert.equal(disabledDispatch.options.enableNativeWebSearch, false)
 		})
@@ -590,8 +658,11 @@ describe("ApiConversationManager steering delivery", () => {
 
 		it("uses the openai-codex-specific auto-condense threshold", async () => {
 			const { dependencies } = createCompactionDependencies()
-			dependencies.settings.useAutoCondense = true
-			dependencies.settings.autoCondenseContextLimits = { "openai-codex": 123456 }
+			dependencies.stateManager.getGlobalSettingsKey.callsFake((key: string) => {
+				if (key === "useAutoCondense") return true
+				if (key === "autoCondenseContextLimits") return { "openai-codex": 123456 }
+				return undefined
+			})
 			dependencies.contextManager.shouldCompactContextWindow.returns(true)
 
 			await new ApiConversationManager(dependencies).determineContextCompaction(4)
@@ -734,7 +805,7 @@ describe("ApiConversationManager steering delivery", () => {
 
 		it("skips the pre-condense token sample once after a successful condense", async () => {
 			const { dependencies } = createCompactionDependencies()
-			dependencies.settings.useAutoCondense = true
+			dependencies.stateManager.getGlobalSettingsKey.withArgs("useAutoCondense").returns(true)
 			dependencies.taskState.skipNextAutoCondenseCheck = true
 
 			const shouldCompact = await new ApiConversationManager(dependencies).determineContextCompaction(4)

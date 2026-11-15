@@ -2,16 +2,27 @@ import { strict as assert } from "node:assert"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { Controller } from "@core/controller"
+import { Controller } from "@core/controller"
 import type { StateManager } from "@core/storage/StateManager"
+import type { Task } from "@core/task"
+import type { TaskRunOutcome } from "@core/task/TaskRunOutcome"
+import type { TaskWorkingConfiguration } from "@core/task/runtime/TaskWorkingConfiguration"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { afterEach, beforeEach, describe, it } from "mocha"
+import pWaitFor from "p-wait-for"
 import sinon from "sinon"
 import { setVscodeHostProviderMock } from "@/test/host-provider-test-utils"
 import { GoalController } from "../GoalController"
 import { createGoalHistoryItem } from "../GoalHistory"
 import { GoalLoop } from "../GoalLoop"
 import { GoalStore } from "../GoalStore"
+import { GoalTaskFactory } from "../GoalTaskFactory"
+
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((settle) => { resolve = settle })
+	return { promise, resolve }
+}
 
 describe("GoalController startup transaction", () => {
 	let storagePath: string
@@ -22,6 +33,7 @@ describe("GoalController startup transaction", () => {
 	})
 
 	afterEach(async () => {
+		sinon.restore()
 		await fs.rm(storagePath, { recursive: true, force: true })
 	})
 
@@ -98,7 +110,7 @@ describe("GoalController startup transaction", () => {
 		}
 	})
 
-	it("preserves an existing Goal workspace while reconciling startup lifecycle state", async () => {
+	it("preserves another instance's active Goal and workspace on startup", async () => {
 		const goalId = "01M0TW092EXA0KHTW38ZXJ1GCQ"
 		const store = new GoalStore()
 		await store.create(goalId, "01M0TW092EXA0KHTW38ZXJ1GCQ", "Review the implementation")
@@ -125,8 +137,7 @@ describe("GoalController startup transaction", () => {
 			getStandaloneTask: () => undefined,
 			clearStandaloneTask: async () => {},
 			updateGoalHistory: async (item) => {
-				history[0] = { ...item, isFavorited: history[0].isFavorited }
-				return history
+				throw new Error(`Startup must not rewrite Goal history ${item.id}`)
 			},
 			postState: async () => {},
 		})
@@ -137,15 +148,158 @@ describe("GoalController startup transaction", () => {
 		assert.equal(history[0].id, goalId)
 		assert.equal(history[0].workspaceRootPath, "/workspace/original")
 		assert.equal(history[0].isFavorited, true)
-		assert.equal(history[0].runKind === "goal" ? history[0].status : undefined, "paused")
+		assert.equal(history[0].runKind === "goal" ? history[0].status : undefined, "working")
+		assert.deepEqual(await store.read(goalId), JSON.parse(JSON.stringify(working)))
 	})
+
+	it("captures current Act settings for each follow-up after an inactive Goal's Utility setting changes", async () => {
+		const goalId = "1787700000888"
+		const store = new GoalStore()
+		const record = await store.create(goalId, "01M0TW092EXA0KHTW38ZXJ1GCQ", "Review Goal")
+		const history: HistoryItem[] = [createGoalHistoryItem(record, "Review Goal", "/workspace/dirac")]
+		let configuration = {
+			settings: {
+				mode: "act",
+				utilityModelUseCondense: true,
+				utilityModelSelection: { provider: "openai-codex", modelId: "gpt-6-luna" },
+			},
+			apiConfiguration: {
+				planModeApiProvider: "openai-codex",
+				planModeApiModelId: "gpt-6-astra",
+				actModeApiProvider: "openai-codex",
+				actModeApiModelId: "gpt-6.1-sol",
+			},
+		} as unknown as TaskWorkingConfiguration
+		const capture = sinon.stub().callsFake((overrides) => {
+			assert.deepEqual(overrides, { mode: "act" })
+			return configuration
+		})
+		const stateManager = {
+			getGlobalStateKey: () => history,
+			captureEffectiveTaskConfiguration: capture,
+		} as unknown as StateManager
+		const capturedConfigurations: TaskWorkingConfiguration[] = []
+		sinon.stub(GoalTaskFactory.prototype, "create").callsFake(async function (this: GoalTaskFactory, input) {
+			capturedConfigurations.push(this["dependencies"].workingConfiguration)
+			return {
+				resumeTaskFromHistory: async () => ({ kind: "completed", response: "Done", completedAt: Date.now() }),
+				retirePersistence: async () => { },
+			} as unknown as Task
+		})
+		const goalController = new GoalController({
+			controller: {
+				ensureWorkspaceManager: async () => ({ getPrimaryRoot: () => ({ path: "/workspace/dirac" }) }),
+			} as unknown as Controller,
+			stateManager,
+			getStandaloneTask: () => undefined,
+			clearStandaloneTask: async () => {},
+			updateGoalHistory: async (item) => {
+				history[0] = item
+				return history
+			},
+			postState: async () => {},
+		})
+
+		await goalController.select(goalId)
+		assert.equal(capture.callCount, 0)
+		await goalController.sendMessage(goalId, "Continue")
+		await pWaitFor(() => !goalController.hasRunningCoordinator)
+		assert.equal(capturedConfigurations[0].settings.utilityModelUseCondense, true)
+
+		configuration = {
+			...configuration,
+			settings: { ...configuration.settings, utilityModelUseCondense: false },
+		}
+		await goalController.sendMessage(goalId, "Continue without Utility")
+		await pWaitFor(() => !goalController.hasRunningCoordinator)
+
+		assert.equal(capture.callCount, 2)
+		assert.equal(capturedConfigurations[1].settings.utilityModelUseCondense, false)
+		assert.equal(capturedConfigurations[1].settings.mode, "act")
+		assert.equal(capturedConfigurations[1].apiConfiguration.actModeApiModelId, "gpt-6.1-sol")
+		assert.equal(capturedConfigurations[0].settings.utilityModelUseCondense, true)
+	})
+
+	for (const control of ["select", "dispose", "cancel"] as const) {
+		it(`joins pending follow-up construction before ${control}`, async () => {
+			const store = new GoalStore()
+			const records = await Promise.all([
+				store.create("pending-followup", "conversation-first", "First Goal"),
+				store.create("next-goal", "conversation-second", "Second Goal"),
+			])
+			const history: HistoryItem[] = records.map((record) => createGoalHistoryItem(record, record.objective.markdown))
+			const constructing = deferred<void>()
+			const finishConstruction = deferred<void>()
+			const outcome = deferred<TaskRunOutcome>()
+			const resume = sinon.stub().returns(outcome.promise)
+			const abort = sinon.stub().callsFake(async () => {
+				outcome.resolve({ kind: "cancelled", cancelledAt: Date.now() })
+			})
+			const retire = sinon.stub().resolves()
+			sinon.stub(GoalTaskFactory.prototype, "create").callsFake(async () => {
+				constructing.resolve()
+				await finishConstruction.promise
+				return {
+					resumeTaskFromHistory: resume,
+					abortTask: abort,
+					retirePersistence: retire,
+				} as unknown as Task
+			})
+			const goalController = new GoalController({
+				controller: {
+					ensureWorkspaceManager: async () => ({ getPrimaryRoot: () => ({ path: "/workspace/dirac" }) }),
+				} as unknown as Controller,
+				stateManager: {
+					getGlobalStateKey: () => history,
+					captureEffectiveTaskConfiguration: () => ({}),
+				} as unknown as StateManager,
+				getStandaloneTask: () => undefined,
+				clearStandaloneTask: async () => { },
+				updateGoalHistory: async (item) => {
+					history[history.findIndex((entry) => entry.id === item.id)] = item
+					return history
+				},
+				postState: async () => { },
+			})
+			await goalController.select("pending-followup")
+			// Keep selection's metadata reads in-memory so the blocked operation
+			// is waiting for startup ownership, not unrelated filesystem latency.
+			sinon.stub(goalController["store"], "read").callsFake(async (id) => structuredClone(records.find((record) => record.id === id)!))
+			const sending = goalController.sendMessage("pending-followup", "Explain the result")
+			await constructing.promise
+			const cancelStandalone = sinon.stub().resolves()
+			const surface = { goalController, taskController: { cancelTask: cancelStandalone } } as unknown as Controller
+			let controlFinished = false
+			const controlling = (control === "select"
+				? goalController.select("next-goal")
+				: control === "dispose"
+					? goalController.dispose()
+					: Controller.prototype.cancelTask.call(surface)).then(() => { controlFinished = true })
+			try {
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				assert.equal(controlFinished, false, "control must join pending startup")
+				assert.equal(goalController.selectedGoalId, "pending-followup")
+				finishConstruction.resolve()
+				await Promise.all([sending, controlling])
+				sinon.assert.calledOnce(resume)
+				sinon.assert.calledOnce(abort)
+				sinon.assert.calledOnce(retire)
+				sinon.assert.notCalled(cancelStandalone)
+				assert.equal(goalController.hasRunningCoordinator, false)
+				assert.equal(goalController.selectedGoalId, control === "select" ? "next-goal" : control === "dispose" ? undefined : "pending-followup")
+			} finally {
+				finishConstruction.resolve()
+				outcome.resolve({ kind: "cancelled", cancelledAt: Date.now() })
+				await Promise.allSettled([sending, controlling])
+				await goalController.dispose()
+			}
+		})
+	}
 
 	it("loads with the existing task history when a persisted Goal has no matching entry", async () => {
 		const store = new GoalStore()
 		await store.create("1787700000999", "01M0TW092EXA0KHTW38ZXJ1GCQ", "Missing summary")
-		const history: HistoryItem[] = [
-			{ id: "existing-task", ts: 1, task: "Keep me", tokensIn: 0, tokensOut: 0, totalCost: 0 },
-		]
+		const history: HistoryItem[] = [{ id: "existing-task", ts: 1, task: "Keep me", tokensIn: 0, tokensOut: 0, totalCost: 0 }]
 		const stateManager = {
 			getGlobalStateKey: () => history,
 		} as unknown as StateManager
@@ -161,6 +315,9 @@ describe("GoalController startup transaction", () => {
 		})
 
 		assert.equal(await goalController.inspect(), undefined)
-		assert.deepEqual(history.map((item) => item.id), ["existing-task"])
+		assert.deepEqual(
+			history.map((item) => item.id),
+			["existing-task"],
+		)
 	})
 })

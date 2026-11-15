@@ -18,10 +18,8 @@ export const TASK_CONFIG_KEYS = [
 	"strictPlanModeEnabled",
 	"yoloModeToggled",
 	"lowVerbosityEnabled",
-	"doubleCheckCompletionEnabled",
 	"vscodeTerminalExecutionMode",
 	"enableParallelToolCalling",
-	"isSubagentExecution",
 	"backgroundEditEnabled",
 	"providerId",
 	"model",
@@ -31,7 +29,6 @@ export const TASK_CONFIG_KEYS = [
 	"useAutoCondense",
 	"utilityModelEnabled",
 	"utilityModelUseCondense",
-	"utilityModelUseNewTask",
 	"globalSkillsToggles",
 	"localSkillsToggles",
 	"taskState",
@@ -86,7 +83,6 @@ export const TASK_CALLBACKS_KEYS = [
 	"resetTransientState",
 	"notifyContextCompacted",
 	"createUtilityModelRunner",
-	"createSubagentRuntime",
 ] as const
 
 /**

@@ -6,7 +6,7 @@ import { DiracDefaultTool, DiracToolSpec } from "@shared/tools"
 import { DiracAskResponse } from "@shared/WebviewMessage"
 import { IDiracTool } from "../../interfaces/IDiracTool"
 import { IToolEnvironment } from "../../interfaces/IToolEnvironment"
-import type { ToolPermissionDisposition } from "../../autoApprove"
+import { resolveBrowserLaunchPermission, type ToolPermissionDisposition } from "../../autoApprove"
 import { SurfaceType } from "../../interfaces/SurfaceType"
 
 export const browser_action_spec: DiracToolSpec = {
@@ -55,7 +55,6 @@ export class BrowserActionTool implements IDiracTool {
 
 	async processCall(args: any, env: IToolEnvironment): Promise<string | Array<DiracTextContentBlock | DiracImageContentBlock>> {
 		const { action, url, coordinate, text } = args
-		const isSubagent = env.config.isSubagentExecution
 		const example = '{"action": "launch", "url": "https://google.com"}'
 		const utilityPermissionHandlingEnabled = env.config.permissionDecisionBinding !== undefined
 
@@ -63,13 +62,11 @@ export class BrowserActionTool implements IDiracTool {
 			return this.reportMissingActionParameter(env, example)
 		}
 
-		const card = !isSubagent
-			? await env.ui.createCard({
-				icon: DiracIcon.BROWSER,
-				header: `Browser: ${action}${action === "launch" && url ? ` ${url}` : action === "click" && coordinate ? ` at ${coordinate}` : action === "type" && text ? ` "${text.substring(0, 30)}"` : ""}`,
-				collapsed: true,
-			})
-			: undefined
+		const card = await env.ui.createCard({
+			icon: DiracIcon.BROWSER,
+			header: `Browser: ${action}${action === "launch" && url ? ` ${url}` : action === "click" && coordinate ? ` at ${coordinate}` : action === "type" && text ? ` "${text.substring(0, 30)}"` : ""}`,
+			collapsed: true,
+		})
 		try {
 			let result: BrowserActionResult
 
@@ -85,6 +82,7 @@ export class BrowserActionTool implements IDiracTool {
 							icon: DiracIcon.BROWSER,
 							status: CardStatus.WAITING_FOR_INPUT,
 							requireApproval: true,
+							permissionOperation: { kind: "browser", url },
 							permissionRequestKind:
 								utilityPermissionHandlingEnabled && permissionDisposition === "manual_only"
 									? "manual_tool"
@@ -149,12 +147,7 @@ export class BrowserActionTool implements IDiracTool {
 	}
 
 	private resolveLaunchPermission(env: IToolEnvironment, url: string): ToolPermissionDisposition {
-		const ruleResult = env.config.services.commandPermissionController.validateTool(DiracDefaultTool.BROWSER, url)
-		if (!ruleResult.allowed) return "manual_only"
-		if (env.config.autoApprover.isUnrestrictedAutoApprove()) return "auto_approve"
-		if (ruleResult.reason === "allowed" && ruleResult.matchedPattern) return "auto_approve"
-		if (env.config.autoApprover.shouldAutoApproveTool(DiracDefaultTool.BROWSER) === true) return "auto_approve"
-		return "utility_eligible"
+		return resolveBrowserLaunchPermission(url, env.config.autoApprover, env.config.services.commandPermissionController)
 	}
 
 	private async reportMissingActionParameter(env: IToolEnvironment, example: string): Promise<string> {

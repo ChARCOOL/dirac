@@ -64,7 +64,7 @@ describe("DiracAgent ACP whisper ownership", () => {
 	it("buffers guidance while the bound task is temporarily waiting for input", async () => {
 		const { agent, sessionId } = processingAgent()
 		const task = {
-			taskState: { abort: false, pendingTaskReplacement: undefined },
+			taskState: { abort: false },
 			canAcceptSteeringMessage: () => false,
 			enqueueSteeringMessage: vi.fn(),
 		}
@@ -90,10 +90,10 @@ describe("DiracAgent ACP whisper ownership", () => {
 		expect(updates).toEqual([{ steeringMessageId: "transcript-1", status: "queued" }])
 	})
 
-	it("retains guidance when a bound task begins replacement during enqueue", async () => {
+	it("retains guidance when the bound task has been aborted", async () => {
 		const { agent, sessionId } = processingAgent()
 		const task = {
-			taskState: { abort: true, pendingTaskReplacement: { context: "replacement" } },
+			taskState: { abort: true },
 			canAcceptSteeringMessage: () => false,
 			enqueueSteeringMessage: vi.fn().mockRejectedValue(new Error("Task cannot accept steering")),
 		}

@@ -126,13 +126,11 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test task",
 			taskId: "test-123",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		t.should.not.be.undefined()
 		assert.equal(t.taskState.pendingModeNotice?.mode, "act")
 		t.taskId.should.equal("test-123")
-		assert.equal(t.taskState.initialTask, "test task")
 	})
 
 	it("initializes a pending Plan notice from the working configuration", () => {
@@ -159,44 +157,21 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "plan task",
 			taskId: "test-plan-notice",
-			taskLockAcquired: false,
 			workingConfiguration: planConfiguration,
 		})
 
 		assert.equal(task.taskState.pendingModeNotice?.mode, "plan")
 	})
 
-	it("restores canonical initial task text from task history", () => {
-		const task = new Task({
-			controller: createMockController(),
-			updateTaskHistory: sandbox.stub().resolves([]),
-			postStateToWebview: sandbox.stub().resolves(),
-			reinitExistingTaskFromId: sandbox.stub().resolves(),
-			cancelTask: sandbox.stub().resolves(),
-			shellIntegrationTimeout: 5000,
-			terminalReuseEnabled: true,
-			terminalOutputLineLimit: 500,
-			defaultTerminalProfile: "default",
-			vscodeTerminalExecutionMode: "vscodeTerminal",
-			cwd: tempDir,
-			stateManager: StateManager.get(),
-			historyItem: {
-				id: "history-task",
-				ts: Date.now(),
-				task: "persisted initial task",
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
-			},
-			taskId: "history-task",
-			taskLockAcquired: false,
-			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
-		})
-
-		assert.equal(task.taskState.initialTask, "persisted initial task")
-	})
-
 	it("routes automatic compaction to the active model when Utility condensation is unavailable", async () => {
+		const workingConfiguration = StateManager.get().captureEffectiveTaskConfiguration()
+		const settings = new Proxy(workingConfiguration.settings, {
+			get: (target, property, receiver) => {
+				if (property === "utilityModelUseCondense") return false
+				if (property === "utilityModelSelection") return { provider: "openai-codex", modelId: "luna" }
+				return Reflect.get(target, property, receiver)
+			},
+		})
 		const task = new Task({
 			controller: createMockController(),
 			updateTaskHistory: sandbox.stub().resolves([]),
@@ -212,15 +187,16 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test task",
 			taskId: "test-active-model-compaction-fallback",
-			taskLockAcquired: false,
-			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
+			workingConfiguration: {
+				...workingConfiguration,
+				settings,
+				apiConfiguration: {
+					planModeApiProvider: "openai-codex", planModeApiModelId: "gpt-6-astra",
+					actModeApiProvider: "openai-codex", actModeApiModelId: "gpt-6.1-sol",
+				},
+			},
 		}) as any
 		const userContent = [{ type: "text", text: "continue" }]
-		sandbox.stub(task, "getCurrentProviderInfo").returns({
-			model: { id: "act-model", info: {} },
-			providerId: "anthropic",
-			mode: "act",
-		})
 		sandbox.stub(task.modelContextTracker, "recordModelUsage").resolves()
 		sandbox.stub(task, "handleMistakeLimitReached").resolves({ didEndLoop: false, userContent })
 		sandbox.stub(task.messageStateHandler, "getDiracMessages").returns([
@@ -228,7 +204,7 @@ describe("Task (original)", () => {
 		])
 		sandbox.stub(task, "initializeCheckpoints").resolves()
 		sandbox.stub(task, "determineContextCompaction").resolves(true)
-		sandbox.stub(task.localConversationCompaction, "isAvailable").returns(false)
+		assert.equal(task.localConversationCompaction.isAvailable(), false)
 		const utilityRun = sandbox.stub(task.localConversationCompaction, "run").resolves(undefined)
 		sandbox.stub(task, "appendQueuedSteeringToUserContent").resolves(undefined)
 		const prepareApiRequest = sandbox.stub(task.apiConversationManager, "prepareApiRequest").resolves({
@@ -241,6 +217,9 @@ describe("Task (original)", () => {
 		assert.equal(await task.recursivelyMakeDiracRequests(userContent), true)
 		assert.equal(utilityRun.callCount, 0)
 		assert.equal(prepareApiRequest.firstCall.args[0].shouldCompact, true)
+		assert.equal(prepareApiRequest.firstCall.args[0].providerId, "openai-codex")
+		assert.equal(prepareApiRequest.firstCall.args[0].modelId, "gpt-6.1-sol")
+		assert.equal(prepareApiRequest.firstCall.args[0].mode, "act")
 	})
 
 	it("clears an unconsumed automatic-condense source before a completion follow-up", async () => {
@@ -259,7 +238,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test task",
 			taskId: "test-automatic-condense-source-cleanup",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		}) as any
 		task.taskState.pendingCondenseSource = "automatic"
@@ -297,7 +275,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test task",
 			taskId: "test-api-propagation",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		}) as any
 		await t.applyWorkingConfigurationUpdate({ settings: { mode: "plan" } })
@@ -323,32 +300,80 @@ describe("Task (original)", () => {
 		sinon.assert.calledOnceWithExactly(toolExecutorSetApi, installed)
 		setters.forEach((setter) => sinon.assert.calledOnceWithExactly(setter, installed))
 		sinon.assert.notCalled(markDirty)
+		await t.applyWorkingConfigurationUpdate({ settings: { lowVerbosityEnabled: !updated.settings.lowVerbosityEnabled } })
+		assert.equal(t.api, installed, "non-provider settings must preserve the handler and its cache session")
 	})
 
-	it("records notices only for actual mode transitions", () => {
-		const taskState = {
-			pendingModeNotice: undefined as { mode: "plan" | "act" } | undefined,
-			isAwaitingPlanResponse: false,
-			didRespondToPlanAskBySwitchingMode: false,
+	it("records notices only for actual mode transitions and leaves waits untouched on no-op updates", () => {
+		const pending = {
+			signal: new AbortController().signal,
+			modeSwitchResponse: sandbox.stub().returns({ action: "message", modeSwitch: "plan" }),
+			response: undefined as any,
 		}
-		const task = { taskState }
+		const taskState = {
+			pendingModeNotice: undefined as { mode: "plan" | "act"; switched?: boolean } | undefined,
+			pendingCardInteractions: new Map([["card", pending]]),
+		}
+		const notifyUserMessage = sandbox.stub()
+		const task = { taskState, taskletHost: { notifyUserMessage } }
 		const applyEffects = (previousMode: "plan" | "act", nextMode: "plan" | "act") =>
 			(Task.prototype as any).applyCommittedModeEffects.call(task, previousMode, nextMode)
 
 		applyEffects("act", "act")
 		assert.equal(taskState.pendingModeNotice, undefined)
+		sinon.assert.notCalled(pending.modeSwitchResponse)
+		sinon.assert.notCalled(notifyUserMessage)
 
 		applyEffects("act", "plan")
-		assert.deepEqual(taskState.pendingModeNotice, { mode: "plan" })
+		assert.deepEqual(taskState.pendingModeNotice, { mode: "plan", switched: true })
+		sinon.assert.calledOnce(pending.modeSwitchResponse)
+		sinon.assert.calledOnce(notifyUserMessage)
 
-		taskState.pendingModeNotice = undefined
+		const notice = taskState.pendingModeNotice
 		applyEffects("plan", "plan")
-		assert.equal(taskState.pendingModeNotice, undefined)
+		assert.equal(taskState.pendingModeNotice, notice)
+		sinon.assert.calledOnce(pending.modeSwitchResponse)
+		sinon.assert.calledOnce(notifyUserMessage)
+	})
 
-		taskState.isAwaitingPlanResponse = true
-		applyEffects("plan", "act")
-		assert.deepEqual(taskState.pendingModeNotice, { mode: "act" })
-		assert.equal(taskState.didRespondToPlanAskBySwitchingMode, true)
+	it("settles all eligible parallel waits but passes composer content only to the first", () => {
+		const controller = new AbortController()
+		controller.abort()
+		const pending = (signal = new AbortController().signal) => ({
+			signal,
+			modeSwitchResponse: sandbox.stub().callsFake((mode, content) => ({ action: "message", modeSwitch: mode, text: content?.message })),
+			response: undefined as any,
+		})
+		const aborted = pending(controller.signal)
+		const answered = pending()
+		const originalResponse = { action: "approve" }
+		answered.response = originalResponse
+		const child = { signal: new AbortController().signal, response: undefined }
+		const first = pending()
+		const second = pending()
+		const taskState = {
+			pendingCardInteractions: new Map<string, any>([
+				["aborted", aborted], ["answered", answered], ["child", child], ["first", first], ["second", second],
+			])
+		}
+		const content = { message: "New direction", images: ["image"], files: ["file"] }
+
+		const applyCommittedModeEffects = (Task.prototype as any).applyCommittedModeEffects
+		applyCommittedModeEffects.call({ taskState }, "act", "plan", content)
+
+		sinon.assert.notCalled(aborted.modeSwitchResponse)
+		sinon.assert.notCalled(answered.modeSwitchResponse)
+		assert.equal(answered.response, originalResponse)
+		assert.equal(child.response, undefined)
+		sinon.assert.calledOnceWithExactly(first.modeSwitchResponse, "plan", content)
+		sinon.assert.calledOnceWithExactly(second.modeSwitchResponse, "plan", undefined)
+		assert.equal(first.response.modeSwitch, "plan")
+		assert.equal(second.response.modeSwitch, "plan")
+
+		applyCommittedModeEffects.call({ taskState }, "plan", "act", { message: "Later switch" })
+		sinon.assert.calledOnce(first.modeSwitchResponse)
+		sinon.assert.calledOnce(second.modeSwitchResponse)
+		assert.equal(first.response.text, "New direction", "the first answer wins until consumed")
 	})
 
 	it("commits mode, YOLO state, API propagation, and tool inventory only after beforeCommit succeeds", async () => {
@@ -367,7 +392,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test task",
 			taskId: "test-atomic-config-commit",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		}) as any
 		const previous = t.getWorkingConfiguration()
@@ -435,7 +459,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-456",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		t.cwd.should.equal(tempDir)
@@ -458,7 +481,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-789",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		t.taskState.should.not.be.undefined()
@@ -481,7 +503,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-abort",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		await t.abortTask()
@@ -506,7 +527,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-cancelbg",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		const r = await t.cancelBackgroundCommand()
@@ -514,7 +534,7 @@ describe("Task (original)", () => {
 	})
 
 	it("ignores a card response when no card is waiting", async () => {
-		const taskState = { lastWaitingCardId: undefined } as any
+		const taskState = { lastWaitingCardId: undefined, pendingCardInteractions: new Map() } as any
 		const task = {
 			taskState,
 			withStateLock: async (callback: () => Promise<void>) => callback(),
@@ -543,7 +563,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-dirty",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 			; (() => t.markToolsDirty("settings_refresh_detected_change" as any)).should.not.throw()
@@ -566,7 +585,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-reset",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		await t.resetTransientState()
@@ -589,7 +607,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-exec",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 			// Test that the method exists and can be called
@@ -613,7 +630,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-hook",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 			; (() => t.cancelHookExecution()).should.not.throw()
@@ -636,7 +652,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-ulid",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 		t.ulid.should.be.a.String()
@@ -660,7 +675,6 @@ describe("Task (original)", () => {
 			stateManager: StateManager.get(),
 			task: "test",
 			taskId: "test-api-cancel",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		}) as any
 		const abortTask = sandbox.stub(task, "abortTask").resolves()
@@ -687,7 +701,7 @@ describe("Task (original)", () => {
 			error: new Error("connection failed"),
 			model: { id: "test-model", info: {} },
 			providerId: "test-provider",
-			metricsManager: {},
+			metricsManager: { updateApiReqMsgFromMetrics: async () => { } },
 		})
 
 		shouldRetry.should.equal(false)

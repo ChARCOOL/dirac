@@ -1,0 +1,77 @@
+.architecture-board.diagram-image-render {
+	position: fixed;
+	left: -20000px;
+	top: 0;
+	pointer-events: none;
+	display: block;
+}
+
+.diagram-image-render *,
+.diagram-image-render *::before,
+.diagram-image-render *::after {
+	animation: none !important;
+	transition: none !important;
+}
+
+.architecture-board .diagram-image-action {
+	position: relative;
+	flex-shrink: 0;
+}
+
+.architecture-board .diagram-image-action>button[aria-busy="true"]:disabled {
+	opacity: 1;
+}
+
+.architecture-board .diagram-image-status {
+	display: inline-flex;
+	align-items: center;
+}
+
+.architecture-board .diagram-image-spinner {
+	animation: diagram-image-spin 1s linear infinite;
+	will-change: transform;
+}
+
+.architecture-board .diagram-image-copied {
+	color: #22c55e;
+}
+
+@keyframes diagram-image-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.architecture-board .diagram-image-spinner {
+		animation: none;
+		will-change: auto;
+	}
+}
+
+.architecture-board .diagram-image-notice {
+	position: absolute;
+	z-index: 30;
+	top: calc(100% + 8px);
+	right: 0;
+	width: min(360px, 75vw);
+	padding: 10px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	background: var(--board-surface);
+	color: var(--board-fg);
+	border: 1px solid var(--board-border);
+	border-radius: 6px;
+	box-shadow: 0 4px 16px #0003;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.architecture-board .diagram-image-notice a {
+	color: var(--board-accent);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}

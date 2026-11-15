@@ -1,9 +1,10 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { copySourceCode } from "./scripts/copy-source.mjs"
-
 import * as esbuild from "esbuild"
+import { braketAssetsPlugin } from "./scripts/braket-assets.mjs"
+import { copySourceCode } from "./scripts/copy-source.mjs"
+import { copyWindowsMxcArtifacts } from "./scripts/windows-mxc-artifacts.mjs"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -97,6 +98,7 @@ const copyAssets = {
 			// tree sitter
 			const sourceDir = path.join(__dirname, "node_modules", "web-tree-sitter")
 			const targetDir = path.join(__dirname, destDir)
+			copyWindowsMxcArtifacts(targetDir)
 
 			fs.rmSync(path.join(targetDir, "node_modules", "@vscode", "ripgrep"), { recursive: true, force: true })
 
@@ -156,7 +158,6 @@ const copyAssets = {
 
 			// Copy source code for /askDirac command
 			copySourceCode(__dirname, path.join(__dirname, destDir))
-
 		})
 	},
 }
@@ -215,6 +216,7 @@ const baseConfig = {
 	tsconfig: path.resolve(__dirname, "tsconfig.json"),
 	plugins: [
 		copyAssets,
+		braketAssetsPlugin(),
 		aliasResolverPlugin,
 		/* add to the end of plugins array */
 		esbuildProblemMatcherPlugin,
@@ -242,7 +244,7 @@ const standaloneConfig = {
 	outfile: `${destDir}/dirac-core.js`,
 	// These modules need to load files from the module directory at runtime,
 	// so they cannot be bundled.
-	external: ["vscode", "web-tree-sitter", "@grpc/reflection", "grpc-health-check"],
+	external: ["web-tree-sitter", "@grpc/reflection", "grpc-health-check"],
 }
 
 // E2E build script configuration

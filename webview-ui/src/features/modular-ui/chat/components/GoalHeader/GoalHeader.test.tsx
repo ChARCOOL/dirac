@@ -8,9 +8,9 @@ import GoalHeader, { plainTextObjective } from "./GoalHeader"
 vi.stubGlobal(
 	"ResizeObserver",
 	class ResizeObserver {
-		observe() {}
-		unobserve() {}
-		disconnect() {}
+		observe() { }
+		unobserve() { }
+		disconnect() { }
 	},
 )
 
@@ -38,8 +38,6 @@ function createGoal(status: GoalStatus, overrides: Partial<GoalViewState> = {}):
 		updatedAt: 1_700_000_010_000,
 		wallDurationMs: 120_000,
 		activeDurationMs: 90_000,
-		children: [],
-		pendingInteractionCount: 0,
 		accounting: { totalTokens: 1_200, cost: 0.125 },
 		mode: "act",
 		modeSwitchingDisabled: true,
@@ -57,27 +55,16 @@ afterEach(() => {
 })
 
 describe("GoalHeader", () => {
+	it("offers ownership-checked resume for an active record without a local coordinator", () => {
+		render(<GoalHeader goal={{ ...createGoal("working"), hasLocalExecution: false }} />)
+		expect(screen.getByRole("button", { name: "Resume Goal" })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Pause Goal" })).not.toBeInTheDocument()
+	})
+
 	it("renders a plain-text objective preview and keeps Goal disclosure state separate from task expansion", async () => {
 		useSettingsStore.setState({ expandTaskHeader: true })
 		const user = userEvent.setup()
-		render(
-			<GoalHeader
-				goal={createGoal("working", {
-					latestVerification: {
-						id: "verification-1",
-						title: "Review Goal UI",
-						role: "verification",
-						status: "completed",
-						createdAt: 1_700_000_001_000,
-						lastActivityAt: 1_700_000_002_000,
-						endedAt: 1_700_000_002_000,
-						deliveredResponseCursor: 0,
-						idleDurationMs: 0,
-						terminalSummary: "All checks passed.",
-					},
-				})}
-			/>,
-		)
+		render(<GoalHeader goal={createGoal("working")} />)
 
 		const disclosure = screen.getByRole("button", { name: "Expand Goal details" })
 		expect(disclosure).toHaveAttribute("aria-expanded", "false")
@@ -94,9 +81,19 @@ describe("GoalHeader", () => {
 			within(details)
 				.getAllByRole("heading", { level: 3 })
 				.map((heading) => heading.textContent),
-		).toEqual(["Status and pending work", "Objective", "Contained Tasks", "Latest verification", "Timing and accounting"])
-		expect(within(details).getByText("All checks passed.")).toBeInTheDocument()
+		).toEqual(["Status", "Objective", "Timing and accounting"])
 		expect(within(details).queryByText("Revision 3")).not.toBeInTheDocument()
+	})
+
+	it("leaves generic agent observation to the common count and local snapshot surfaces", async () => {
+		const user = userEvent.setup()
+		render(<GoalHeader goal={createGoal("paused", { hasLocalExecution: false })} />)
+		await user.click(screen.getByRole("button", { name: "Expand Goal details" }))
+		const details = screen.getByRole("region", { name: "Goal operational details" })
+		expect(within(details).getByText("Goal is paused.")).toBeInTheDocument()
+		expect(within(details).queryByText("Contained Tasks")).not.toBeInTheDocument()
+		expect(within(details).queryByText(/pending tasklet|pending request/)).not.toBeInTheDocument()
+		expect(within(details).queryByText(/verification/i)).not.toBeInTheDocument()
 	})
 
 	it("shows only the contextual primary lifecycle action", () => {

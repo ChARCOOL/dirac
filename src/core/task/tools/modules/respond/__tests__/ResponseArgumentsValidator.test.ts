@@ -3,10 +3,10 @@ import { describe, it } from "mocha"
 import { LegacyResponseParameter, ResponseOperation } from "@shared/responseTool"
 import { validateResponseArguments } from "../ResponseArgumentsValidator"
 
-function environment(mode: "plan" | "act" = "act", isSubagentExecution = false) {
+function environment(mode: "plan" | "act" = "act") {
 	let consecutiveMistakeCount = 0
 	return {
-		config: { mode, isSubagentExecution },
+		config: { mode },
 		orchestration: {
 			getTaskState: () => consecutiveMistakeCount,
 			setTaskState: (_key: string, value: number) => {
@@ -69,13 +69,30 @@ describe("response arguments validator", () => {
 		for (const args of invalid) assert.throws(() => validateResponseArguments(args, environment()))
 	})
 
-	it("enforces main-agent modes but leaves subagent scope policy to the registry", () => {
+	it("rejects obsolete progress correlation for roots and children without repurposing it", () => {
+		for (const executionProfile of ["standalone", "tasklet"]) {
+			const env = environment()
+			env.config.executionProfile = executionProfile
+			for (const reply_to of ["old-question", null]) {
+				assert.throws(() => validateResponseArguments({ operation: ResponseOperation.PROGRESS, text: "Update", reply_to }, env), /Unsupported response parameter: reply_to/)
+			}
+			assert.deepEqual(validateResponseArguments({ operation: ResponseOperation.PROGRESS, text: "Update" }, env), { operation: ResponseOperation.PROGRESS, text: "Update" })
+		}
+	})
+
+	it("rejects tasklet Plan responses even with a stale Plan configuration", () => {
+		const env = environment("plan")
+		env.config.executionProfile = "tasklet"
+		assert.throws(
+			() => validateResponseArguments({ operation: ResponseOperation.PLAN, text: "Plan" }, env),
+			/Tasklets cannot/,
+		)
+	})
+
+	it("enforces Plan and Act response modes", () => {
 		assert.throws(() => validateResponseArguments({ operation: ResponseOperation.PLAN, text: "Plan" }, environment("act")))
 		assert.throws(() =>
 			validateResponseArguments({ operation: ResponseOperation.COMPLETE, text: "Done" }, environment("plan")),
-		)
-		assert.doesNotThrow(() =>
-			validateResponseArguments({ operation: ResponseOperation.COMPLETE, text: "Done" }, environment("plan", true)),
 		)
 	})
 })

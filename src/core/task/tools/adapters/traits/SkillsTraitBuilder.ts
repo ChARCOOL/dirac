@@ -1,5 +1,7 @@
+import { meetsHostCapabilityRequirement } from "@hosts/host-capabilities"
 import { getOrDiscoverSkills, getSkillContent, listSupportingFiles } from "@core/context/instructions/user-instructions/skills"
 import { filterSkillsByProviderCapabilities } from "@shared/skills"
+import { isSkillAvailableToTaskProfile } from "../../../TaskExecutionProfile"
 import type { ISkillsTrait } from "../../interfaces/IToolEnvironment"
 import type { TaskConfig } from "../../types/TaskConfig"
 
@@ -13,7 +15,8 @@ export function buildSkillsTrait(config: TaskConfig): ISkillsTrait {
 			})
 			const globalToggles = config.globalSkillsToggles
 			const localToggles = config.localSkillsToggles
-			return providerSkills.filter((skill) => {
+			return providerSkills.filter(meetsHostCapabilityRequirement).filter((skill) => {
+				if (!isSkillAvailableToTaskProfile(config.executionProfile, skill)) return false
 				if (config.yoloModeToggled && skill.interactiveOnly) return false
 				if (skill.source === "builtin") return true
 				const toggles = skill.source === "global" ? globalToggles : localToggles

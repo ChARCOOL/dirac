@@ -1,7 +1,9 @@
+import { getTaskDirectoryPath, type TaskStorageAddress } from "@core/storage/taskDirectory"
 import { Logger } from "@shared/services/Logger"
 import { arePathsEqual, isLocatedInPath } from "@utils/path"
 import fs from "fs/promises"
 import * as path from "path"
+import { isPromptArtifactsEnvEnabled, promptArtifactsDir } from "@/shared/config/environment"
 
 /** Resolve symlinks where possible; fall back to the given path when it does not exist yet. */
 async function realpathOrSelf(p: string): Promise<string> {
@@ -10,6 +12,7 @@ async function realpathOrSelf(p: string): Promise<string> {
 
 export interface TaskPromptArtifactsContext {
 	taskId: string
+	storageAddress?: TaskStorageAddress
 	// Per-request sequence number (1-based). Included in the artifact filename so a
 	// multi-call turn (e.g. the noToolsUsed retry loop) leaves one file per API
 	// request instead of each write overwriting the previous one.
@@ -30,16 +33,16 @@ export async function writePromptMetadataArtifacts(
 	},
 ): Promise<void> {
 	const enabledSetting = ctx.writePromptMetadataEnabled
-	const enabledFlag = process.env.DIRAC_WRITE_PROMPT_ARTIFACTS?.toLowerCase()
-	const enabled =
-		enabledSetting || enabledFlag === "1" || enabledFlag === "true" || enabledFlag === "yes" || process.env.IS_DEV === "true"
+	const enabled = enabledSetting || isPromptArtifactsEnvEnabled()
 	if (!enabled) {
 		return
 	}
 
 	try {
+		const address = ctx.storageAddress
+		if (address) getTaskDirectoryPath(address)
 		// Env var is OS-level (user-controlled, safe to allow absolute); workspace setting is the exfiltration vector.
-		const envDir = process.env.DIRAC_PROMPT_ARTIFACT_DIR?.trim()
+		const envDir = promptArtifactsDir()
 		const settingDir = ctx.writePromptMetadataDirectory?.trim()
 		// Resolve cwd through the filesystem, exactly as the artifact dir is resolved below. Comparing a
 		// realpath'd directory against a merely path.resolve'd cwd rejects legitimate layouts wherever the
@@ -59,11 +62,16 @@ export async function writePromptMetadataArtifacts(
 			}
 		}
 		const configuredDir = envDir || settingDir
-		const artifactDir = configuredDir
+		const artifactBaseDir = configuredDir
 			? path.isAbsolute(configuredDir)
 				? path.resolve(configuredDir)
 				: path.resolve(ctx.cwd, configuredDir)
 			: path.resolve(ctx.cwd, ".dirac-prompt-artifacts")
+		// Debug output keeps its configured destination; only contained executions gain a root-qualified namespace.
+		const artifactDir =
+			address?.kind === "tasklet"
+				? path.join(artifactBaseDir, "tasks", address.rootTaskId, "tasklets", address.taskletId)
+				: artifactBaseDir
 
 		await fs.mkdir(artifactDir, { recursive: true })
 		// Defense-in-depth: re-check the boundary after mkdir resolves any symlinks in the path,
@@ -82,7 +90,8 @@ export async function writePromptMetadataArtifacts(
 		const gitignorePath = path.join(writeDir, ".gitignore")
 		await fs.writeFile(gitignorePath, "*\n!.gitignore\n", "utf8").catch(() => {})
 
-		const debugPath = path.join(writeDir, `task-${ctx.taskId}-debug-${String(ctx.requestSeq).padStart(3, "0")}.md`)
+		const executionId = address ? (address.kind === "tasklet" ? address.taskletId : address.taskId) : ctx.taskId
+		const debugPath = path.join(writeDir, `task-${executionId}-debug-${String(ctx.requestSeq).padStart(3, "0")}.md`)
 
 		let markdown = `## System Prompt\n\n${params.systemPrompt}\n\n`
 

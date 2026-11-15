@@ -14,7 +14,6 @@ export async function executeBuiltinCommand(
 	extensionPath: string | undefined,
 	sourceDir: string,
 	conversationCondensationAvailable = false,
-	taskHandoffCondensationAvailable = false,
 ): Promise<ParseSlashCommandResult | null> {
 	const { commandName, tagContent, contentStartIndex, slashMatch } = match
 	if (!SUPPORTED_DEFAULT_COMMANDS.includes(commandName)) return null
@@ -42,7 +41,6 @@ export async function executeBuiltinCommand(
 		extensionPath,
 		sourceDir,
 		conversationCondensationAvailable,
-		taskHandoffCondensationAvailable,
 	)[commandName]
 	const processedText = (typeof replacement === "string" ? replacement : await replacement) + textWithoutSlashCommand
 	telemetryService.captureSlashCommandUsed(ulid, commandName, "builtin")

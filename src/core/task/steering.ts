@@ -14,6 +14,8 @@ export interface SteeringMessage {
 	transcriptMessageId: string
 	deliveryState: SteeringDeliveryState
 	claimId?: string
+	/** Contextual feedback bypasses raw-chat command and mention parsing. */
+	contextual?: boolean
 }
 
 export interface SteeringClaim {
@@ -50,6 +52,7 @@ export function restoreQueuedSteeringMessages(
 				createdAt: message.ts,
 				transcriptMessageId: message.id,
 				deliveryState: SteeringDeliveryState.QUEUED,
+				...(message.content.contextualInput ? { contextual: true } : {}),
 			},
 		]
 	})

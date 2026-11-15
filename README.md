@@ -8,6 +8,20 @@ Dirac is an open-source coding agent you can use in VS Code, from the terminal, 
 
 Dirac combines autonomous task execution with purpose-built code tools: hash-anchored file editing, syntax-tree inspection and refactoring, parallel operations, subagents, continuous steering, and configurable permission controls. The goal is simple: give capable models better infrastructure so they can work longer, faster, and with less token overhead.
 
+## Sponsors
+
+<a href="https://unbiased.ai/">
+  <img src="assets/sponsors/unbiased-icon.png" alt="" height="40" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/unbiased-wordmark-dark.png" />
+    <img src="assets/sponsors/unbiased-wordmark.png" alt="Unbiased AI" height="32" />
+  </picture>
+</a>
+
+Thank you to [Unbiased AI](https://unbiased.ai/) for sponsoring Dirac's open-source development.
+
+Interested in sponsoring Dirac? [Get in touch](https://dirac.run/contact).
+
 ## Why Dirac?
 
 <details>
@@ -147,7 +161,9 @@ You can also mention Git changes, workspace diagnostics, terminal output, URLs, 
 <details>
 <summary><strong>Concurrent, first-class subagents</strong></summary>
 
-Subagents can research, edit, run commands, and validate work concurrently. Each can receive its own prompt, tools, timeout, and optional parent context. Dirac tracks source freshness and rejects stale edits at write time, allowing independent agents to work safely in the same codebase.
+Subagents can research, edit, run commands, and validate work concurrently. Each receives complete assignment instructions rather than a copy of the parent conversation, runs under the parent's authority, and has no automatic execution deadline. The main agent creates and supervises children through `subagents`; `send_message` provides ordinary peer communication, and `shared_journal` stores longer findings once for interested agents to read. Neither messages nor publications grant permissions or restart completed children. Dirac tracks source freshness and rejects stale edits at write time; agents still share workspace contents.
+
+Agents run in the background without streaming separate cards into the main chat. The status area shows the active count; `/agents` prints a frozen local snapshot without sending anything to the model. In the CLI, `/agent` opens a read-only transcript browser with explicit refresh and paging. Ask the main agent to guide, stop, or resume a child—there is no direct child chat or approval surface.
 
 ![Multiple subagents working concurrently](assets/media/subagents.png)
 
@@ -172,9 +188,7 @@ Plan, Act, and Utility work can use separate model configurations. Reviewed hand
 </details>
 
 <details>
-<summary><strong>Completion checks and restore points</strong></summary>
-
-The optional completion verifier reviews acceptance criteria and claimed validation in a separate model pass. If a required criterion is missing, it returns concrete follow-up work to the active task. This model-based check does not replace tests or human review.
+<summary><strong>Restore points</strong></summary>
 
 Checkpoints capture workspace files and operational task state. Restore can apply to the workspace, the task, or both, including queued steering, active skills, task tools, and context tracking.
 

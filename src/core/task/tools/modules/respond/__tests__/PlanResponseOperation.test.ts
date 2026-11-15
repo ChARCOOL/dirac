@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert"
 import { afterEach, describe, it } from "mocha"
 import sinon from "sinon"
 import { CardStatus } from "@shared/ExtensionMessage"
+import { PlanInteractionResponse } from "@shared/responseTool"
 import { presentPlanForApproval } from "../PlanResponseOperation"
 import { ToolSkippedByUserMessage } from "../../../types/ToolSkippedByUserMessage"
 
@@ -28,6 +29,7 @@ function createMocks(mode: "plan" | "act") {
 		},
 		workspace: { formatAttachedFiles: sinon.stub().resolves("attached plan files") },
 		orchestration: {
+			reportFailure: sinon.stub(),
 			getTaskState: sinon.stub().callsFake((key: string) => state[key]),
 			setTaskState: sinon.stub().callsFake((key: string, value: unknown) => {
 				state[key] = value
@@ -48,6 +50,15 @@ function createMocks(mode: "plan" | "act") {
 
 describe("plan response operation", () => {
 	afterEach(() => sinon.restore())
+
+	it("marks a failed mode switch without presenting plan acceptance", async () => {
+		const { env, card } = createMocks("plan")
+		env.config.yoloModeToggled = true
+		env.orchestration.switchToActMode.resolves(false)
+		assert.match(await presentPlanForApproval("Plan", env as any), /Failed to switch/)
+		sinon.assert.calledOnce(env.orchestration.reportFailure)
+		sinon.assert.calledWith(card.finalize, CardStatus.ERROR, true)
+	})
 
 	it("renders and accepts the plan before switching from plan mode in YOLO mode", async () => {
 		const { card, env } = createMocks("plan")
@@ -115,6 +126,40 @@ describe("plan response operation", () => {
 
 		assert.equal(env.orchestration.getTaskState("isAwaitingPlanResponse"), false)
 		assert.equal(env.ui.publishState.callCount, 0)
+	})
+
+	it("accepts a mode-toggle value marker and preserves accompanying content", async () => {
+		const { card, env } = createMocks("plan")
+		env.config.yoloModeToggled = false
+		card.waitForInteraction.resolves({
+			action: "approve",
+			value: PlanInteractionResponse.MODE_TOGGLE,
+			text: "Start with step two",
+			images: ["data:image/png;base64,AA=="],
+			files: ["plan.txt"],
+		})
+
+		const result = await presentPlanForApproval("1. Inspect\n2. Edit", env as any)
+
+		assert.match(JSON.stringify(result), /switched to ACT MODE/)
+		assert.match(JSON.stringify(result), /Start with step two/)
+		assert.ok(card.update.calledWith({ header: "Plan Accepted" }))
+		assert.ok(card.finalize.calledWith(CardStatus.SUCCESS, true))
+		sinon.assert.notCalled(env.orchestration.saveCheckpoint)
+		sinon.assert.notCalled(env.orchestration.switchToActMode)
+		assert.equal(env.orchestration.getTaskState("isAwaitingPlanResponse"), false)
+	})
+
+	it("does not mistake the legacy text sentinel for a mode-switch approval", async () => {
+		const { card, env } = createMocks("plan")
+		env.config.yoloModeToggled = false
+		card.waitForInteraction.resolves({ text: PlanInteractionResponse.MODE_TOGGLE })
+
+		const result = await presentPlanForApproval("Plan", env as any)
+
+		assert.doesNotMatch(JSON.stringify(result), /switched to ACT MODE/)
+		assert.ok(card.finalize.calledWith(CardStatus.SKIPPED, true))
+		sinon.assert.calledOnce(env.orchestration.saveCheckpoint)
 	})
 
 	it("returns typed feedback and records the plan boundary without completion telemetry", async () => {

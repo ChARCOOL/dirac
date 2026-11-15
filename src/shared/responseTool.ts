@@ -80,7 +80,7 @@ export interface ResponseArguments {
 	options?: string[]
 }
 
-export class ResponseShapeError extends Error {}
+export class ResponseShapeError extends Error { }
 
 export function validateResponseShape(args: unknown): ResponseArguments {
 	if (!args || typeof args !== "object" || Array.isArray(args)) throw new ResponseShapeError("Expected an object.")
@@ -107,7 +107,11 @@ export function validateResponseShape(args: unknown): ResponseArguments {
 		throw new ResponseShapeError(`'options' is valid only for the 'question' response operation.`)
 	}
 	if (normalizedOperation === ResponseOperation.QUESTION && options) validateQuestionOptions(options)
-	return { operation: normalizedOperation, text, ...(options ? { options } : {}) }
+	return {
+		operation: normalizedOperation,
+		text,
+		...(options ? { options } : {}),
+	}
 }
 
 function normalizeResponseOptions(value: unknown): string[] | undefined {

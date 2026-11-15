@@ -15,7 +15,6 @@ import * as fs from "node:fs/promises"
 import path from "node:path"
 import type * as acp from "@agentclientprotocol/sdk"
 import { PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk"
-import type { DiracMessageChange } from "@core/task/message-state"
 import { type AutoCondenseAt, applyAutoCondenseAt } from "@shared/context-management"
 import {
 	getModelInfo,
@@ -26,9 +25,11 @@ import {
 	type ApiProvider,
 	type ModelInfo,
 } from "@shared/api"
-import { isResumePromptCard } from "@shared/cardIdentity"
 import type { DiracMessage } from "@shared/ExtensionMessage"
-import { CardStatus, DiracMessageType, TaskStatus } from "@shared/ExtensionMessage"
+import { CardStatus, DiracMessageType } from "@shared/ExtensionMessage"
+import { getSubagentUsage } from "@shared/subagentUsage"
+import { getTaskletUsage } from "@shared/taskletUsage"
+import { isGoalHistoryItem } from "@shared/HistoryItem"
 import { isPlanResponseCard } from "@shared/responseTool"
 import { CLI_ONLY_COMMANDS, VSCODE_ONLY_COMMANDS } from "@shared/slashCommands"
 import { getExplicitDiracSettingsFromEnv, getProviderFromEnv, getSettingsFromEnv } from "@shared/storage/env-config"
@@ -45,10 +46,13 @@ import simpleGit from "simple-git"
 import { ApiConfigurationError, ApiConfigurationErrorCode, validateApiConfiguration } from "@/core/api"
 import { Controller } from "@/core/controller"
 import { getAvailableSlashCommands } from "@/core/controller/slash/getAvailableSlashCommands"
+import { GoalStore } from "@/core/goal/GoalStore"
 import { CommandPermissionController } from "@/core/permissions/CommandPermissionController.js"
 import type { ToolPermissionRule } from "@/core/permissions/types.js"
 import { getSavedDiracMessages, setRuntimeHooksDir } from "@/core/storage/disk"
 import { StateManager } from "@/core/storage/StateManager"
+import { deleteTaskDirectory, getTaskDirectoryPath } from "@/core/storage/taskDirectory"
+import { acquireTaskLock } from "@/core/task/TaskLockUtils"
 import { withTaskHistoryInventoryLock } from "@/core/storage/taskHistory"
 import { AuthHandler } from "@/hosts/external/AuthHandler.js"
 import { ExternalCommentReviewController } from "@/hosts/external/ExternalCommentReviewController.js"
@@ -79,7 +83,7 @@ import {
 	setSessionRuntimeConfig,
 	TASK_RUNTIME_SETTINGS_KEYS,
 } from "../acp/acp-session-runtime-config.js"
-import { deleteTasksForSession, getLatestTaskIdForSession, recordTaskForSession } from "../acp/acp-session-tasks.js"
+import { deleteTasksForSession, getLatestTaskIdForSession } from "../acp/acp-session-tasks.js"
 import {
 	deleteSessionUpdates,
 	getSessionUpdates,
@@ -90,6 +94,9 @@ import {
 import {
 	deleteSessionWorktree,
 	getSessionWorktree,
+	getWorktreeOwnerSessionIds,
+	hasOtherSessionWorktreeOwners,
+	resolveSharedSessionWorktree,
 	type SessionWorktree,
 	setSessionWorktree,
 } from "../acp/acp-session-worktrees.js"
@@ -108,12 +115,15 @@ import { ProviderConfigurationManager } from "./providerConfiguration.js"
 import type { DiracAcpSession, DiracAgentOptions, ElicitationHandler, PermissionHandler } from "./public-types.js"
 import { AcpSessionStatus } from "./public-types.js"
 import { ACP_REVIEW_COMMANDS, handleAcpReviewCommand } from "./review.js"
-import { type AcpModeId, SessionConfigManager } from "./sessionConfig.js"
+import { type AcpModeId, parseBooleanConfigValue, SessionConfigManager } from "./sessionConfig.js"
 import {
+	cloneForkedSessionArtifacts,
 	getHistoryItemCwd,
 	getTaskIdsForSession,
 	historyItemToSessionInfo,
 	listLatestConversationHistoryItems,
+	resolveForkSourceState,
+	resolveHistorySession,
 } from "./sessionHistory.js"
 import { TaskMessageBridge } from "./taskMessageBridge.js"
 import { type AcpSessionState } from "./types.js"
@@ -169,6 +179,14 @@ function worktreeProvisioningRequest(params: acp.NewSessionRequest): WorktreePro
 	return { ...(baseBranch === undefined ? {} : { baseBranch }) }
 }
 
+// Result of cloning a fork's persisted state before in-memory registration.
+type ForkSnapshot = {
+	sourceState: ReturnType<typeof resolveForkSourceState>
+	forkTitle: string
+	newTaskId?: string
+	sharedWorktree?: SessionWorktree
+}
+
 /**
  * Dirac's implementation of the ACP Agent interface.
  *
@@ -216,41 +234,65 @@ export class DiracAgent implements acp.Agent {
 		this.acpSessionOverrides.delete(sessionId)
 		this.activePromptOverrides.delete(sessionId)
 		this.configuringSessions.delete(sessionId)
-		this.sessionRuntimeMutationTails.delete(sessionId)
+		if (force) {
+			this.sessionRuntimeMutationTails.delete(sessionId)
+		}
 		this.bridges.delete(sessionId)
 		this.releasePromptSteeringOwnership(sessionId)
 	}
 
-	/** Delete a session's active resources, owned worktree, and persisted task history. */
-	private async deleteSessionResources(sessionId: string): Promise<void> {
-		await this.releaseSessionResources(sessionId)
-
+	/** Remove a session's Dirac-managed git worktree only when no other session shares ownership of it. */
+	private async releaseOwnedSessionWorktree(sessionId: string): Promise<void> {
 		const worktree = getSessionWorktree(sessionId)
-		if (worktree) {
+		if (!worktree) return
+		if (!hasOtherSessionWorktreeOwners(sessionId, worktree.worktreePath)) {
 			const removal = await deleteWorktree(worktree.sourceCwd, worktree.worktreePath, true)
 			if (!removal.success) {
 				throw new Error(removal.message)
 			}
-			deleteSessionWorktree(sessionId)
 		}
+		deleteSessionWorktree(sessionId)
+	}
 
-		const taskIds = getTaskIdsForSession(sessionId)
-		const stateManager = StateManager.get()
-		await withTaskHistoryInventoryLock(async () => {
-			for (const taskId of taskIds) {
-				await fs.rm(`${this.ctx.DATA_DIR}/tasks/${taskId}`, {
-					recursive: true,
-					force: true,
-				})
-			}
-			stateManager.removeTaskHistoryItems(taskIds)
-			await stateManager.flushPendingState()
+	/** Delete a session's active resources, owned worktree, and persisted task history. */
+	private async deleteSessionResources(sessionId: string): Promise<void> {
+		// Serialize deletion with in-flight fork snapshots and runtime mutations for this session.
+		await this.runSynchronizedSessionOperation(sessionId, async () => {
+			await this.releaseSessionResources(sessionId)
+
+			await withTaskHistoryInventoryLock(async () => {
+				const taskIds = getTaskIdsForSession(sessionId)
+				const directoryIds = new Set(taskIds)
+				const releases: Array<() => Promise<void>> = []
+				try {
+					// Lock every session root before discovering any Goal's legacy private children.
+					for (const taskId of directoryIds) releases.push(await acquireTaskLock(getTaskDirectoryPath(taskId)))
+					const stateManager = StateManager.get()
+					const goalStore = new GoalStore()
+					for (const item of stateManager.getGlobalStateKey("taskHistory")) {
+						if (!taskIds.includes(item.id) || !isGoalHistoryItem(item)) continue
+						for (const directoryId of await goalStore.readOwnedDirectoryIds(item.id)) {
+							if (directoryIds.has(directoryId)) continue
+							releases.push(await acquireTaskLock(getTaskDirectoryPath(directoryId)))
+							directoryIds.add(directoryId)
+						}
+					}
+					// Acquire the complete set before removing storage or a shared worktree.
+					await this.releaseOwnedSessionWorktree(sessionId)
+					for (const directoryId of directoryIds) {
+						await deleteTaskDirectory(directoryId)
+					}
+					stateManager.removeTaskHistoryItems(taskIds)
+					await stateManager.flushPendingState()
+					deleteTasksForSession(sessionId)
+					deleteSessionUpdates(sessionId)
+					deletePinnedSessionMessages(sessionId)
+					deleteSessionRuntimeConfig(this.ctx.DATA_DIR, sessionId)
+				} finally {
+					await Promise.all(releases.map((release) => release()))
+				}
+			})
 		})
-		deleteTasksForSession(sessionId)
-		deleteSessionUpdates(sessionId)
-		deletePinnedSessionMessages(sessionId)
-
-		deleteSessionRuntimeConfig(this.ctx.DATA_DIR, sessionId)
 	}
 
 	/** Create a branch-backed git worktree owned exclusively by one ACP session. */
@@ -291,7 +333,7 @@ export class DiracAgent implements acp.Agent {
 		return worktree
 	}
 
-	/** Merge a session-owned worktree branch into its requested target branch. */
+	/** Merge a session-owned worktree branch, serializing ownership changes with fork and deletion. */
 	async integrateSessionWorktree(
 		sessionId: string,
 		targetBranch?: string,
@@ -301,48 +343,54 @@ export class DiracAgent implements acp.Agent {
 		targetBranch: string
 		worktreePath: string
 	}> {
-		const worktree = getSessionWorktree(sessionId)
-		if (!worktree) {
-			throw new Error(`Session ${sessionId} has no Dirac-provisioned worktree`)
-		}
+		return withTaskHistoryInventoryLock(async () => {
+			const worktree = getSessionWorktree(sessionId)
+			if (!worktree) {
+				throw new Error(`Session ${sessionId} has no Dirac-provisioned worktree`)
+			}
 
-		const activeSession = this.sessions.get(sessionId)
-		const activeController = activeSession ? this.#sessionControllers.get(activeSession) : undefined
-		if (activeController?.task) {
-			throw new Error(`Cannot integrate ACP session ${sessionId} while its task is active; close the session first`)
-		}
+			for (const ownerSessionId of getWorktreeOwnerSessionIds(worktree.worktreePath)) {
+				const activeSession = this.sessions.get(ownerSessionId)
+				const activeController = activeSession ? this.#sessionControllers.get(activeSession) : undefined
+				if (activeController?.task) {
+					throw new Error(`Cannot integrate ACP session ${sessionId} while its task is active; close the session first`)
+				}
+			}
 
-		const branch = targetBranch ?? worktree.targetBranch
-		if (!branch) {
-			throw new Error("targetBranch is required when the session was created from a detached HEAD")
-		}
+			const branch = targetBranch ?? worktree.targetBranch
+			if (!branch) {
+				throw new Error("targetBranch is required when the session was created from a detached HEAD")
+			}
 
-		const targetGit = simpleGit(worktree.sourceCwd)
-		const checkedOutBranch = (await targetGit.revparse(["--abbrev-ref", "HEAD"])).trim()
-		if (checkedOutBranch !== branch) {
-			throw new Error(`Target branch ${branch} is not checked out at ${worktree.sourceCwd}`)
-		}
-		if (!(await targetGit.status()).isClean()) {
-			throw new Error(`Target branch ${branch} has uncommitted changes`)
-		}
+			const targetGit = simpleGit(worktree.sourceCwd)
+			const checkedOutBranch = (await targetGit.revparse(["--abbrev-ref", "HEAD"])).trim()
+			if (checkedOutBranch !== branch) {
+				throw new Error(`Target branch ${branch} is not checked out at ${worktree.sourceCwd}`)
+			}
+			if (!(await targetGit.status()).isClean()) {
+				throw new Error(`Target branch ${branch} has uncommitted changes`)
+			}
 
-		const worktreeGit = simpleGit(worktree.worktreePath)
-		if (!(await worktreeGit.status()).isClean()) {
-			throw new Error("Session worktree has uncommitted changes; commit or stash them before integrating")
-		}
+			const worktreeGit = simpleGit(worktree.worktreePath)
+			if (!(await worktreeGit.status()).isClean()) {
+				throw new Error("Session worktree has uncommitted changes; commit or stash them before integrating")
+			}
 
-		await targetGit.merge([worktree.branch, "--no-edit"])
-		if (deleteAfterMerge) {
-			await targetGit.raw(["worktree", "remove", "--force", worktree.worktreePath])
-			await targetGit.deleteLocalBranch(worktree.branch)
-			deleteSessionWorktree(sessionId)
-		}
+			await targetGit.merge([worktree.branch, "--no-edit"])
+			if (deleteAfterMerge) {
+				if (!hasOtherSessionWorktreeOwners(sessionId, worktree.worktreePath)) {
+					await targetGit.raw(["worktree", "remove", "--force", worktree.worktreePath])
+					await targetGit.deleteLocalBranch(worktree.branch)
+				}
+				deleteSessionWorktree(sessionId)
+			}
 
-		return {
-			sourceBranch: worktree.branch,
-			targetBranch: branch,
-			worktreePath: worktree.worktreePath,
-		}
+			return {
+				sourceBranch: worktree.branch,
+				targetBranch: branch,
+				worktreePath: worktree.worktreePath,
+			}
+		})
 	}
 	private readonly options: DiracAgentOptions
 	private readonly authentication: AcpAuthenticationManager
@@ -430,7 +478,7 @@ export class DiracAgent implements acp.Agent {
 		}
 
 		if (!task.canAcceptSteeringMessage()) {
-			if (task.taskState.abort || task.taskState.pendingTaskReplacement) {
+			if (task.taskState.abort) {
 				this.unbindPromptTask(sessionId)
 			}
 			this.bufferWhisper(sessionId, text)
@@ -538,6 +586,11 @@ export class DiracAgent implements acp.Agent {
 
 	private async bindPromptTask(sessionId: string, task: NonNullable<Controller["task"]>): Promise<void> {
 		this.promptTasks.set(sessionId, task)
+		const session = this.sessions.get(sessionId)!
+		if (session.taskId !== task.taskId) {
+			session.taskId = task.taskId
+			this.persistSessionOverrides(sessionId)
+		}
 		if (!task.canAcceptSteeringMessage()) return
 
 		const whispers = this.pendingWhispers.get(sessionId)
@@ -630,8 +683,8 @@ export class DiracAgent implements acp.Agent {
 	/** Session-owned mirror of the configuration currently committed to the active Task. */
 	private readonly activePromptOverrides: Map<string, Partial<Settings>> = new Map()
 
-	/** Config mutations are serialized independently from prompt lifecycle state. */
-	private readonly configuringSessions: Set<string> = new Set()
+	/** Pending and active runtime mutation counts; unmarked fork/delete operations do not own these guards. */
+	private readonly configuringSessions: Map<string, number> = new Map()
 
 	/** Per-session barriers ensure runtime snapshots are read and committed in order. */
 	private readonly sessionRuntimeMutationTails: Map<string, Promise<void>> = new Map()
@@ -894,12 +947,15 @@ export class DiracAgent implements acp.Agent {
 			settings: overrides,
 			cwd: session.cwd,
 			createdAt: session.createdAt,
+			taskId: session.taskId,
 		})
 	}
 
-	private async runSessionRuntimeMutation<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
-		if (!this.sessionStates.has(sessionId)) throw new Error(`Session not found: ${sessionId}`)
-
+	private async runSynchronizedSessionOperation<T>(
+		sessionId: string,
+		operation: () => Promise<T>,
+		options: { markConfiguring?: boolean } = {},
+	): Promise<T> {
 		const previousMutation = this.sessionRuntimeMutationTails.get(sessionId) ?? Promise.resolve()
 		let releaseMutation!: () => void
 		const mutationBarrier = new Promise<void>((resolve) => {
@@ -907,19 +963,36 @@ export class DiracAgent implements acp.Agent {
 		})
 		const mutationTail = previousMutation.then(() => mutationBarrier)
 		this.sessionRuntimeMutationTails.set(sessionId, mutationTail)
-		this.configuringSessions.add(sessionId)
+		if (options.markConfiguring) {
+			this.configuringSessions.set(sessionId, (this.configuringSessions.get(sessionId) ?? 0) + 1)
+		}
 
 		await previousMutation
 		try {
-			if (!this.sessionStates.has(sessionId)) throw new Error(`Session not found: ${sessionId}`)
-			return await mutation()
+			return await operation()
 		} finally {
 			releaseMutation()
+			if (options.markConfiguring) {
+				const remaining = (this.configuringSessions.get(sessionId) ?? 0) - 1
+				if (remaining > 0) this.configuringSessions.set(sessionId, remaining)
+				else this.configuringSessions.delete(sessionId)
+			}
 			if (this.sessionRuntimeMutationTails.get(sessionId) === mutationTail) {
 				this.sessionRuntimeMutationTails.delete(sessionId)
-				this.configuringSessions.delete(sessionId)
 			}
 		}
+	}
+
+	private async runSessionRuntimeMutation<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
+		if (!this.sessionStates.has(sessionId)) throw new Error(`Session not found: ${sessionId}`)
+		return this.runSynchronizedSessionOperation(
+			sessionId,
+			async () => {
+				if (!this.sessionStates.has(sessionId)) throw new Error(`Session not found: ${sessionId}`)
+				return await mutation()
+			},
+			{ markConfiguring: true },
+		)
 	}
 
 	private resolveSessionTaskRuntime(
@@ -1245,9 +1318,11 @@ export class DiracAgent implements acp.Agent {
 				auth: { logout: {} },
 				providers: {},
 				sessionCapabilities: {
+					list: {},
 					resume: {},
 					close: {},
 					delete: {},
+					fork: {},
 				},
 				promptCapabilities: {
 					image: true,
@@ -1348,7 +1423,6 @@ export class DiracAgent implements acp.Agent {
 			mode: sessionOverrides.mode as "act" | "plan",
 			createdAt: Date.now(),
 			lastActivityAt: Date.now(),
-			reservedTaskId: sessionId,
 		}
 
 		const configOptions = await this.sessionConfig.getSessionConfigOptions(session, sessionOverrides)
@@ -1389,7 +1463,7 @@ export class DiracAgent implements acp.Agent {
 	/**
 	 * Load an existing session from task history.
 	 *
-	 * The ACP LoadSessionRequest sessionId is treated as the historical task ID.
+	 * Resolve the stable conversation ID to its latest backing task.
 	 * The task is rehydrated lazily on first prompt to align with the ACP flow.
 	 */
 	async loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
@@ -1425,13 +1499,20 @@ export class DiracAgent implements acp.Agent {
 			)
 		}
 
-		// Resolve the actual taskId: check the replacement-task map first (multi-task session),
-		// then fall back to sessionId itself (the common single-task case where taskId === sessionId).
-		const resolvedTaskId = getLatestTaskIdForSession(sessionId) ?? sessionId
-
-		const persistedHistory = (StateManager.get().getGlobalStateKey("taskHistory") || []).find(
-			(item) => item.id === resolvedTaskId,
-		)
+		const history = resolveHistorySession(sessionId, persistedRuntimeConfig.taskId ?? getLatestTaskIdForSession(sessionId))
+		if (
+			!history &&
+			getSessionUpdates(sessionId).some(
+				(entry) =>
+					entry.kind === "session_update" &&
+					["user_message_chunk", "agent_message_chunk", "tool_call", "tool_call_update"].includes(
+						entry.update.sessionUpdate,
+					),
+			)
+		) {
+			throw new Error(`Persisted conversation history not found for ACP session ${sessionId}`)
+		}
+		const persistedHistory = history?.historyItem
 
 		const ownedWorktree = getSessionWorktree(sessionId)
 		if (ownedWorktree) {
@@ -1464,17 +1545,18 @@ export class DiracAgent implements acp.Agent {
 			...(persistedHistory
 				? {
 					isLoadedFromHistory: true,
-					loadedTaskId: resolvedTaskId,
+					loadedTaskId: history!.taskId,
+					taskId: history!.taskId,
 				}
-				: { reservedTaskId: sessionId }),
+				: {}),
 		}
 		const sessionOverrides = copyTaskRuntimeSettings(persistedRuntimeConfig.settings)
 		const configOptions = await this.sessionConfig.getSessionConfigOptions(session, sessionOverrides)
 		const loadRuntime = StateManager.get().captureEffectiveTaskConfiguration(sessionOverrides)
 		validateApiConfiguration(loadRuntime.apiConfiguration as ApiConfiguration, persistedMode)
 
-		if (persistedHistory) {
-			await controller.getTaskWithId(resolvedTaskId)
+		if (history) {
+			await controller.getTaskWithId(history.taskId)
 		}
 
 		this.#sessionControllers.set(session, controller)
@@ -1499,12 +1581,131 @@ export class DiracAgent implements acp.Agent {
 	 * Unlike `loadSession`, this restores the same persisted task context but leaves
 	 * transcript ownership with the reattaching client.
 	 */
+	async resumeSession(params: acp.ResumeSessionRequest): Promise<acp.ResumeSessionResponse> {
+		return this.unstable_resumeSession(params)
+	}
+
 	async unstable_resumeSession(params: acp.ResumeSessionRequest): Promise<acp.ResumeSessionResponse> {
 		return this.loadSession({
 			sessionId: params.sessionId,
 			cwd: params.cwd,
 			mcpServers: params.mcpServers ?? [],
 		})
+	}
+
+	/** Capture source state and worktree ownership under the source session barrier and inventory lock. */
+	private async captureForkSnapshot(sourceSessionId: string, newSessionId: string, requestedCwd?: string): Promise<ForkSnapshot> {
+		return withTaskHistoryInventoryLock(async () => {
+			if (this.sessionStates.get(sourceSessionId)?.status === AcpSessionStatus.Processing) {
+				throw new Error(`Cannot fork session ${sourceSessionId} while a prompt is in progress`)
+			}
+			const sourceState = resolveForkSourceState({
+				dataDir: this.ctx.DATA_DIR,
+				sourceSessionId,
+				requestedCwd,
+				defaultCwd: this.options.cwd,
+				activeSource: this.sessions.get(sourceSessionId),
+				activeOverrides: this.acpSessionOverrides.get(sourceSessionId),
+			})
+			// Integration may have removed this workspace while the fork waited for the lock.
+			const workspace = await fs.stat(sourceState.sourceCwd)
+			if (!workspace.isDirectory()) throw new Error(`Fork workspace is not a directory: ${sourceState.sourceCwd}`)
+			const forkTitle = sourceState.sourceTitle ? `Fork of ${sourceState.sourceTitle}` : `Fork of ${sourceSessionId.slice(0, 8)}`
+			const sharedWorktree = resolveSharedSessionWorktree(sourceSessionId, sourceState.sourceCwd)
+			if (sharedWorktree) setSessionWorktree(newSessionId, sharedWorktree)
+			try {
+				const newTaskId = await cloneForkedSessionArtifacts({
+					dataDir: this.ctx.DATA_DIR,
+					sourceSessionId,
+					newSessionId,
+					sourceState,
+					forkTitle,
+				})
+				return { sourceState, forkTitle, newTaskId, sharedWorktree }
+			} catch (error) {
+				if (sharedWorktree) deleteSessionWorktree(newSessionId)
+				throw error
+			}
+		})
+	}
+
+	/**
+	 * Fork a session. The forked session starts from the source session's state
+	 * and inherits its task history and ACP update journal, but it is a fully
+	 * independent session: it has its own task id, its own runtime overrides, and
+	 * its own persisted journal that subsequent appends will never mutate.
+	 */
+	async unstable_forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {
+		const sourceSessionId = params.sessionId
+		const newSessionId = crypto.randomUUID()
+		// Check source status and clone persisted artifacts under per-session synchronization to prevent races with prompts or deletion.
+		const snapshot = await this.runSynchronizedSessionOperation(sourceSessionId, () =>
+			this.captureForkSnapshot(sourceSessionId, newSessionId, params.cwd),
+		)
+		try {
+			return await this.registerForkedSession({
+				newSessionId,
+				forkTitle: snapshot.forkTitle,
+				newTaskId: snapshot.newTaskId,
+				sourceState: snapshot.sourceState,
+			})
+		} catch (error) {
+			// Release the fork's shared worktree ownership when in-memory registration fails.
+			if (snapshot.sharedWorktree) deleteSessionWorktree(newSessionId)
+			throw error
+		}
+	}
+
+	/** Register a newly forked ACP session, its controller, and its runtime overrides. */
+	private async registerForkedSession(options: {
+		newSessionId: string
+		forkTitle: string
+		newTaskId?: string
+		sourceState: ReturnType<typeof resolveForkSourceState>
+	}): Promise<acp.ForkSessionResponse> {
+		const { newSessionId, forkTitle, newTaskId, sourceState } = options
+		const { sourceOverrides, sourceMode, sourceCwd } = sourceState
+		const controller = new Controller(this.ctx.extensionContext, {
+			workspaceCwd: sourceCwd,
+		})
+		const now = Date.now()
+		const session: DiracAcpSession = {
+			sessionId: newSessionId,
+			cwd: sourceCwd,
+			mode: sourceMode,
+			title: forkTitle,
+			createdAt: now,
+			lastActivityAt: now,
+			...(newTaskId
+				? {
+					isLoadedFromHistory: true,
+					loadedTaskId: newTaskId,
+					taskId: newTaskId,
+				}
+				: {}),
+		}
+
+		const configOptions = await this.sessionConfig.getSessionConfigOptions(session, sourceOverrides)
+		// Validate that the cloned task exists in task history before registering the session.
+		if (newTaskId) {
+			await controller.getTaskWithId(newTaskId)
+		}
+
+		this.#sessionControllers.set(session, controller)
+		this.sessions.set(newSessionId, session)
+		this.initializeSessionOverrides(newSessionId, sourceOverrides)
+		this.sessionStates.set(newSessionId, {
+			sessionId: newSessionId,
+			status: AcpSessionStatus.Idle,
+			pendingToolCalls: new Map(),
+		})
+		this.persistSessionOverrides(newSessionId)
+
+		return {
+			sessionId: newSessionId,
+			modes: this.sessionConfig.getSessionModeState(session.mode, sourceOverrides),
+			configOptions,
+		}
 	}
 
 	/**
@@ -1549,12 +1750,10 @@ export class DiracAgent implements acp.Agent {
 
 			switch (params.configId) {
 				case "auto_approve":
-					if (typeof params.value !== "boolean") throw new Error("Auto-approve must be a boolean value")
-					nextOverrides.autoApproveAllToggled = params.value
+					nextOverrides.autoApproveAllToggled = parseBooleanConfigValue(params.value)
 					break
 				case "yolo":
-					if (typeof params.value !== "boolean") throw new Error("YOLO must be a boolean value")
-					nextOverrides.yoloModeToggled = params.value
+					nextOverrides.yoloModeToggled = parseBooleanConfigValue(params.value)
 					break
 				case "provider":
 					if (typeof params.value !== "string") throw new Error("Provider must be a select value")
@@ -1615,7 +1814,7 @@ export class DiracAgent implements acp.Agent {
 			throw new Error("Controller not initialized for session. This is a bug in the ACP agent setup.")
 		}
 
-		const activeOverrides = await this.runSessionRuntimeMutation(params.sessionId, async () => {
+		await this.runSessionRuntimeMutation(params.sessionId, async () => {
 			if (sessionState.status !== AcpSessionStatus.Idle) {
 				throw new Error(`Session ${params.sessionId} is busy with another operation`)
 			}
@@ -1695,28 +1894,6 @@ export class DiracAgent implements acp.Agent {
 			)
 			subscribedTask = task
 		}
-		const removeTaskReplacementListener = controller.onTaskReplaced(async (taskId) => {
-			await bridge.cancelInFlightToolCalls(params.sessionId, sessionState)
-			await recordTaskForSession(params.sessionId, taskId)
-			session.taskId = taskId
-			subscribedTask = undefined
-			const replacementTask = controller.task
-			if (!replacementTask) return
-			await this.bindPromptTask(params.sessionId, replacementTask)
-			const replayEndIndex = replacementTask.messageStateHandler.getDiracMessages().length
-			subscribeToCurrentTask()
-			await bridge.replayTaskMessages(
-				controller,
-				params.sessionId,
-				sessionState,
-				resolvePrompt!,
-				rejectPrompt!,
-				promptResolved,
-				0,
-				replayEndIndex,
-			)
-		})
-		cleanupFunctions.push(removeTaskReplacementListener)
 
 		try {
 			// Extract text content from prompt
@@ -1758,92 +1935,17 @@ export class DiracAgent implements acp.Agent {
 				await this.bindPromptTask(params.sessionId, controller.task)
 				await controller.task.submitCardResponse("", DiracAskResponse.MESSAGE, textContent, imageContent, fileResources)
 				session.awaitingCancelledTaskResume = false
-			} else if (isLoadedSession && !hasActiveTask) {
-				// First prompt on a loaded session - resume the task from history.
-				Logger.debug("[DiracAgent] Resuming loaded session:", params.sessionId)
-
-				// Clear the flag so subsequent prompts are handled normally.
-				session.isLoadedFromHistory = false
-
-				// Use loadedTaskId if set (multi-task session resolved in loadSession),
-				// otherwise fall back to sessionId (common case where taskId === sessionId).
-				const taskIdToResume = session.loadedTaskId ?? params.sessionId
-				session.loadedTaskId = undefined
-
+			} else if (isLoadedSession) {
+				// Reinitialization returns only once the persisted conversation is restored.
+				const taskIdToResume = session.loadedTaskId!
 				await controller.reinitExistingTaskFromId(
 					taskIdToResume,
 					this.activePromptInitializationOptions(params.sessionId),
 				)
-
-				if (controller.task) {
-					const task = controller.task
-					const resumeResult = await new Promise<"completed" | "resumed">((resolve, reject) => {
-						let settled = false
-						const finish = (result: "completed" | "resumed") => {
-							if (settled) return
-							settled = true
-							clearInterval(statusPoll)
-							task.messageStateHandler.off("diracMessagesChanged", onChanged)
-							resolve(result)
-						}
-						const onRunPromiseError = (err: unknown) => {
-							if (settled) return
-							settled = true
-							clearInterval(statusPoll)
-							task.messageStateHandler.off("diracMessagesChanged", onChanged)
-							reject(err instanceof Error ? err : new Error(String(err)))
-						}
-						const hasResumeCard = () =>
-							task.messageStateHandler
-								.getDiracMessages()
-								.some(
-									(message) =>
-										message.content.type === DiracMessageType.CARD &&
-										isResumePromptCard(message.content.card),
-								)
-						const checkResumeState = () => {
-							if (task.taskState.status === TaskStatus.COMPLETED) return finish("completed")
-							if (hasResumeCard()) finish("resumed")
-						}
-						const onChanged = (change: DiracMessageChange) => {
-							if (
-								change.type === "add" &&
-								change.message?.content.type === DiracMessageType.CARD &&
-								isResumePromptCard(change.message.content.card)
-							) {
-								finish("resumed")
-							}
-						}
-						const statusPoll = setInterval(checkResumeState, 10)
-						task.messageStateHandler.on("diracMessagesChanged", onChanged)
-						Promise.resolve(controller.taskRunPromise).catch(onRunPromiseError)
-						checkResumeState()
-					})
-
-					if (resumeResult === "completed") {
-						// Completed history is terminal: resumeTaskFromHistory() intentionally does
-						// not issue a resume card or wait for a response. Start a fresh task for
-						// the first new ACP prompt rather than waiting forever for that card.
-						Logger.debug("[DiracAgent] Starting a new task from completed loaded session:", taskIdToResume)
-						await controller.initTask(
-							textContent,
-							imageContent,
-							fileResources,
-							undefined,
-							undefined,
-							undefined,
-							undefined,
-							this.activePromptInitializationOptions(params.sessionId),
-						)
-						if (controller.task) {
-							await recordTaskForSession(params.sessionId, controller.task.taskId)
-							session.taskId = controller.task.taskId
-						}
-					} else {
-						subscribeToCurrentTask()
-						await task.submitCardResponse("", DiracAskResponse.MESSAGE, textContent, imageContent, fileResources)
-					}
-				}
+				const task = controller.task!
+				subscribeToCurrentTask()
+				await this.bindPromptTask(params.sessionId, task)
+				await task.submitCardResponse("", DiracAskResponse.MESSAGE, textContent, imageContent, fileResources)
 			} else if (hasActiveTask && controller.task) {
 				// Continue existing task - respond to pending ask
 				Logger.debug("[DiracAgent] Continuing existing task:", controller.task.taskId)
@@ -1869,65 +1971,17 @@ export class DiracAgent implements acp.Agent {
 						imageContent,
 						fileResources,
 					)
-				} else if (controller.task.taskState.didAttemptCompletion) {
-					// The completion card resolves session/prompt slightly before the core task
-					// finishes publishing its terminal state. Wait until that handoff clears stale
-					// response fields before submitting the follow-up. Completed tasks intentionally
-					// retain COMPLETED while waitForFollowUp() accepts the next message.
-					await pWaitFor(
-						() => {
-							const status = controller.task?.taskState.status
-							return status === TaskStatus.COMPLETED || status === TaskStatus.AWAITING_USER_INPUT
-						},
-						{ interval: 10 },
-					)
-
-					// A completion response ends the ACP turn, not the conversation. The core
-					// task remains alive in waitForFollowUp() so the next session/prompt can
-					// continue with the same API conversation history.
-					Logger.debug("[DiracAgent] Continuing completed task in existing ACP session:", controller.task.taskId)
-					subscribeToCurrentTask()
-					await controller.task.submitCardResponse(
-						"",
-						DiracAskResponse.MESSAGE,
-						textContent,
-						imageContent,
-						fileResources,
-					)
 				} else {
-					Logger.debug("[DiracAgent] Starting new task (active task cannot accept a follow-up)")
-					await controller.initTask(
-						textContent,
-						imageContent,
-						fileResources,
-						undefined,
-						undefined,
-						undefined,
-						undefined,
-						this.activePromptInitializationOptions(params.sessionId),
-					)
-					if (controller.task) {
-						await recordTaskForSession(params.sessionId, controller.task.taskId)
-						session.taskId = controller.task.taskId
-						const replayEndIndex = controller.task.messageStateHandler.getDiracMessages().length
-						subscribeToCurrentTask()
-						await bridge.replayTaskMessages(
-							controller,
-							params.sessionId,
-							sessionState,
-							resolvePrompt!,
-							rejectPrompt!,
-							promptResolved,
-							0,
-							replayEndIndex,
-						)
-					}
+					// Restoration can clear the live task on failure; retain its ID for the next prompt's retry.
+					session.isLoadedFromHistory = true
+					session.loadedTaskId = controller.task.taskId
+					const task = await controller.prepareTaskForFollowUp(this.activePromptInitializationOptions(params.sessionId))
+					subscribeToCurrentTask()
+					await this.bindPromptTask(params.sessionId, task)
+					await task.submitCardResponse("", DiracAskResponse.MESSAGE, textContent, imageContent, fileResources)
 				}
 			} else {
-				// Start new task — consume reservedTaskId (sessionId) so the task's taskId
-				// equals the sessionId, enabling loadSession to find it without a map lookup.
-				const taskIdOverride = session.reservedTaskId
-				session.reservedTaskId = undefined
+				// The ACP session ID is the stable conversation ULID, not the backing task ID.
 				Logger.debug("[DiracAgent] Starting new task")
 				await controller.initTask(
 					textContent,
@@ -1935,12 +1989,15 @@ export class DiracAgent implements acp.Agent {
 					fileResources,
 					undefined,
 					undefined,
-					taskIdOverride,
+					params.sessionId,
 					undefined,
 					this.activePromptInitializationOptions(params.sessionId),
 				)
 				session.taskId = controller.task?.taskId
+				this.persistSessionOverrides(params.sessionId)
 			}
+			session.isLoadedFromHistory = false
+			session.loadedTaskId = undefined
 
 			if (controller.task && !subscribedTask) {
 				const replayEndIndex = controller.task.messageStateHandler.getDiracMessages().length
@@ -2313,9 +2370,17 @@ export class DiracAgent implements acp.Agent {
 		const bridge = this.bridgeForSession(sessionId)
 		const persistedUpdates = getSessionUpdates(sessionId)
 		if (persistedUpdates.length > 0) {
+			const accountingCardIds = new Set(uiMessages.flatMap((message) =>
+				message.content.type === DiracMessageType.CARD &&
+					(getTaskletUsage(message.content.card) || getSubagentUsage(message.content.card))
+					? [message.content.card.id] : [],
+			))
 			const emitter = this.emitterForSession(sessionId)
 			for (const persistedUpdate of persistedUpdates) {
 				if (persistedUpdate.kind === "session_update") {
+					const update = persistedUpdate.update
+					// Older ACP journals exposed accounting cards as tool activity.
+					if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && accountingCardIds.has(update.toolCallId)) continue
 					emitter.emit(persistedUpdate.update.sessionUpdate, persistedUpdate.update)
 				} else if (persistedUpdate.kind === "client_annotation") {
 					emitter.emit("client_annotation", persistedUpdate.annotation)
@@ -2326,7 +2391,7 @@ export class DiracAgent implements acp.Agent {
 				(persistedUpdate) =>
 					persistedUpdate.kind === "session_update" && persistedUpdate.update.sessionUpdate === "usage_update",
 			)
-			await bridge.restoreUsage(sessionId, uiMessages, !hasPersistedUsageUpdate)
+			await bridge.restoreUsage(sessionId, uiMessages, accountingCardIds.size > 0 || !hasPersistedUsageUpdate)
 			await this.emitPinnedMessagesUpdate(sessionId, "compacted")
 			return
 		}
@@ -2428,13 +2493,10 @@ export class DiracAgent implements acp.Agent {
 				(cmd) => cmd.cliCompatible && !cliOnlyNames.has(cmd.name) && !vscodeOnlyNames.has(cmd.name),
 			)
 
-			// Convert to ACP AvailableCommand format
+			// Convert to ACP AvailableCommand format (omit redundant input.hint duplicating cmd.description)
 			const availableCommands: acp.AvailableCommand[] = filteredCommands.map((cmd) => ({
 				name: cmd.name,
 				description: cmd.description,
-				input: {
-					hint: cmd.description,
-				},
 			}))
 
 			for (const reviewCommand of ACP_REVIEW_COMMANDS) {
@@ -2474,6 +2536,10 @@ export class DiracAgent implements acp.Agent {
 			title: session.title ?? null,
 			updatedAt: new Date(session.lastActivityAt).toISOString(),
 		})
+	}
+
+	async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
+		return this.unstable_listSessions_internal(params)
 	}
 
 	async unstable_listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {

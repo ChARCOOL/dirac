@@ -17,10 +17,15 @@ import { openAiCodexUsageService } from "@/integrations/openai-codex/OpenAiCodex
 import { BannerService } from "@/services/banner/BannerService"
 import { DiracExtensionContext } from "@/shared/dirac"
 import { Logger } from "@/shared/services/Logger"
+import { getHostCapabilities } from "@hosts/host-capabilities"
+import type { ArchitectureBoardController } from "./architecture/ArchitectureBoardController"
 import { SkillMetadata } from "@/shared/skills"
 import { StateManager } from "../storage/StateManager"
+import { getTaskDirectoryPath } from "../storage/taskDirectory"
+import { readPresentationHistory } from "../storage/conversationHistory"
 import { Task } from "../task"
 import type { PresentationSnapshot } from "../task/message-state"
+import type { TaskletActivitySummary } from "@shared/taskletObservation"
 import type { ITaskHost } from "../task/types/task-host"
 import { AuthController } from "./auth/AuthController"
 import { Initializer, type InitializerConfig } from "./index-initializer"
@@ -53,6 +58,35 @@ interface SelectedPresentation extends PresentationSnapshot {
 }
 
 export class Controller implements ITaskHost {
+	private architectureBoards?: ArchitectureBoardController
+	private architectureBoardsLoading?: Promise<ArchitectureBoardController>
+	private architectureBoardsDisposed = false
+
+	async getArchitectureBoards(): Promise<ArchitectureBoardController> {
+		if (this.architectureBoardsDisposed) throw new Error("Architecture controller is disposed")
+		if (!getHostCapabilities().architectureViewer) throw new Error("Architecture viewer is unavailable on this host")
+		if (this.architectureBoards) return this.architectureBoards
+		if (!this.architectureBoardsLoading) {
+			this.architectureBoardsLoading = import("./architecture/createArchitectureBoardController")
+				.then(({ createArchitectureBoardController }) => {
+					if (this.architectureBoardsDisposed) throw new Error("Architecture controller is disposed")
+					if (!getHostCapabilities().architectureViewer)
+						throw new Error("Architecture viewer is unavailable on this host")
+					this.architectureBoards = createArchitectureBoardController({
+						selected: () => ({ task: this.task, goalId: this.selectedGoalId }),
+						history: () => this.stateManager.getGlobalStateKey("taskHistory"),
+						directory: getTaskDirectoryPath,
+						readConversation: async (taskId) =>
+							(await readPresentationHistory(getTaskDirectoryPath(taskId))).messages,
+					})
+					return this.architectureBoards
+				})
+				.finally(() => {
+					this.architectureBoardsLoading = undefined
+				})
+		}
+		return this.architectureBoardsLoading
+	}
 	public discoveredSkillsCache?: SkillMetadata[]
 	readonly stateManager: StateManager
 	private availableToolsFingerprint?: string
@@ -81,10 +115,6 @@ export class Controller implements ITaskHost {
 	// Promise for the in-flight task run; created inside TaskController.initTask (from main).
 	get taskRunPromise(): Promise<void> | undefined {
 		return this.taskController?.taskRunPromise
-	}
-
-	onTaskReplaced(listener: (taskId: string) => void | Promise<void>): () => void {
-		return this.taskController.onTaskReplaced(listener)
 	}
 
 	private lastPublishedPresentation?: {
@@ -169,6 +199,13 @@ export class Controller implements ITaskHost {
 	- https://github.com/microsoft/vscode-extension-samples/blob/main/webview-sample/src/extension.ts
 	*/
 	async dispose() {
+		this.architectureBoardsDisposed = true
+		try {
+			this.architectureBoards?.dispose()
+		} catch (error) {
+			Logger.warn("Architecture board cleanup failed", error)
+		}
+		this.architectureBoards = undefined
 		this.openAiCodexUsageUnsubscribe?.()
 		this.openAiCodexUsageUnsubscribe = undefined
 		await this.goalController.dispose()
@@ -211,6 +248,7 @@ export class Controller implements ITaskHost {
 			await this.goalController.select(historyItem.id)
 			return historyItem.id
 		}
+		if (historyItem) await this.taskHistoryController.assertStandaloneTask(historyItem.id)
 		if (this.goalController.selectedGoalId) {
 			await this.goalController.pauseAndDeselect("Paused after starting another run")
 		}
@@ -233,8 +271,12 @@ export class Controller implements ITaskHost {
 		return this.taskController.reinitExistingTaskFromId(taskId, this.resolveTaskInitializationOptions(initializationOptions))
 	}
 
+	async prepareTaskForFollowUp(initializationOptions?: TaskInitializationOptions): Promise<Task> {
+		return this.taskController.prepareTaskForFollowUp(this.resolveTaskInitializationOptions(initializationOptions))
+	}
+
 	async cancelTask(): Promise<void> {
-		if (this.goalController.hasRunningCoordinator) {
+		if (this.goalController.selectedGoalId) {
 			await this.goalController.cancelCurrentExecution("Cancelled by user")
 			return
 		}
@@ -306,6 +348,10 @@ export class Controller implements ITaskHost {
 		return this.taskHistoryController.getTaskWithId(id)
 	}
 
+	async getPromptHistory(workspacePath: string, excludedRunId?: string) {
+		return this.taskHistoryController.getPromptHistory(workspacePath, excludedRunId)
+	}
+
 	async exportTaskWithId(id: string) {
 		return this.taskHistoryController.exportTaskWithId(id)
 	}
@@ -322,6 +368,27 @@ export class Controller implements ITaskHost {
 
 	async postPresentationToWebview(): Promise<void> {
 		await this.statePublicationQueue.requestPublication("presentation")
+	}
+
+	/** Resolve observation without reconstructing, resuming, or falling back across selected Goals. */
+	selectedTaskletObservation() {
+		const task = this.selectedGoalId ? this.goalController.coordinator : this.taskController.task
+		const rootTaskId = this.selectedGoalId ?? task?.taskId
+		if (!rootTaskId) return undefined
+		const host = task?.taskletHost
+		return {
+			rootTaskId,
+			sourceId: host?.observationSourceId ?? `saved:${rootTaskId}`,
+			availability: host ? "live" as const : "saved" as const,
+			host,
+		}
+	}
+
+	private taskletActivitySummary(): TaskletActivitySummary | null {
+		const source = this.selectedTaskletObservation()
+		if (!source) return null
+		if (source.host) return source.host.observationSummary()
+		return { rootTaskId: source.rootTaskId, sourceId: source.sourceId, availability: "saved", activeCount: null }
 	}
 
 	async waitForGoalStartupReconciliation(): Promise<void> {
@@ -391,11 +458,12 @@ export class Controller implements ITaskHost {
 		const state: Partial<ExtensionState> = controlState ?? {
 			presentationSurfaceId: surfaceId,
 			presentationOffset: task?.messageStateHandler.getPresentationOffset(),
-			activeVoiceStreamId: task?.taskState.activeVoiceStreamId,
-			isApiRequestActive: task?.taskState.isApiRequestActive ?? false,
-			taskStatus: task?.taskState.status ?? TaskStatus.IDLE,
+			taskletActivity: this.taskletActivitySummary(),
+			activeVoiceStreamId: task?.stateView.activeVoiceStreamId,
+			isApiRequestActive: task?.stateView.isApiRequestActive ?? false,
+			taskStatus: task?.stateView.status ?? TaskStatus.IDLE,
 			uiActionState: projectUIActionState(
-				task?.taskState,
+				task?.stateView,
 				(id) => task?.messageStateHandler.getMessageById(id),
 				maxConsecutiveMistakes,
 			),
@@ -437,7 +505,7 @@ export class Controller implements ITaskHost {
 		}
 		this.availableToolsFingerprint = nextAvailableToolsFingerprint
 
-		return state
+		return { ...state, taskletActivity: this.taskletActivitySummary() }
 	}
 
 	async updateTaskHistory(item: HistoryItem): Promise<HistoryItem[]> {

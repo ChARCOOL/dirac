@@ -8,9 +8,9 @@ import { Box, Text, useInput } from "ink"
 import React from "react"
 import { COLORS } from "../constants/colors"
 import { useStdinContext } from "../context/StdinContext"
+import { useTerminalSize } from "../hooks/useTerminalSize"
 import { shouldIgnoreTerminalInput } from "../utils/input"
 import { Panel } from "./Panel"
-import { useTerminalSize } from "../hooks/useTerminalSize"
 
 interface HelpPanelContentProps {
 	onClose: () => void
@@ -57,11 +57,15 @@ export const HelpPanelContent: React.FC<HelpPanelContentProps> = ({ onClose }) =
 						Keyboard Shortcuts
 					</Text>
 					{[
+						["Enter", "Submit prompt"],
+						["Shift+Enter / Shift+↓", "Insert newline (Shift+↓ is the fallback)"],
 						["Ctrl+U", "Clear entire input (delete to start)"],
 						["Ctrl+K", "Delete from cursor to end"],
 						["Ctrl+W", "Delete word backwards"],
 						["Ctrl+A / Ctrl+E", "Jump to start / end of input"],
 						["Alt/Option+←/→", "Move by word"],
+						["↑ / ↓", "Move cursor; scroll response at input edges"],
+						["Ctrl+↑ / Ctrl+↓", "Recall previous prompts for editing"],
 						["Tab", "Switch Plan/Act mode"],
 						["Shift+Tab", "Toggle auto-approve"],
 						["Esc", "Cancel current action"],
@@ -90,7 +94,8 @@ export const HelpPanelContent: React.FC<HelpPanelContentProps> = ({ onClose }) =
 						["/settings", "Configure your API provider and preferences"],
 						["/models", "Switch AI models"],
 						["/history", "Browse previous tasks"],
-						["/agent", "Inspect Dirac and subagent activity"],
+						["/agents", "Print a frozen local snapshot of active agents"],
+						["/agent", "Read agent transcripts; r refresh, n/p pages (no chat/control)"],
 						["/quiet", "Toggle card bodies for future tool output"],
 						["/clear", "Start a fresh task"],
 						["/q", "Quit Dirac"],

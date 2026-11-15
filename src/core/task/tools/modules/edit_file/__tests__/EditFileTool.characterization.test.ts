@@ -36,7 +36,7 @@ class EditFileToolHandler {
 
 let tmpDir: string
 
-function createConfig(opts: { isSubagent?: boolean; diracIgnore?: any } = {}) {
+function createConfig(opts: { diracIgnore?: any } = {}) {
 	const taskState = new TaskState()
 	const diffViewProvider = {
 		readText: sinon.stub().callsFake(async (filePath: string) => await fs.readFile(filePath, "utf8")),
@@ -65,7 +65,7 @@ function createConfig(opts: { isSubagent?: boolean; diracIgnore?: any } = {}) {
 
 	const callbacks = {
 		assertMutationAuthorized: sinon.stub(),
-		withMutationAuthorization: sinon.stub().callsFake(async (_toolName: unknown, mutation: () => Promise<unknown>) => await mutation()),
+		withMutationAuthorization: async <T>(_toolName: unknown, mutation: () => Promise<T>) => await mutation(),
 		say: sinon.stub().resolves(undefined),
 		ask: sinon.stub().resolves({ response: DiracAskResponse.APPROVE }),
 		saveCheckpoint: sinon.stub().resolves(),
@@ -96,10 +96,8 @@ function createConfig(opts: { isSubagent?: boolean; diracIgnore?: any } = {}) {
 		mode: "act",
 		strictPlanModeEnabled: false,
 		yoloModeToggled: true,
-		doubleCheckCompletionEnabled: false,
 		vscodeTerminalExecutionMode: "backgroundExec",
 		enableParallelToolCalling: true,
-		isSubagentExecution: opts.isSubagent ?? true,
 		taskState,
 		messageState: { getApiConversationHistory: sinon.stub().returns([]) },
 		model: { id: "test-model", info: { supportsImages: false } },
@@ -156,6 +154,7 @@ describe("EditFileTool – characterization edge cases", () => {
 			} as any,
 		])
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					getDiagnostics: sandbox.stub().resolves({ fileDiagnostics: [] }),
@@ -196,21 +195,20 @@ describe("EditFileTool – characterization edge cases", () => {
 		sinon.assert.notCalled(diffViewProvider.applyAndSaveBatchSilently)
 	})
 
-	it("counts the saved editor buffer before rejecting an oversized disk file", async () => {
+	it("does not save a dirty buffer to bypass oversized disk preflight", async () => {
 		const { config, validator } = createConfig()
 		const handler = new EditFileToolHandler(validator, false)
 		const fileName = "dirty-buffer.txt"
 		const filePath = path.join(tmpDir, fileName)
 		const editorContent = "current line 1\ncurrent line 2"
-		await fs.writeFile(
-			filePath,
-			Array.from({ length: MAX_ANCHORED_FILE_LINES + 1 }, (_, index) => `stale ${index}`).join("\n"),
-		)
+		const diskContent = Array.from({ length: MAX_ANCHORED_FILE_LINES + 1 }, (_, index) => `stale ${index}`).join("\n")
+		await fs.writeFile(filePath, diskContent)
 		const saveDirtyDocument = sandbox.stub().callsFake(async () => {
 			await fs.writeFile(filePath, editorContent)
 			return { wasSaved: true }
 		})
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					getDiagnostics: sandbox.stub().resolves({ fileDiagnostics: [] }),
@@ -229,9 +227,76 @@ describe("EditFileTool – characterization edge cases", () => {
 			}],
 		})
 
-		sinon.assert.called(saveDirtyDocument)
-		assert.equal(await fs.readFile(filePath, "utf8"), "current line 1\nupdated line 2")
-		assert.ok(typeof result === "string" && result.includes("Applied 1 edit(s) successfully"))
+		sinon.assert.notCalled(saveDirtyDocument)
+		assert.equal(await fs.readFile(filePath, "utf8"), diskContent)
+		assert.ok(typeof result === "string" && result.includes(`${(MAX_ANCHORED_FILE_LINES + 1).toLocaleString()} lines`))
+	})
+
+	for (const action of [DiracAskResponse.APPROVE, DiracAskResponse.REJECT]) {
+		it(`prepares unsaved buffer edits without saving before ${action}`, async () => {
+			const { config, callbacks, diffViewProvider, taskMessenger } = createConfig()
+			config.yoloModeToggled = false
+			const fileName = "dirty-approval.txt"
+			const filePath = path.join(tmpDir, fileName)
+			const diskContent = "saved line 1\nsaved line 2"
+			const editorContent = "unsaved line 1\nunsaved line 2"
+			await fs.writeFile(filePath, diskContent)
+			diffViewProvider.readText.resolves(editorContent)
+				; (config.autoApprover.isUnrestrictedAutoApprove as sinon.SinonStub).returns(false)
+			callbacks.shouldAutoApproveToolWithPath.resolves(false)
+			const env = new SurfaceAdapter(config)
+			const saveDirtyDocument = sandbox.spy(env.workspace, "saveOpenDocumentIfDirty")
+			const makeCard = createMockTaskMessenger().createCard
+			const waitForApproval = sandbox.stub().callsFake(async () => {
+				assert.equal(await fs.readFile(filePath, "utf8"), diskContent)
+				sinon.assert.notCalled(saveDirtyDocument)
+				sinon.assert.notCalled(diffViewProvider.applyAndSaveBatchSilently)
+				return { action }
+			})
+			taskMessenger.createCard.callsFake(async (params) => {
+				const card = await makeCard(params)
+				if (params.requireApproval) card.waitForInteraction = waitForApproval
+				return card
+			})
+			const anchors = makeAnchors(filePath, editorContent, config.ulid)
+
+			await new EditFileTool().processCall({
+				files: [{
+					path: fileName,
+					edits: [{ edit_type: "replace", anchor: anchors[1], end_anchor: anchors[1], text: "approved line 2" }],
+				}]
+			}, env)
+
+			sinon.assert.calledOnce(waitForApproval)
+			sinon.assert.notCalled(saveDirtyDocument)
+			assert.equal(
+				await fs.readFile(filePath, "utf8"),
+				action === DiracAskResponse.APPROVE ? "unsaved line 1\napproved line 2" : diskContent,
+			)
+		})
+	}
+
+	it("rejects stale disk anchors against the unsaved buffer without saving", async () => {
+		const { config, diffViewProvider } = createConfig()
+		const fileName = "dirty-stale-anchor.txt"
+		const filePath = path.join(tmpDir, fileName)
+		const diskContent = "saved line"
+		await fs.writeFile(filePath, diskContent)
+		const anchors = makeAnchors(filePath, diskContent, config.ulid)
+		diffViewProvider.readText.resolves("unsaved line")
+		const env = new SurfaceAdapter(config)
+		const saveDirtyDocument = sandbox.spy(env.workspace, "saveOpenDocumentIfDirty")
+
+		await new EditFileTool().processCall({
+			files: [{
+				path: fileName,
+				edits: [{ edit_type: "replace", anchor: anchors[0], end_anchor: anchors[0], text: "replacement" }],
+			}]
+		}, env)
+
+		sinon.assert.notCalled(saveDirtyDocument)
+		sinon.assert.notCalled(diffViewProvider.applyAndSaveBatchSilently)
+		assert.equal(await fs.readFile(filePath, "utf8"), diskContent)
 	})
 
 	it("rejects oversized approval-time content before writing", async () => {
@@ -591,7 +656,7 @@ describe("EditFileTool – characterization edge cases", () => {
 		})
 
 		it("finalizes every progress card when a batch save fails", async () => {
-			const { config, taskState, validator, diffViewProvider, taskMessenger } = createConfig({ isSubagent: false })
+			const { config, taskState, validator, diffViewProvider, taskMessenger } = createConfig()
 			const handler = new EditFileToolHandler(validator, false)
 			const files = ["failed-a.txt", "failed-b.txt"]
 			const blocks = []
@@ -613,8 +678,8 @@ describe("EditFileTool – characterization edge cases", () => {
 
 			assert.equal(taskMessenger.createCard.callCount, 2)
 			for (const call of taskMessenger.createCard.getCalls()) {
-				const card = await call.returnValue
-				sinon.assert.calledOnceWithMatch(card.finalize, CardStatus.ERROR)
+				const protocolCard = await call.returnValue
+				sinon.assert.calledOnceWithExactly(protocolCard.finalize, CardStatus.ERROR, undefined)
 			}
 		})
 

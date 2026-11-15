@@ -1,0 +1,271 @@
+{
+	"title": "Goals, Tasks and subagents — connected architecture",
+	"summary": "Reproduction of cross-group routing with shared execution infrastructure.",
+	"nodes": [
+		{
+			"id": "entry",
+			"kind": "component",
+			"label": "GoalController → GoalLoop"
+		},
+		{
+			"id": "goal",
+			"kind": "group",
+			"label": "Goal runtime — durable multi-Task orchestration"
+		},
+		{
+			"id": "coordinator",
+			"kind": "component",
+			"label": "Goal coordinator — full Task",
+			"parentId": "goal"
+		},
+		{
+			"id": "host",
+			"kind": "service",
+			"label": "GoalTaskHost — creates full child Tasks",
+			"parentId": "goal"
+		},
+		{
+			"id": "child-a",
+			"kind": "component",
+			"label": "Child Task A — can call use_subagents",
+			"parentId": "goal"
+		},
+		{
+			"id": "child-b",
+			"kind": "component",
+			"label": "Child Task B — independent sibling",
+			"parentId": "goal"
+		},
+		{
+			"id": "events",
+			"kind": "component",
+			"label": "Child environment → ordered Goal events",
+			"parentId": "goal"
+		},
+		{
+			"id": "store",
+			"kind": "database",
+			"label": "GoalStore — durable objective + registry",
+			"parentId": "goal"
+		},
+		{
+			"id": "parent",
+			"kind": "component",
+			"label": "Standalone Task — another possible caller"
+		},
+		{
+			"id": "subagents",
+			"kind": "group",
+			"label": "Inside the calling Task — awaited parallel batch"
+		},
+		{
+			"id": "fork",
+			"kind": "component",
+			"label": "use_subagents tool — fan-out",
+			"parentId": "subagents"
+		},
+		{
+			"id": "orchestration",
+			"kind": "api_endpoint",
+			"label": "env.orchestration.runSubagent",
+			"parentId": "subagents"
+		},
+		{
+			"id": "runner-a",
+			"kind": "component",
+			"label": "SubagentRunner A — private model/tool loop",
+			"parentId": "subagents"
+		},
+		{
+			"id": "runner-b",
+			"kind": "component",
+			"label": "SubagentRunner B — parallel sibling",
+			"parentId": "subagents"
+		},
+		{
+			"id": "join",
+			"kind": "function",
+			"label": "allSettled → one batch tool result",
+			"parentId": "subagents"
+		},
+		{
+			"id": "shared",
+			"kind": "group",
+			"label": "Common execution infrastructure — reused, not global"
+		},
+		{
+			"id": "dispatch",
+			"kind": "component",
+			"label": "ToolExecutorCoordinator → tool module",
+			"parentId": "shared"
+		},
+		{
+			"id": "environment",
+			"kind": "api_endpoint",
+			"label": "IToolEnvironment → SurfaceAdapter / Goal wrappers",
+			"parentId": "shared"
+		},
+		{
+			"id": "workspace",
+			"kind": "component",
+			"label": "Shared workspace, commands and host services",
+			"parentId": "shared"
+		}
+	],
+	"edges": [
+		{
+			"id": "entry-goal",
+			"kind": "aggregation",
+			"source": "entry",
+			"target": "coordinator",
+			"label": "owns coordinator lifecycle"
+		},
+		{
+			"id": "goal-dispatch",
+			"kind": "api_call",
+			"source": "coordinator",
+			"target": "host",
+			"label": "start_task → env.goal.startTask"
+		},
+		{
+			"id": "spawn-a",
+			"kind": "api_call",
+			"source": "host",
+			"target": "child-a",
+			"label": "new Task; start without awaiting finish"
+		},
+		{
+			"id": "spawn-b",
+			"kind": "api_call",
+			"source": "host",
+			"target": "child-b",
+			"label": "new Task; independent run"
+		},
+		{
+			"id": "child-a-events",
+			"kind": "data_flow",
+			"source": "child-a",
+			"target": "events",
+			"label": "child's own respond / interaction / outcome"
+		},
+		{
+			"id": "child-b-events",
+			"kind": "data_flow",
+			"source": "child-b",
+			"target": "events",
+			"label": "child updates and outcome"
+		},
+		{
+			"id": "wake",
+			"kind": "data_flow",
+			"source": "events",
+			"target": "coordinator",
+			"label": "wait_for_goal_events returns ordered batch"
+		},
+		{
+			"id": "host-store",
+			"kind": "dependency",
+			"source": "host",
+			"target": "store",
+			"label": "persist registry + events"
+		},
+		{
+			"id": "store-context",
+			"kind": "data_flow",
+			"source": "store",
+			"target": "coordinator",
+			"label": "pinned objective + active-task context"
+		},
+		{
+			"id": "child-sub-call",
+			"kind": "api_call",
+			"source": "child-a",
+			"target": "fork",
+			"label": "CONNECTION: await use_subagents([...])"
+		},
+		{
+			"id": "coordinator-sub-call",
+			"kind": "api_call",
+			"source": "coordinator",
+			"target": "fork",
+			"label": "can also await its own subagent batch"
+		},
+		{
+			"id": "sub-call",
+			"kind": "api_call",
+			"source": "parent",
+			"target": "fork",
+			"label": "same tool; no Goal required"
+		},
+		{
+			"id": "fork-orchestration",
+			"kind": "api_call",
+			"source": "fork",
+			"target": "orchestration",
+			"label": "one runSubagent call per assignment"
+		},
+		{
+			"id": "fork-a",
+			"kind": "api_call",
+			"source": "orchestration",
+			"target": "runner-a",
+			"label": "construct runner + await run"
+		},
+		{
+			"id": "fork-b",
+			"kind": "api_call",
+			"source": "orchestration",
+			"target": "runner-b",
+			"label": "construct parallel runner + await run"
+		},
+		{
+			"id": "result-a",
+			"kind": "data_flow",
+			"source": "runner-a",
+			"target": "join",
+			"label": "complete / failure / cancellation"
+		},
+		{
+			"id": "result-b",
+			"kind": "data_flow",
+			"source": "runner-b",
+			"target": "join",
+			"label": "complete / failure / cancellation"
+		},
+		{
+			"id": "return-results",
+			"kind": "data_flow",
+			"source": "join",
+			"target": "child-a",
+			"label": "illustrated caller resumes with results"
+		},
+		{
+			"id": "task-shared-dispatch",
+			"kind": "dependency",
+			"source": "child-a",
+			"target": "dispatch",
+			"label": "full Task dispatch path (representative)"
+		},
+		{
+			"id": "subagent-shared-dispatch",
+			"kind": "dependency",
+			"source": "runner-a",
+			"target": "dispatch",
+			"label": "SubagentToolExecutor → scoped sibling dispatcher"
+		},
+		{
+			"id": "dispatch-env",
+			"kind": "dependency",
+			"source": "dispatch",
+			"target": "environment",
+			"label": "tool module executes through environment"
+		},
+		{
+			"id": "env-workspace",
+			"kind": "dependency",
+			"source": "environment",
+			"target": "workspace",
+			"label": "workspace / execution / host capabilities"
+		}
+	]
+}

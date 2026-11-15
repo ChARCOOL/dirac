@@ -1,0 +1,87 @@
+.architecture-board[data-board-style="soft"] {
+	--style-node-shadow: drop-shadow(0 4px 0 color-mix(in srgb, var(--style-stroke) 18%, transparent));
+	--style-bg: #fbf7f2;
+	--style-grid: #e7ddd1;
+	--style-text: #504439;
+	--style-muted: #786a5f;
+	--style-fill: #fffdfc;
+	--style-stroke: #c8bdb1;
+	--style-accent: #cd886c;
+	--style-group-fill: #f3ebe3;
+	--style-group-stroke: #d7c9b9;
+	--style-blue: #698ac8;
+	--style-teal: #57978a;
+	--style-amber: #bb9346;
+	--style-violet: #a47abc;
+	--style-rose: #aa426b;
+	--style-message: #52565c;
+	--style-font: ui-rounded, system-ui, sans-serif;
+	--soft-component: #f5e8db;
+	--soft-class: #eae9f4;
+	--soft-function: #f5edd8;
+	--soft-database: #e2ede7;
+	--soft-service: #f1e2df;
+	--soft-api: #e5edf4;
+}
+
+.architecture-board[data-board-style="soft"] .kind-component {
+	--style-node-fill: var(--soft-component);
+}
+
+.architecture-board[data-board-style="soft"] .kind-class {
+	--style-node-fill: var(--soft-class);
+}
+
+.architecture-board[data-board-style="soft"] .kind-function {
+	--style-node-fill: var(--soft-function);
+}
+
+.architecture-board[data-board-style="soft"] .kind-database {
+	--style-node-fill: var(--soft-database);
+}
+
+.architecture-board[data-board-style="soft"] .kind-service {
+	--style-node-fill: var(--soft-service);
+}
+
+.architecture-board[data-board-style="soft"] .kind-api_endpoint {
+	--style-node-fill: var(--soft-api);
+}
+
+/* Stronger turquoise and raspberry distinguish these from mint stores and peach services. */
+.architecture-board[data-board-style="soft"] .kind-state {
+	--style-node-fill: #c5ebe7;
+	--style-stroke: #2c817e;
+	--style-accent: #216663;
+}
+
+.architecture-board[data-board-style="soft"] .kind-actor {
+	--style-node-fill: #f4ccde;
+	--style-stroke: #ae4772;
+	--style-accent: #873557;
+}
+
+.architecture-board[data-board-style="soft"] .board-node:not(.kind-group)>.node-silhouette {
+	filter: var(--style-node-shadow);
+}
+
+.architecture-board[data-board-style="soft"] .node-structure {
+	stroke: var(--node-outline);
+	opacity: 0.65;
+}
+
+.architecture-board[data-board-style="soft"] .node-content .node-title {
+	font-weight: 600;
+	letter-spacing: -0.2px;
+}
+
+.architecture-board[data-board-style="soft"] .kind-group .node-content .node-title {
+	border-radius: 12px;
+	background: var(--board-bg);
+	padding-inline: 12px;
+}
+
+.architecture-board[data-board-style="soft"] .board-edge-label {
+	border-radius: 10px;
+	box-shadow: 0 3px 0 color-mix(in srgb, var(--style-stroke) 15%, transparent);
+}

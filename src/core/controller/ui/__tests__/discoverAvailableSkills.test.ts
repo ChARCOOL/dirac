@@ -10,6 +10,7 @@
  * global skills directory occurs.
  */
 
+import { setHostCapabilities } from "@hosts/host-capabilities"
 import * as skillsModule from "@core/context/instructions/user-instructions/skills"
 import type { SkillProviderCapabilities } from "@shared/skills"
 import { expect } from "chai"
@@ -48,7 +49,15 @@ describe("discoverAvailableSkills (FU-6)", () => {
 	})
 
 	afterEach(() => {
+		setHostCapabilities(undefined)
 		sandbox.restore()
+	})
+
+	it("omits viewer-only skills from headless slash-menu discovery, even with cached metadata", async () => {
+		setHostCapabilities({})
+		sandbox.stub(skillsModule, "getOrDiscoverSkills").resolves(skillsModule.BUILTIN_SKILLS)
+		const result = await discoverAvailableSkills(makeStateManager({}) as any, "/workspace", {}, PROVIDER_CAPABILITIES)
+		expect(result.some((skill) => skill.name === "architecture-board")).to.equal(false)
 	})
 
 	it("hermetic: stubs getOrDiscoverSkills so no filesystem scan runs", async () => {

@@ -12,6 +12,7 @@ import {
 import type { SystemPromptContext } from "../types"
 import { respondSpec } from "@core/task/tools/modules/respond/RespondTool"
 import { RESPONSE_OPERATIONS } from "@shared/responseTool"
+import { subagents_spec } from "@core/task/tools/modules/subagents/SubagentsTool"
 const mockContext: SystemPromptContext = {
 	cwd: "/test/project",
 	ide: "TestIde",
@@ -58,7 +59,7 @@ describe("respond provider schemas", () => {
 		expect(anthropicProperties.operation.enum).to.deep.equal(RESPONSE_OPERATIONS)
 		expect(anthropicProperties.operation.description).to.include("plan = Plan Mode response/proposal")
 		expect(anthropicProperties.operation.description).to.include("question = required user input")
-		expect(anthropicProperties.operation.description).to.include("complete = final Act Mode or subagent result")
+		expect(anthropicProperties.operation.description).to.include("complete = final Act Mode result")
 		expect(anthropicProperties.options).to.include({ type: "array", minItems: 2, maxItems: 5 })
 		expect(anthropicProperties.options.items).to.deep.equal({ type: "string" })
 		expect(openAIProperties.operation.enum).to.deep.equal(RESPONSE_OPERATIONS)
@@ -75,14 +76,16 @@ describe("respond provider schemas", () => {
 			(responses as any).parameters.properties.text.description,
 			geminiProperties.text.description,
 		]) {
-			expect(description).to.include("The user has explicitly asked for a low verbosity response")
+			expect(description).to.include("Keep responses concise")
+			expect(description).to.include("Address the user")
+			expect(description).not.to.include("explicitly asked")
 			expect(description).to.include("- progress:")
 			expect(description).to.include("- question:")
 			expect(description).to.include("- plan:")
 			expect(description).to.include("decisions requiring the user's input")
 			expect(description).to.include("- complete:")
 		}
-		expect((responses as any).description).to.include("The user has explicitly asked for a low verbosity response")
+		expect((responses as any).description).to.include("Keep responses concise")
 	})
 
 
@@ -106,17 +109,42 @@ describe("respond provider schemas", () => {
 		]
 
 		expect(descriptions).to.deep.equal([
-			"Send a user-facing response.",
-			"Response text.",
-			"Send a user-facing response.",
-			"Response text.",
-			"Response text.",
-			"Send a user-facing response.",
-			"Response text.",
-			"Send a user-facing response.",
-			"Response text.",
+			"Send a response to the user.",
+			"Response text for the user.",
+			"Send a response to the user.",
+			"Response text for the user.",
+			"Response text for the user.",
+			"Send a response to the user.",
+			"Response text for the user.",
+			"Send a response to the user.",
+			"Response text for the user.",
 		])
 	})
+	for (const lowVerbosityEnabled of [true, false]) {
+		it(`addresses child descriptions and parameter instructions to Dirac with low verbosity ${lowVerbosityEnabled}`, () => {
+			const context = { ...mockContext, executionProfile: "tasklet" as const, lowVerbosityEnabled }
+			const anthropic = toolSpecInputSchema(respondSpec, context)
+			const openAI = toolSpecFunctionDefinition(respondSpec, context) as any
+			const strictOpenAI = toolSpecFunctionDefinition(respondSpec, context, true) as any
+			const responses = toOpenAIResponsesAPITool(openAI) as any
+			const gemini = toolSpecFunctionDeclarations(respondSpec, context)
+			for (const schema of [
+				{ description: anthropic.description, properties: anthropic.input_schema.properties },
+				{ description: openAI.function.description, properties: openAI.function.parameters.properties },
+				{ description: strictOpenAI.function.description, properties: strictOpenAI.function.parameters.properties },
+				{ description: responses.description, properties: responses.parameters.properties },
+				{ description: gemini.description, properties: gemini.parameters?.properties },
+			]) {
+				const properties = schema.properties as Record<string, any>
+				expect(schema.description).to.include("Send a response to Dirac")
+				expect(properties.operation.description).to.include("required input from Dirac")
+				expect(properties.text.description).to.include("Dirac")
+				expect(`${schema.description} ${properties.operation.description} ${properties.text.description}`)
+					.not.to.match(/user-facing|user input|user's input|explicitly asked|- plan:/)
+				if (lowVerbosityEnabled) expect(properties.text.description).to.include("Keep responses concise")
+			}
+		})
+	}
 	it("keeps both fixed contracts within intentional schema-size bounds", () => {
 		const enabledAnthropicBytes = JSON.stringify(toolSpecInputSchema(respondSpec, mockContext)).length
 		const enabledOpenAIBytes = JSON.stringify(toolSpecFunctionDefinition(respondSpec, mockContext)).length
@@ -129,6 +157,81 @@ describe("respond provider schemas", () => {
 		expect(enabledAnthropicBytes).to.be.at.most(2100)
 		expect(enabledOpenAIBytes).to.be.at.most(2200)
 	})
+})
+
+describe("subagents provider schemas", () => {
+	const names = [
+		"operation",
+		"assignments",
+		"tasklet_id",
+		"view",
+		"cursor",
+		"limit",
+		"call_id",
+		"message_type",
+		"messages",
+		"message",
+		"tasklet_ids",
+		"timeout_ms",
+	]
+	const operations = ["create", "list", "inspect", "message", "interrupt", "resume", "sleep"]
+
+	for (const provider of ["Anthropic", "Gemini", "OpenAI non-strict", "OpenAI strict"] as const) {
+		it(`${provider}: preserves control fields, constraints and answer/action semantics`, () => {
+			const strict = provider === "OpenAI strict"
+			const gemini = provider === "Gemini"
+			const anthropic = toolSpecInputSchema(subagents_spec, mockContext)
+			const google = toolSpecFunctionDeclarations(subagents_spec, mockContext)
+			const openAI = toolSpecFunctionDefinition(subagents_spec, mockContext, strict) as any
+			const schema = (provider === "Anthropic" ? anthropic.input_schema : gemini ? google.parameters : openAI.function.parameters) as any
+			const properties = schema.properties
+			const type = (value: string, optional = false) => {
+				if (gemini) return value === "integer" ? "NUMBER" : value.toUpperCase()
+				return strict && optional ? [value, "null"] : value
+			}
+
+			expect(Object.keys(properties)).to.deep.equal(names)
+			expect(schema.required).to.deep.equal(strict ? names : ["operation"])
+			expect(schema.type).to.equal(type("object"))
+			expect(properties.operation.type).to.equal(type("string"))
+			expect(properties.operation.enum).to.deep.equal(operations)
+			expect(properties.messages.type).to.deep.equal(type("array", true))
+			expect(properties.messages.minItems).to.equal(1)
+			expect(properties.messages.maxItems).to.equal(20)
+			const item = properties.messages.items
+			expect(item.properties.type.enum).to.deep.equal(["guidance", "reply", "permission_decision"])
+			expect(item.properties).to.have.property("request_id")
+			expect(item.properties).not.to.have.property("reply_to")
+			expect(item.properties.text.description).to.include("optional explanation for permission_decision")
+			expect(item.properties.text.description).to.include("never permission authority")
+			expect(item.properties.text.maxLength).to.equal(8000)
+			expect(properties.assignments.type).to.deep.equal(type("array", true))
+			expect(properties.assignments.items.required).to.deep.equal(["type", "task_header", "task_description"])
+			expect(item.properties.action.description).to.include("not a permission grant")
+			for (const name of ["tasklet_id", "message", "cursor", "call_id", "message_type"]) {
+				expect(properties[name].type).to.deep.equal(type("string", true))
+				expect(properties[name].minLength).to.equal(1)
+			}
+			expect(properties.limit.type).to.deep.equal(type("integer", true))
+			expect(properties.limit.minimum).to.equal(1)
+
+			expect(properties.tasklet_ids.type).to.deep.equal(type("array", true))
+			expect(properties.tasklet_ids.items).to.deep.equal({ type: type("string"), minLength: 1 })
+			expect(properties.tasklet_ids).not.to.have.property("minItems")
+			expect(properties.timeout_ms.type).to.deep.equal(type("integer", true))
+			expect(properties.timeout_ms.minimum).to.equal(0)
+			expect(properties.timeout_ms.maximum).to.equal(2147483647)
+
+			if (provider.startsWith("OpenAI")) {
+				expect(openAI.function.strict).to.equal(strict)
+				expect(schema.additionalProperties).to.equal(false)
+				expect((toOpenAIResponsesAPITool(openAI) as any).parameters).to.deep.include({
+					properties: schema.properties,
+					required: schema.required,
+				})
+			}
+		})
+	}
 })
 
 describe("toolSpecFunctionDeclarations (Gemini)", () => {

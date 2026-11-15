@@ -1,38 +1,207 @@
+import { isDeepStrictEqual } from "node:util"
 import { TaskMetadata } from "@core/context/context-tracking/ContextTrackerTypes"
+import type { TaskletRecord, TaskletEvent } from "@core/task/types/tasklet"
+import { isCommandGrantSnapshot } from "@core/task/TaskletCommandApprovals"
+import { isTaskCommandCapabilitySnapshot, type TaskCommandCapabilitySnapshot } from "@core/task/TaskCommandCapabilities"
+import { historicalTaskletSelection, migrateTaskletConfiguration } from "./migrateTaskletConfiguration"
+import { isTaskletUsageSnapshot } from "@shared/taskletUsage"
 import { GlobalState, Settings } from "@shared/storage/state-keys"
 import { fileExistsAtPath } from "@utils/fs"
 import fs from "fs/promises"
-import * as path from "path"
 import Mutex from "p-mutex"
+import * as path from "path"
 import { Logger } from "@/shared/services/Logger"
 import { atomicWriteFile } from "./atomicWrite"
-import { GlobalFileNames } from "./fileNames"
 import { ensureTaskDirectoryExists } from "./directoryEnsurers"
+import { GlobalFileNames } from "./fileNames"
+import { getTaskDirectoryPath, type TaskStorageAddress } from "./taskDirectory"
 
+export type { TaskletRecord, TaskletEvent } from "@core/task/types/tasklet"
+
+/** Root identity prevents copied task directories from copying permission authority. */
+export async function loadTaskCommandCapabilities(rootTaskId: string): Promise<TaskCommandCapabilitySnapshot | undefined> {
+	let value: unknown
+	try {
+		value = JSON.parse(await fs.readFile(path.join(getTaskDirectoryPath(rootTaskId), "command-capabilities.json"), "utf8"))
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+		throw error
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid task command capability record")
+	const { rootTaskId: owner, ...snapshot } = value as Record<string, unknown>
+	if (typeof owner !== "string" || !isTaskCommandCapabilitySnapshot(snapshot)) throw new Error("Invalid task command capability record")
+	return owner === rootTaskId ? snapshot : undefined
+}
+
+export async function saveTaskCommandCapabilities(rootTaskId: string, snapshot: TaskCommandCapabilitySnapshot): Promise<void> {
+	const directory = await ensureTaskDirectoryExists(rootTaskId)
+	await atomicWriteFile(path.join(directory, "command-capabilities.json"), JSON.stringify({ rootTaskId, ...snapshot }))
+}
+
+/** Read only the owning root's contained records; reconstruction never starts executions. */
+export async function loadTaskletRecords(rootTaskId: string): Promise<TaskletRecord[]> {
+	return readTaskletRecords(rootTaskId, rootTaskId)
+}
+
+/** Rebind only the copied snapshot, never an earlier read of children still writing in the source. */
+export async function rebindCopiedTaskletRecords(sourceRootTaskId: string, destinationRootTaskId: string): Promise<void> {
+	const records = await readTaskletRecords(destinationRootTaskId, sourceRootTaskId)
+	for (const record of records) {
+		await saveTaskletRecord({ ...record, rootTaskId: destinationRootTaskId, commandGrants: undefined })
+	}
+}
+
+async function readTaskletRecords(rootTaskId: string, recordRootTaskId: string): Promise<TaskletRecord[]> {
+	const collectionDirectory = path.join(getTaskDirectoryPath(rootTaskId), "tasklets")
+	let entries: import("fs").Dirent[]
+	try {
+		entries = await fs.readdir(collectionDirectory, { withFileTypes: true })
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+		throw error
+	}
+	const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+		const address = { kind: "tasklet" as const, rootTaskId, taskletId: entry.name }
+		// Only the atomically committed record admits a child; interrupted initial writes may leave a directory.
+		try {
+			await fs.lstat(path.join(getTaskDirectoryPath(address), GlobalFileNames.taskletRecord))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+			throw error
+		}
+		return loadTaskletRecord(address, recordRootTaskId)
+	}))
+	return records.filter((record): record is TaskletRecord => record !== undefined)
+}
+
+/** Read one root-qualified child without loading its siblings or creating directories. */
+export async function loadTaskletRecord(
+	address: Extract<TaskStorageAddress, { kind: "tasklet" }>,
+	recordRootTaskId = address.rootTaskId,
+): Promise<TaskletRecord> {
+	const record: TaskletRecord = JSON.parse(
+		await fs.readFile(path.join(getTaskDirectoryPath(address), GlobalFileNames.taskletRecord), "utf8"),
+	)
+	if (
+		!record || record.id !== address.taskletId || record.rootTaskId !== recordRootTaskId ||
+		typeof record.conversationUlid !== "string" || !record.conversationUlid ||
+		typeof record.title !== "string" || typeof record.prompt !== "string" || !Number.isFinite(record.createdAt) ||
+		(record.usage !== undefined && !isTaskletUsageSnapshot(record.usage)) ||
+		(record.commandGrants !== undefined && !isCommandGrantSnapshot(record.commandGrants))
+	) throw new Error(`Invalid tasklet record for ${address.taskletId} under root ${address.rootTaskId}`)
+	if (record.configuration?.modelSelection !== undefined) return migrateTaskletConfiguration(record)
+	let savedSettings: string
+	try {
+		savedSettings = await fs.readFile(path.join(getTaskDirectoryPath(address), "settings.json"), "utf8")
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return migrateTaskletConfiguration(record)
+		throw error
+	}
+	return migrateTaskletConfiguration(record, historicalTaskletSelection(JSON.parse(savedSettings)))
+}
+
+/** Retain full communication and delivery state; missing pre-communication snapshots are empty. */
+export async function loadTaskletEvents(address: Extract<TaskStorageAddress, { kind: "tasklet" }>): Promise<TaskletEvent[]> {
+	const filePath = path.join(getTaskDirectoryPath(address), GlobalFileNames.taskletEvents)
+	let contents: string
+	try {
+		contents = await fs.readFile(filePath, "utf8")
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+		throw error
+	}
+	const events: TaskletEvent[] = JSON.parse(contents)
+	if (
+		!Array.isArray(events) ||
+		events.some(
+			(event) =>
+				!event ||
+				typeof event.id !== "string" ||
+				!event.id ||
+				event.taskletId !== address.taskletId ||
+				!Number.isFinite(event.createdAt) ||
+				(event.deliveredAt !== undefined && !Number.isFinite(event.deliveredAt)) ||
+				!event.communication ||
+				(event.communication.type === "message"
+					? !event.communication.message ||
+					event.communication.message.taskletId !== address.taskletId ||
+					!["guidance", "question", "reply", "permission_decision"].includes(event.communication.message.type)
+					: false) ||
+				(event.communication.type === "response"
+					? !event.communication.response || typeof event.communication.response !== "object"
+					: event.communication.type === "outcome"
+						? !event.communication.outcome ||
+						!["completed", "failed", "cancelled", "interrupted"].includes(event.communication.outcome.kind)
+						: event.communication.type === "message" || event.communication.type === "waiting_for_message"
+							? false
+							: event.communication.type === "lifecycle"
+								? !["accepted", "resumed"].includes(event.communication.state)
+								: event.communication.type !== "interaction" ||
+								!event.communication.request ||
+								typeof event.communication.request.id !== "string" ||
+								!["pending", "resolved", "retired"].includes(event.communication.request.status)),
+		)
+	)
+		throw new Error(`Invalid tasklet events for ${address.taskletId} under root ${address.rootTaskId}`)
+	return events
+}
+
+/** Passive settlement evidence: a record is written before its durable outcome event. */
+export async function savedSettledRecord(record: TaskletRecord): Promise<TaskletRecord> {
+	if (!record.outcome) return record
+	const events = await loadTaskletEvents({ kind: "tasklet", rootTaskId: record.rootTaskId, taskletId: record.id })
+	for (let index = events.length - 1; index >= 0; index--) {
+		const communication = events[index].communication
+		if (communication.type !== "outcome") continue
+		return isDeepStrictEqual(communication.outcome, record.outcome) ? record : { ...record, outcome: undefined }
+	}
+	return { ...record, outcome: undefined }
+}
+
+/** TaskletHost is the sole writer; it serializes acceptance before outcome publication. */
+export async function saveTaskletRecord(record: TaskletRecord): Promise<void> {
+	const directory = await ensureTaskDirectoryExists({
+		kind: "tasklet",
+		rootTaskId: record.rootTaskId,
+		taskletId: record.id,
+	})
+	await atomicWriteFile(path.join(directory, GlobalFileNames.taskletRecord), JSON.stringify(record, null, 2))
+}
+
+/** The owning host serializes full communication snapshots and delivery acknowledgements. */
+export async function saveTaskletEvents(
+	address: Extract<TaskStorageAddress, { kind: "tasklet" }>,
+	events: readonly TaskletEvent[],
+): Promise<void> {
+	const directory = await ensureTaskDirectoryExists(address)
+	await atomicWriteFile(path.join(directory, GlobalFileNames.taskletEvents), JSON.stringify(events, null, 2))
+}
+
+// Process-local locks only; address resolution is not ownership authorization or filesystem isolation.
 const taskMetadataLocks = new Map<string, Mutex>()
 const taskSettingsLocks = new Map<string, Mutex>()
 
-function getTaskMetadataLock(taskId: string): Mutex {
-	let lock = taskMetadataLocks.get(taskId)
+function getTaskMetadataLock(taskDirectory: string): Mutex {
+	let lock = taskMetadataLocks.get(taskDirectory)
 	if (!lock) {
 		lock = new Mutex()
-		taskMetadataLocks.set(taskId, lock)
+		taskMetadataLocks.set(taskDirectory, lock)
 	}
 	return lock
 }
 
-function getTaskSettingsLock(taskId: string): Mutex {
-	let lock = taskSettingsLocks.get(taskId)
+function getTaskSettingsLock(taskDirectory: string): Mutex {
+	let lock = taskSettingsLocks.get(taskDirectory)
 	if (!lock) {
 		lock = new Mutex()
-		taskSettingsLocks.set(taskId, lock)
+		taskSettingsLocks.set(taskDirectory, lock)
 	}
 	return lock
 }
 
 // Reads task metadata for a task, returning an empty default if absent or unreadable.
-export async function getTaskMetadata(taskId: string): Promise<TaskMetadata> {
-	const filePath = path.join(await ensureTaskDirectoryExists(taskId), GlobalFileNames.taskMetadata)
+export async function getTaskMetadata(address: string | TaskStorageAddress): Promise<TaskMetadata> {
+	const filePath = path.join(await ensureTaskDirectoryExists(address), GlobalFileNames.taskMetadata)
 	try {
 		if (await fileExistsAtPath(filePath)) {
 			return JSON.parse(await fs.readFile(filePath, "utf8"))
@@ -43,16 +212,16 @@ export async function getTaskMetadata(taskId: string): Promise<TaskMetadata> {
 	return { files_in_context: [], model_usage: [], environment_history: [] }
 }
 
-async function writeTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
-	const taskDir = await ensureTaskDirectoryExists(taskId)
+async function writeTaskMetadata(address: string | TaskStorageAddress, metadata: TaskMetadata): Promise<void> {
+	const taskDir = await ensureTaskDirectoryExists(address)
 	const filePath = path.join(taskDir, GlobalFileNames.taskMetadata)
 	await atomicWriteFile(filePath, JSON.stringify(metadata, null, 2))
 }
 
-// Persists task metadata for a task.
-export async function saveTaskMetadata(taskId: string, metadata: TaskMetadata): Promise<void> {
+// Legacy best-effort save: logs failures without rejecting; use updateTaskMetadata for propagating failures.
+export async function saveTaskMetadata(address: string | TaskStorageAddress, metadata: TaskMetadata): Promise<void> {
 	try {
-		await getTaskMetadataLock(taskId).withLock(() => writeTaskMetadata(taskId, metadata))
+		await getTaskMetadataLock(getTaskDirectoryPath(address)).withLock(() => writeTaskMetadata(address, metadata))
 	} catch (error) {
 		Logger.error("Failed to save task metadata:", error)
 	}
@@ -60,21 +229,21 @@ export async function saveTaskMetadata(taskId: string, metadata: TaskMetadata): 
 
 /** Atomically reads, mutates, and persists task metadata for one task. */
 export async function updateTaskMetadata(
-	taskId: string,
+	address: string | TaskStorageAddress,
 	update: (metadata: TaskMetadata) => void | Promise<void>,
 ): Promise<TaskMetadata> {
-	return getTaskMetadataLock(taskId).withLock(async () => {
-		const metadata = await getTaskMetadata(taskId)
+	return getTaskMetadataLock(getTaskDirectoryPath(address)).withLock(async () => {
+		const metadata = await getTaskMetadata(address)
 		await update(metadata)
-		await writeTaskMetadata(taskId, metadata)
+		await writeTaskMetadata(address, metadata)
 		return metadata
 	})
 }
 
 // Reads per-task settings from storage, returning {} for a new task.
-export async function readTaskSettingsFromStorage(taskId: string): Promise<Partial<GlobalState>> {
+export async function readTaskSettingsFromStorage(address: string | TaskStorageAddress): Promise<Partial<GlobalState>> {
 	try {
-		const taskDirectoryFilePath = await ensureTaskDirectoryExists(taskId)
+		const taskDirectoryFilePath = await ensureTaskDirectoryExists(address)
 		const settingsFilePath = path.join(taskDirectoryFilePath, "settings.json")
 		if (await fileExistsAtPath(settingsFilePath)) {
 			const settingsContent = await fs.readFile(settingsFilePath, "utf8")
@@ -88,10 +257,10 @@ export async function readTaskSettingsFromStorage(taskId: string): Promise<Parti
 }
 
 // Merges and persists per-task settings into the task's settings.json.
-export async function writeTaskSettingsToStorage(taskId: string, settings: Partial<Settings>) {
+export async function writeTaskSettingsToStorage(address: string | TaskStorageAddress, settings: Partial<Settings>) {
 	try {
-		await getTaskSettingsLock(taskId).withLock(async () => {
-			const taskDirectoryFilePath = await ensureTaskDirectoryExists(taskId)
+		await getTaskSettingsLock(getTaskDirectoryPath(address)).withLock(async () => {
+			const taskDirectoryFilePath = await ensureTaskDirectoryExists(address)
 			const settingsFilePath = path.join(taskDirectoryFilePath, "settings.json")
 			let existingSettings = {}
 			if (await fileExistsAtPath(settingsFilePath)) {

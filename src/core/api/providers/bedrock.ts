@@ -12,7 +12,7 @@ import {
 	bedrockDefaultModelId,
 	bedrockModels,
 	getAnthropicReasoningEffort,
-	isAnthropicAdaptiveThinkingSupported,
+	getAnthropicThinkingConfig,
 	type ModelInfo,
 } from "@shared/api"
 import { calculateApiCostOpenAI, calculateApiCostQwen } from "@utils/cost"
@@ -314,11 +314,11 @@ export class AwsBedrockHandler implements ApiHandler {
 									}
 
 									if (accumulatedTokens >= TOKEN_REPORT_THRESHOLD) {
-										const totalCost = calculateApiCostOpenAI(model.info, 0, accumulatedTokens, 0, 0)
+										const totalCost = calculateApiCostOpenAI(model.info, inputTokenEstimate, outputTokens, 0, 0)
 										yield {
 											type: "usage",
-											inputTokens: 0,
-											outputTokens: accumulatedTokens,
+											inputTokens: inputTokenEstimate,
+											outputTokens,
 											totalCost: totalCost,
 										}
 										accumulatedTokens = 0
@@ -337,11 +337,11 @@ export class AwsBedrockHandler implements ApiHandler {
 								}
 								// Report aggregated token usage only when threshold is reached
 								if (accumulatedTokens >= TOKEN_REPORT_THRESHOLD) {
-									const totalCost = calculateApiCostOpenAI(model.info, 0, accumulatedTokens, 0, 0)
+									const totalCost = calculateApiCostOpenAI(model.info, inputTokenEstimate, outputTokens, 0, 0)
 									yield {
 										type: "usage",
-										inputTokens: 0,
-										outputTokens: accumulatedTokens,
+										inputTokens: inputTokenEstimate,
+										outputTokens,
 										totalCost: totalCost,
 									}
 									accumulatedTokens = 0
@@ -360,11 +360,11 @@ export class AwsBedrockHandler implements ApiHandler {
 
 				// Report any remaining accumulated tokens at the end of the stream
 				if (accumulatedTokens > 0) {
-					const totalCost = calculateApiCostOpenAI(model.info, 0, accumulatedTokens, 0, 0)
+					const totalCost = calculateApiCostOpenAI(model.info, inputTokenEstimate, outputTokens, 0, 0)
 					yield {
 						type: "usage",
-						inputTokens: 0,
-						outputTokens: accumulatedTokens,
+						inputTokens: inputTokenEstimate,
+						outputTokens,
 						totalCost: totalCost,
 					}
 				}
@@ -484,9 +484,9 @@ export class AwsBedrockHandler implements ApiHandler {
 		})
 		const messagesWithCache = applyCache
 			? applyCacheControlToMessages(formattedMessages, {
-					lastUserIndex: userMsgIndices.at(-1) ?? -1,
-					secondLastUserIndex: userMsgIndices.at(-2) ?? -1,
-				})
+				lastUserIndex: userMsgIndices.at(-1) ?? -1,
+				secondLastUserIndex: userMsgIndices.at(-2) ?? -1,
+			})
 			: formattedMessages
 		const systemMessages = prepareSystemMessages(systemPrompt, applyCache)
 		const toolConfig = mapDiracToolsToBedrockToolConfig(tools)
@@ -504,10 +504,13 @@ export class AwsBedrockHandler implements ApiHandler {
 			!!this.options.awsBedrockUsePromptCache,
 		)
 
-		// Get thinking configuration
-		const budget_tokens = this.options.thinkingBudgetTokens || 0
-		const reasoningOn = model.info.supportsReasoning && (model.info.thinkingAlwaysOn || budget_tokens > 0)
-		const useAdaptive = isAnthropicAdaptiveThinkingSupported(modelId, model.info)
+		const thinking = getAnthropicThinkingConfig(
+			modelId,
+			model.info,
+			this.options.thinkingBudgetTokens,
+			this.options.reasoningEffort,
+		)
+		const useEffort = model.info.supportsReasoningEffort || thinking?.type === "adaptive"
 
 		// Prepare request for Anthropic model using Converse API
 		const command = new ConverseStreamCommand({
@@ -517,16 +520,10 @@ export class AwsBedrockHandler implements ApiHandler {
 			inferenceConfig: getInferenceConfig(model.info, "anthropic", this.options.thinkingBudgetTokens || 0),
 			...(toolConfig ? { toolConfig } : {}),
 			additionalModelRequestFields: {
-				// Add thinking configuration as per LangChain documentation
-				...(reasoningOn && {
-					thinking: useAdaptive
-						? { type: "adaptive", display: "summarized" }
-						: { type: "enabled", budget_tokens: budget_tokens },
+				...(thinking && { thinking }),
+				...(useEffort && {
+					output_config: { effort: getAnthropicReasoningEffort(model.info, this.options.reasoningEffort) },
 				}),
-				...(reasoningOn &&
-					useAdaptive && {
-						output_config: { effort: getAnthropicReasoningEffort(model.info, this.options.reasoningEffort) },
-					}),
 			},
 		})
 

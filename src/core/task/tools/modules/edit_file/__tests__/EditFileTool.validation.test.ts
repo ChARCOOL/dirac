@@ -99,10 +99,8 @@ function createConfig() {
 		mode: "act",
 		strictPlanModeEnabled: false,
 		yoloModeToggled: true,
-		doubleCheckCompletionEnabled: false,
 		vscodeTerminalExecutionMode: "backgroundExec",
 		enableParallelToolCalling: true,
-		isSubagentExecution: true, // skip UI calls and approval flow
 		taskState,
 		messageState: {
 			getApiConversationHistory: sinon.stub().returns([]),
@@ -160,6 +158,7 @@ describe("EditFileTool.execute – validation", () => {
 		])
 
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					getDiagnostics: sandbox.stub().resolves({ fileDiagnostics: [] }),

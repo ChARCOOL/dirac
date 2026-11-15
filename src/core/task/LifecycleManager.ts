@@ -1,5 +1,6 @@
 import { formatResponse } from "@core/formatResponse"
 import { executeHook } from "@core/hooks/hook-executor"
+import { HookCleanupError } from "@core/hooks/HookCleanupError"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
 import {
 	ensureTaskDirectoryExists,
@@ -14,6 +15,9 @@ import { processFilesIntoText } from "@integrations/misc/extract-text"
 import type { BrowserSession } from "@services/browser/BrowserSession"
 import { findLastIndex } from "@shared/array"
 import { isResumePromptCard, isSuccessfulTaskCompletionCard } from "@shared/cardIdentity"
+import { getTaskletUsage } from "@shared/taskletUsage"
+import { readTaskletPresentation } from "@shared/taskletPresentation"
+import { getTaskScopedStateKey } from "@shared/taskletId"
 import {
 	DiracContent,
 	DiracImageContentBlock,
@@ -28,12 +32,14 @@ import pWaitFor from "p-wait-for"
 import { CardStatus, DiracMessageType, TaskStatus } from "@/shared/ExtensionMessage"
 import { getErrorMessage } from "@/shared/errors"
 import { getTaskHookModelContext } from "./runtime/TaskRuntimeModelContext"
-import { releaseTaskLock } from "./TaskLockUtils"
 import type { TaskRunOutcome } from "./TaskRunOutcome"
+import { clearAskResponse } from "./TaskUserInput"
 import { LifecycleManagerDependencies } from "./types/lifecycle-manager"
 import { buildUserFeedbackContent } from "./utils/buildUserFeedbackContent"
 
 export interface ResumeTaskOptions {
+	/** Parent guidance for a contained conversation; never user input or a recovery prompt. */
+	taskletResumeMessage?: string
 	/** Synthetic context for the first resumed model turn; never rendered or marked as user input. */
 	systemContext?: string
 	/** User-authored content that starts the resumed turn without waiting for an interaction callback. */
@@ -48,13 +54,14 @@ export class LifecycleManager {
 	private abortPromise?: Promise<void>
 	private ownedResourceCleanupPromise?: Promise<void>
 
-	constructor(private dependencies: LifecycleManagerDependencies) {}
+	constructor(private dependencies: LifecycleManagerDependencies) { }
 
 	setApi(api: LifecycleManagerDependencies["api"]): void {
 		this.dependencies.api = api
 	}
 
 	setBrowserSession(browserSession: BrowserSession): void {
+		if (this.ownedResourceCleanupPromise) throw new Error("Task resources have stopped")
 		this.dependencies.browserSession = browserSession
 	}
 
@@ -93,12 +100,7 @@ export class LifecycleManager {
 			const lastCheckpointMessageIndex = findLastIndex(messages, (m) => m.content.type === DiracMessageType.CHECKPOINT)
 			if (lastCheckpointMessageIndex !== -1) {
 				const commitPromise = this.dependencies.checkpointManager!.commit()
-				// Store the initial commit promise in Task for unsafe tools to wait on
-				// We'll need to expose this or handle it differently.
-				// In Task, it was: this.initialCheckpointCommitPromise = commitPromise
-				// I'll add a way to set it in Task or just keep it here if it's only used for tools.
-				// Wait, ToolExecutor needs it. I'll add it to TaskState or pass it back.
-				// Let's add it to TaskState for simplicity as it's a transient state.
+				// Unsafe tools wait for the initial checkpoint commit.
 				this.dependencies.taskState.initialCheckpointCommitPromise = commitPromise
 
 				commitPromise
@@ -119,15 +121,20 @@ export class LifecycleManager {
 		}
 	}
 
-	public async startTask(task?: string, images?: string[], files?: string[]): Promise<TaskRunOutcome | undefined> {
+	public async startTask(
+		task?: string, images?: string[], files?: string[],
+	): Promise<TaskRunOutcome | undefined> {
 		try {
 			await this.dependencies.diracIgnoreController.initialize()
 			await this.dependencies.commandPermissionController.initialize(this.dependencies.cwd)
 		} catch (error) {
 			Logger.error("Failed to initialize DiracIgnoreController:", error)
 		}
+		if (this.dependencies.taskState.abort) return
+
 		this.dependencies.messageStateHandler.setDiracMessages([])
 		this.dependencies.messageStateHandler.setApiConversationHistory([])
+		this.dependencies.taskState.conversationHistoryDeletedRange = undefined
 		this.dependencies.messageStateHandler.setApiConversationProviderState({})
 
 		await this.dependencies.postStateToWebview()
@@ -156,6 +163,8 @@ export class LifecycleManager {
 				})
 			}
 		}
+
+		if (this.dependencies.taskState.abort) return
 
 		const hooksEnabled = getHooksEnabledSafe(this.dependencies.getWorkingConfiguration().settings.hooksEnabled)
 		if (hooksEnabled) {
@@ -238,9 +247,12 @@ export class LifecycleManager {
 	}
 
 	public async resumeTaskFromHistory(
-		onRestored?: () => void,
+		onRestored?: () => void | Promise<void>,
 		options: ResumeTaskOptions = {},
 	): Promise<TaskRunOutcome | undefined> {
+		if (options.taskletResumeMessage !== undefined && this.dependencies.storageAddress?.kind !== "tasklet") {
+			throw new Error("Tasklet resumption requires a contained tasklet address")
+		}
 		try {
 			await this.dependencies.diracIgnoreController.initialize()
 			await this.dependencies.commandPermissionController.initialize(this.dependencies.cwd)
@@ -249,8 +261,13 @@ export class LifecycleManager {
 		}
 		if (this.dependencies.taskState.abort) return
 
-		const savedPresentation = await getSavedPresentationHistory(this.dependencies.taskId)
+		const savedPresentation = await getSavedPresentationHistory(this.dependencies.storageAddress ?? this.dependencies.taskId)
 		const savedDiracMessages = savedPresentation.messages
+		if (options.taskletResumeMessage !== undefined) {
+			// Each appended presentation message snapshots the effective range. The
+			// latest snapshot is authoritative even when undefined (no truncation).
+			this.dependencies.taskState.conversationHistoryDeletedRange = savedDiracMessages.at(-1)?.conversationHistoryDeletedRange
+		}
 		this.dependencies.messageStateHandler.setDiracMessages(savedDiracMessages, savedPresentation.lastOffset)
 		if (this.dependencies.taskState.abort) return
 
@@ -266,20 +283,40 @@ export class LifecycleManager {
 		if (lastApiReqStartedIndex !== -1) {
 			const lastApiReqStarted = savedDiracMessages[lastApiReqStartedIndex]
 			if (lastApiReqStarted.content.type === "api_status") {
-				const { cost, cancelReason } = lastApiReqStarted.content.status
-				if (cost === undefined && cancelReason === undefined) {
+				const { cost, cancelReason, tokensIn, tokensOut, cacheWrites, cacheReads, reasoningTokens, usageAvailability, deletedMetrics } = lastApiReqStarted.content.status
+				// Unknown pricing does not make reported or archived usage an unstarted request.
+				const hasUsage = [tokensIn, tokensOut, cacheWrites, cacheReads, reasoningTokens].some((value) => (value ?? 0) > 0)
+					|| Object.values(usageAvailability ?? {}).some(Boolean)
+					|| Object.values(deletedMetrics ?? {}).some((value) => value > 0)
+				if (cost === undefined && cancelReason === undefined && !hasUsage) {
 					savedDiracMessages.splice(lastApiReqStartedIndex, 1)
+				}
+			}
+		}
+
+		if (options.taskletResumeMessage !== undefined) {
+			// Old cards are history, never live counterpart requests after reopening.
+			for (const message of savedDiracMessages) {
+				if (
+					message.content.type === DiracMessageType.CARD &&
+					message.content.card.status === CardStatus.WAITING_FOR_INPUT
+				) {
+					message.content.card.status = CardStatus.CANCELLED
 				}
 			}
 		}
 
 		await this.dependencies.messageStateHandler.overwriteDiracMessages(savedDiracMessages)
 		if (this.dependencies.taskState.abort) return
-		const persistedPresentation = await getSavedPresentationHistory(this.dependencies.taskId)
+		const persistedPresentation = await getSavedPresentationHistory(
+			this.dependencies.storageAddress ?? this.dependencies.taskId,
+		)
 		if (this.dependencies.taskState.abort) return
 		this.dependencies.messageStateHandler.setDiracMessages(persistedPresentation.messages, persistedPresentation.lastOffset)
 
-		const savedApiConversation = await getSavedApiConversationState(this.dependencies.taskId)
+		const savedApiConversation = await getSavedApiConversationState(
+			this.dependencies.storageAddress ?? this.dependencies.taskId,
+		)
 		const savedApiConversationHistory = savedApiConversation.messages.map(removeUserInputMarkersFromMessage)
 		if (this.dependencies.taskState.abort) return
 		this.dependencies.messageStateHandler.setApiConversationHistory(
@@ -287,19 +324,24 @@ export class LifecycleManager {
 			savedApiConversation.lastOffset,
 		)
 		this.dependencies.messageStateHandler.setApiConversationProviderState(
-			await getSavedApiConversationProviderState(this.dependencies.taskId),
+			await getSavedApiConversationProviderState(this.dependencies.storageAddress ?? this.dependencies.taskId),
 		)
 		if (this.dependencies.taskState.abort) return
-		this.dependencies.restoreQueuedSteeringFromTranscript()
+		// Only the explicit parent resume message starts contained work. Historical
+		// queued guidance remains inspectable, but is not reissued as user input.
+		if (options.taskletResumeMessage === undefined) this.dependencies.restoreQueuedSteeringFromTranscript()
 
-		await ensureTaskDirectoryExists(this.dependencies.taskId)
+		await ensureTaskDirectoryExists(this.dependencies.storageAddress ?? this.dependencies.taskId)
 		if (this.dependencies.taskState.abort) return
 
 		// Restore task-scoped tools from the task directory
 		const { refreshTaskTools } = await import("@core/task/tools/registry/refreshToolRegistry")
-		this.dependencies.taskState.taskScopedToolIds = await refreshTaskTools(this.dependencies.taskId)
+		this.dependencies.taskState.taskScopedToolIds = await refreshTaskTools(
+			this.dependencies.taskId,
+			this.dependencies.storageAddress ?? this.dependencies.taskId,
+		)
 		if (this.dependencies.taskState.abort) return
-		const taskMetadata = await getTaskMetadata(this.dependencies.taskId)
+		const taskMetadata = await getTaskMetadata(this.dependencies.storageAddress ?? this.dependencies.taskId)
 		if (this.dependencies.taskState.abort) return
 		this.dependencies.taskState.activeSkillIds = taskMetadata.active_skill_ids ?? []
 
@@ -311,7 +353,7 @@ export class LifecycleManager {
 			.reverse()
 			.find(
 				(m) =>
-					!(m.content.type === DiracMessageType.CARD && isResumePromptCard(m.content.card)) &&
+					!(m.content.type === DiracMessageType.CARD && (isResumePromptCard(m.content.card) || getTaskletUsage(m.content.card) || readTaskletPresentation(m.content.card))) &&
 					!(m.content.type === DiracMessageType.MARKDOWN && m.content.role === "user"),
 			)
 
@@ -323,16 +365,17 @@ export class LifecycleManager {
 			isSuccessfulTaskCompletionCard(lastDiracMessage.content.card)
 		// Reset askResponse state before waiting. Completed tasks remain available for
 		// follow-up messages just like cancelled tasks; only their displayed status differs.
-		this.dependencies.taskState.askResponse = undefined
-		this.dependencies.taskState.askResponseText = undefined
-		this.dependencies.taskState.askResponseImages = undefined
-		this.dependencies.taskState.askResponseFiles = undefined
+		clearAskResponse(this.dependencies.taskState)
 
 		this.dependencies.taskState.status = completedTask ? TaskStatus.COMPLETED : TaskStatus.CANCELLED
 		await this.dependencies.postStateToWebview()
-		onRestored?.()
+		await onRestored?.()
 
-		if (options.systemContext === undefined && options.initialUserInput === undefined) {
+		if (
+			options.systemContext === undefined &&
+			options.initialUserInput === undefined &&
+			options.taskletResumeMessage === undefined
+		) {
 			await pWaitFor(() => this.dependencies.taskState.askResponse !== undefined || this.dependencies.taskState.abort, {
 				interval: 100,
 			})
@@ -346,6 +389,11 @@ export class LifecycleManager {
 		const files = options.initialUserInput?.files ?? this.dependencies.taskState.askResponseFiles
 
 		const newUserContent: DiracContent[] = []
+
+		if (options.taskletResumeMessage !== undefined) {
+			newUserContent.push({ type: "text", text: "Tasklet resumed." })
+			if (options.taskletResumeMessage) newUserContent.push({ type: "text", text: options.taskletResumeMessage })
+		}
 
 		if (options.systemContext !== undefined) {
 			newUserContent.push({
@@ -406,6 +454,18 @@ export class LifecycleManager {
 			return
 		}
 
+		if (options.taskletResumeMessage !== undefined) {
+			// Append a fresh turn without moving saved content across a native
+			// checkpoint boundary or reissuing an interrupted tool call.
+			try {
+				await this.dependencies.recordEnvironment()
+			} catch (error) {
+				Logger.error("Failed to record environment metadata on resume:", error)
+			}
+			if (this.dependencies.taskState.abort) return
+			return await this.dependencies.initiateTaskLoop(newUserContent)
+		}
+
 		let responseText: string | undefined
 		let responseImages: string[] | undefined
 		let responseFiles: string[] | undefined
@@ -417,39 +477,9 @@ export class LifecycleManager {
 		}
 
 		const existingApiConversationHistory = this.dependencies.messageStateHandler.getApiConversationHistory()
-		let modifiedOldUserContent: DiracContent[]
-		let modifiedApiConversationHistory: any[]
-		if (existingApiConversationHistory.length > 0) {
-			const lastMessage = existingApiConversationHistory[existingApiConversationHistory.length - 1]
-			if (lastMessage.role === "assistant") {
-				modifiedApiConversationHistory = [...existingApiConversationHistory]
-				modifiedOldUserContent = []
-			} else if (lastMessage.role === "user") {
-				const existingUserContent: DiracContent[] = Array.isArray(lastMessage.content)
-					? lastMessage.content
-					: [{ type: "text", text: lastMessage.content }]
-				modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1)
-				modifiedOldUserContent = [...existingUserContent]
-			} else {
-				throw new Error("Unexpected: Last message is not a user or assistant message")
-			}
-		} else {
-			modifiedApiConversationHistory = []
-			modifiedOldUserContent = []
-		}
-
-		const providerState = this.dependencies.messageStateHandler.getApiConversationProviderState()
-		if (
-			providerState.checkpoint &&
-			providerState.checkpoint.compactedThroughHistoryIndex >= modifiedApiConversationHistory.length
-		) {
-			await this.dependencies.messageStateHandler.overwriteApiConversationProviderState({
-				...providerState,
-				checkpoint: undefined,
-			})
-		}
-
-		newUserContent.push(...modifiedOldUserContent)
+		// Resume adds a new turn. Previously submitted user content must never be
+		// removed and reconstructed with resume instructions in front of it.
+		const modifiedApiConversationHistory = [...existingApiConversationHistory]
 
 		const agoText = (() => {
 			const timestamp = lastDiracMessage?.ts ?? Date.now()
@@ -571,23 +601,16 @@ export class LifecycleManager {
 			this.getOperationalApi().abort?.()
 			const shouldRunTaskCancelHook = await this.dependencies.hookManager.shouldRunTaskCancelHook()
 
-			const activeHook = await this.dependencies.hookManager.getActiveHookExecution()
-			if (activeHook) {
-				try {
-					await this.dependencies.hookManager.cancelHookExecution()
-					await this.dependencies.hookManager.clearActiveHookExecution()
-				} catch (error) {
-					Logger.error("Failed to cancel hook during task abort", error)
-					await this.dependencies.hookManager.clearActiveHookExecution()
-				}
-			}
+			await this.dependencies.hookManager.cancelAllHookExecutions()
 
-			if (this.dependencies.commandExecutor.hasActiveBackgroundCommand()) {
-				try {
-					await this.dependencies.commandExecutor.cancelBackgroundCommand()
-				} catch (error) {
-					Logger.error("Failed to cancel background command during task abort", error)
-				}
+			// Terminal acquisition may itself be running a manager-owned CWD command.
+			// Stop both owners before joining either; executor-first draining can deadlock.
+			const terminalResults = await Promise.allSettled([
+				Promise.resolve().then(() => this.dependencies.commandExecutor.dispose()),
+				Promise.resolve().then(() => this.dependencies.terminalManager.disposeAll()),
+			])
+			for (const result of terminalResults) {
+				if (result.status === "rejected") abortFailures.push(result.reason)
 			}
 
 			const hooksEnabled = getHooksEnabledSafe(this.dependencies.getWorkingConfiguration().settings.hooksEnabled)
@@ -606,16 +629,19 @@ export class LifecycleManager {
 						},
 						isCancellable: false,
 						messenger: this.dependencies.taskMessenger,
+						setActiveHookExecution: this.dependencies.hookManager.setActiveHookExecution.bind(this.dependencies.hookManager),
+						clearActiveHookExecution: this.dependencies.hookManager.clearActiveHookExecution.bind(this.dependencies.hookManager),
 						messageStateHandler: this.dependencies.messageStateHandler,
 						taskId: this.dependencies.taskId,
 						hooksEnabled,
 						model: getTaskHookModelContext(
 							this.getOperationalApi(),
 							this.dependencies.getRequestRuntime()?.workingConfiguration ??
-								this.dependencies.getWorkingConfiguration(),
+							this.dependencies.getWorkingConfiguration(),
 						),
 					})
 				} catch (error) {
+					if (error instanceof HookCleanupError) throw error
 					Logger.error("[TaskCancel Hook] Failed (non-fatal):", error)
 				}
 			}
@@ -653,10 +679,9 @@ export class LifecycleManager {
 				cleanupFailures.push(error)
 			}
 
-			this.dependencies.taskState.isApiRequestActive = false
-			this.dependencies.taskState.activeVoiceStreamId = undefined
-			this.dependencies.taskState.isWaitingForFirstChunk = false
-			this.dependencies.taskState.didFinishAbortingStream = true
+			this.dependencies.taskState.endApiRequest()
+			this.dependencies.taskState.endFirstChunkWait()
+			this.dependencies.taskState.markStreamAbortFinished()
 			this.dependencies.taskState.status = TaskStatus.CANCELLED
 
 			try {
@@ -685,7 +710,7 @@ export class LifecycleManager {
 		try {
 			const { ToolRegistry } = await import("@core/task/tools/registry/ToolRegistry")
 			await ToolRegistry.withExclusiveAccess((registry) => {
-				registry.removeTaskTools(this.dependencies.taskId)
+				registry.removeTaskTools(getTaskScopedStateKey(this.dependencies.taskId, this.dependencies.storageAddress))
 			})
 			this.dependencies.taskState.taskScopedToolIds = []
 		} catch (error) {
@@ -694,15 +719,6 @@ export class LifecycleManager {
 
 		failures.push(...(await this.disposeTaskResources()))
 
-		if (this.dependencies.taskState.taskLockAcquired) {
-			try {
-				await releaseTaskLock(this.dependencies.taskId)
-				this.dependencies.taskState.taskLockAcquired = false
-				Logger.info(`[Task ${this.dependencies.taskId}] Task lock released`)
-			} catch (error) {
-				failures.push(error)
-			}
-		}
 
 		if (failures.length === 1) throw failures[0]
 		if (failures.length > 1) throw new AggregateError(failures, "Task resource cleanup failed")
@@ -718,14 +734,19 @@ export class LifecycleManager {
 			}
 		}
 
-		await attempt(() => this.dependencies.terminalManager.disposeAll())
+		await Promise.all([
+			attempt(() => this.dependencies.hookManager.cancelAllHookExecutions()),
+			attempt(() => this.dependencies.commandExecutor.dispose()),
+			attempt(() => this.dependencies.terminalManager.disposeAll()),
+		])
 		await attempt(() => this.dependencies.urlContentFetcher.closeBrowser())
 		await attempt(() => this.dependencies.browserSession.dispose())
 		await attempt(() => this.dependencies.commandPermissionController.dispose())
 		await attempt(() => this.dependencies.diracIgnoreController.dispose())
 		await attempt(() => this.dependencies.fileContextTracker.dispose())
-		await attempt(() => this.dependencies.diffViewProvider.revertChanges())
-		await attempt(() => AnchorStateManager.reset(this.dependencies.ulid))
+		// Cancellation releases views, not shared workspace contents (including partial writes).
+		await attempt(() => this.dependencies.diffViewProvider.reset())
+		await attempt(() => AnchorStateManager.reset(getTaskScopedStateKey(this.dependencies.ulid, this.dependencies.storageAddress)))
 
 		return failures
 	}

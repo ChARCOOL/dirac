@@ -4,6 +4,27 @@ import * as proto from "@shared/proto/index"
 export { DiracError, DiracErrorType } from "@/../../src/services/error/DiracError"
 import { ProtoBusClient, Callbacks } from "./grpc-client-base"
 
+export class ArchitectureServiceClient extends ProtoBusClient {
+	static override serviceName: string = "dirac.ArchitectureService"
+	static async openArchitectureBoard(request: proto.dirac.ArchitectureReference): Promise<proto.dirac.Empty> {
+		return this.makeUnaryRequest("openArchitectureBoard", request, proto.dirac.ArchitectureReference.toJSON, proto.dirac.Empty.fromJSON)
+	}
+	static async readArchitectureBoard(request: proto.dirac.ArchitectureBoardRequest): Promise<proto.dirac.ArchitectureBoardView> {
+		return this.makeUnaryRequest("readArchitectureBoard", request, proto.dirac.ArchitectureBoardRequest.toJSON, proto.dirac.ArchitectureBoardView.fromJSON)
+	}
+	static async saveArchitecturePresentation(request: proto.dirac.ArchitecturePresentationRequest): Promise<proto.dirac.Empty> {
+		return this.makeUnaryRequest("saveArchitecturePresentation", request, proto.dirac.ArchitecturePresentationRequest.toJSON, proto.dirac.Empty.fromJSON)
+	}
+	static async mutateArchitectureComment(request: proto.dirac.ArchitectureCommentRequest): Promise<proto.dirac.ArchitectureComments> {
+		return this.makeUnaryRequest("mutateArchitectureComment", request, proto.dirac.ArchitectureCommentRequest.toJSON, proto.dirac.ArchitectureComments.fromJSON)
+	}
+	static async submitArchitectureFeedback(request: proto.dirac.ArchitectureFeedbackRequest): Promise<proto.dirac.ArchitectureFeedbackResult> {
+		return this.makeUnaryRequest("submitArchitectureFeedback", request, proto.dirac.ArchitectureFeedbackRequest.toJSON, proto.dirac.ArchitectureFeedbackResult.fromJSON)
+	}
+	static async openArchitectureCode(request: proto.dirac.ArchitectureCodeRequest): Promise<proto.dirac.Empty> {
+		return this.makeUnaryRequest("openArchitectureCode", request, proto.dirac.ArchitectureCodeRequest.toJSON, proto.dirac.Empty.fromJSON)
+	}
+}
 export class BrowserServiceClient extends ProtoBusClient {
 	static override serviceName: string = "dirac.BrowserService"
 	static async getBrowserConnectionInfo(request: proto.dirac.EmptyRequest): Promise<proto.dirac.BrowserConnectionInfo> {
@@ -168,6 +189,9 @@ export class ModelsServiceClient extends ProtoBusClient {
 	static async refreshOpenRouterModelsRpc(request: proto.dirac.EmptyRequest): Promise<proto.dirac.OpenRouterCompatibleModelInfo> {
 		return this.makeUnaryRequest("refreshOpenRouterModelsRpc", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.OpenRouterCompatibleModelInfo.fromJSON)
 	}
+	static async refreshUnbiasedModelsRpc(request: proto.dirac.EmptyRequest): Promise<proto.dirac.OpenRouterCompatibleModelInfo> {
+		return this.makeUnaryRequest("refreshUnbiasedModelsRpc", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.OpenRouterCompatibleModelInfo.fromJSON)
+	}
 	static async fetchOpenRouterModelRankings(request: proto.dirac.EmptyRequest): Promise<proto.dirac.StringArray> {
 		return this.makeUnaryRequest("fetchOpenRouterModelRankings", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.StringArray.fromJSON)
 	}
@@ -252,6 +276,9 @@ export class StateServiceClient extends ProtoBusClient {
 	static async getAvailableTerminalProfiles(request: proto.dirac.EmptyRequest): Promise<proto.dirac.TerminalProfiles> {
 		return this.makeUnaryRequest("getAvailableTerminalProfiles", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.TerminalProfiles.fromJSON)
 	}
+	static async getSandboxStatus(request: proto.dirac.EmptyRequest): Promise<proto.dirac.SandboxStatus> {
+		return this.makeUnaryRequest("getSandboxStatus", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.SandboxStatus.fromJSON)
+	}
 	static subscribeToState(request: proto.dirac.EmptyRequest, callbacks: Callbacks<proto.dirac.State>): ()=>void {
 		return this.makeStreamingRequest("subscribeToState", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.State.fromJSON, callbacks)
 	}
@@ -287,6 +314,9 @@ export class StateServiceClient extends ProtoBusClient {
 	}
 	static async setWelcomeViewCompleted(request: proto.dirac.BooleanRequest): Promise<proto.dirac.Empty> {
 		return this.makeUnaryRequest("setWelcomeViewCompleted", request, proto.dirac.BooleanRequest.toJSON, proto.dirac.Empty.fromJSON)
+	}
+	static async dismissUnbiasedWelcomeOffer(request: proto.dirac.EmptyRequest): Promise<proto.dirac.Empty> {
+		return this.makeUnaryRequest("dismissUnbiasedWelcomeOffer", request, proto.dirac.EmptyRequest.toJSON, proto.dirac.Empty.fromJSON)
 	}
 	static async updateInfoBannerVersion(request: proto.dirac.Int64Request): Promise<proto.dirac.Empty> {
 		return this.makeUnaryRequest("updateInfoBannerVersion", request, proto.dirac.Int64Request.toJSON, proto.dirac.Empty.fromJSON)
@@ -353,6 +383,12 @@ export class TaskServiceClient extends ProtoBusClient {
 	}
 	static async getTaskHistory(request: proto.dirac.GetTaskHistoryRequest): Promise<proto.dirac.TaskHistoryArray> {
 		return this.makeUnaryRequest("getTaskHistory", request, proto.dirac.GetTaskHistoryRequest.toJSON, proto.dirac.TaskHistoryArray.fromJSON)
+	}
+	static async getTaskletInventory(request: proto.dirac.TaskletInventoryRequest): Promise<proto.dirac.String> {
+		return this.makeUnaryRequest("getTaskletInventory", request, proto.dirac.TaskletInventoryRequest.toJSON, proto.dirac.String.fromJSON)
+	}
+	static async getTaskletTranscript(request: proto.dirac.TaskletTranscriptRequest): Promise<proto.dirac.String> {
+		return this.makeUnaryRequest("getTaskletTranscript", request, proto.dirac.TaskletTranscriptRequest.toJSON, proto.dirac.String.fromJSON)
 	}
 	static async askResponse(request: proto.dirac.AskResponseRequest): Promise<proto.dirac.Empty> {
 		return this.makeUnaryRequest("askResponse", request, proto.dirac.AskResponseRequest.toJSON, proto.dirac.Empty.fromJSON)

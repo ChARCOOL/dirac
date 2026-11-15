@@ -5,7 +5,7 @@ import { calculateGoalAccounting, replaceGoalAccountingSource } from "../GoalAcc
 
 function record(): GoalRecord {
 	return {
-		version: 1,
+		version: 2,
 		id: "goal",
 		conversationUlid: "conversation",
 		status: "paused",
@@ -14,10 +14,6 @@ function record(): GoalRecord {
 		updatedAt: 0,
 		lastPausedAt: 0,
 		activeDurationMs: 0,
-		wakeSequence: 0,
-		eventSequence: 0,
-		events: [],
-		children: [],
 		accountingSources: {},
 		accounting: {},
 	}

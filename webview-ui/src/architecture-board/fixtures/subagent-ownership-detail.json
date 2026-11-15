@@ -1,0 +1,348 @@
+{
+	"title": "Subagent ownership detail: invocation, runner and execution lifetimes",
+	"summary": "Reported compound ownership graph: ELK EDGE_LENGTH post-compaction throws invalid scanline hitboxes.",
+	"nodes": [
+		{
+			"id": "scope",
+			"kind": "group",
+			"label": "One runSubagent invocation × N"
+		},
+		{
+			"id": "invoke",
+			"kind": "function",
+			"label": "runSubagent closure · invocation owner",
+			"parentId": "scope"
+		},
+		{
+			"id": "usage",
+			"kind": "class",
+			"label": "SubagentUsagePublisher · 1 / invocation",
+			"parentId": "scope"
+		},
+		{
+			"id": "recorder",
+			"kind": "class",
+			"label": "SubagentRunRecorder · optional 1 / invocation",
+			"parentId": "scope"
+		},
+		{
+			"id": "runner",
+			"kind": "class",
+			"label": "SubagentRunner · 1 / invocation",
+			"parentId": "scope"
+		},
+		{
+			"id": "builder",
+			"kind": "class",
+			"label": "SubagentBuilder · runner lifetime",
+			"parentId": "scope"
+		},
+		{
+			"id": "runtime",
+			"kind": "component",
+			"label": "Provider runtime + handler · 1 / worker",
+			"parentId": "scope"
+		},
+		{
+			"id": "context-builder",
+			"kind": "class",
+			"label": "SubagentContextBuilder · runner lifetime",
+			"parentId": "scope"
+		},
+		{
+			"id": "abort",
+			"kind": "class",
+			"label": "SubagentAbortHandler · result builder only",
+			"parentId": "scope"
+		},
+		{
+			"id": "executor",
+			"kind": "class",
+			"label": "SubagentToolExecutor · runner lifetime",
+			"parentId": "scope"
+		},
+		{
+			"id": "progress",
+			"kind": "class",
+			"label": "SubagentRunProgress · runner lifetime",
+			"parentId": "scope"
+		},
+		{
+			"id": "run-state",
+			"kind": "class",
+			"label": "SubagentRunState · heartbeat owner",
+			"parentId": "scope"
+		},
+		{
+			"id": "execution",
+			"kind": "function",
+			"label": "executeRun · execution-local ownership",
+			"parentId": "scope"
+		},
+		{
+			"id": "task-state",
+			"kind": "class",
+			"label": "TaskState · fresh per executeRun",
+			"parentId": "scope"
+		},
+		{
+			"id": "context-manager",
+			"kind": "class",
+			"label": "ContextManager · 1 / executeRun",
+			"parentId": "scope"
+		},
+		{
+			"id": "coordinator",
+			"kind": "class",
+			"label": "ToolExecutorCoordinator · 1 / snapshot",
+			"parentId": "scope"
+		},
+		{
+			"id": "stream",
+			"kind": "class",
+			"label": "StreamResponseHandler · 1 / API iteration",
+			"parentId": "scope"
+		},
+		{
+			"id": "parent-scope",
+			"kind": "group",
+			"label": "Borrowed parent resources · outlive invocation"
+		},
+		{
+			"id": "messages",
+			"kind": "class",
+			"label": "MessageStateHandler · parent shared instance",
+			"parentId": "parent-scope"
+		},
+		{
+			"id": "config",
+			"kind": "component",
+			"label": "Parent TaskConfig + borrowed capabilities",
+			"parentId": "parent-scope"
+		},
+		{
+			"id": "logs",
+			"kind": "database",
+			"label": "Run log files + shared task index"
+		}
+	],
+	"edges": [
+		{
+			"id": "invoke-runner",
+			"kind": "aggregation",
+			"source": "invoke",
+			"target": "runner",
+			"label": "owns local across await run"
+		},
+		{
+			"id": "invoke-usage",
+			"kind": "aggregation",
+			"source": "invoke",
+			"target": "usage",
+			"label": "owns local; update → finish"
+		},
+		{
+			"id": "invoke-recorder",
+			"kind": "aggregation",
+			"source": "invoke",
+			"target": "recorder",
+			"label": "creates/retains; optional"
+		},
+		{
+			"id": "runner-builder",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "builder",
+			"label": "owns agent field"
+		},
+		{
+			"id": "runner-context",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "context-builder",
+			"label": "owns contextBuilder"
+		},
+		{
+			"id": "runner-abort",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "abort",
+			"label": "owns abortHandler"
+		},
+		{
+			"id": "runner-executor",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "executor",
+			"label": "owns toolExecutor"
+		},
+		{
+			"id": "runner-progress",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "progress",
+			"label": "owns runProgress"
+		},
+		{
+			"id": "runner-state",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "run-state",
+			"label": "owns runState; stops heartbeat"
+		},
+		{
+			"id": "builder-runtime",
+			"kind": "aggregation",
+			"source": "builder",
+			"target": "runtime",
+			"label": "retains fresh factory result"
+		},
+		{
+			"id": "runner-runtime",
+			"kind": "dependency",
+			"source": "runner",
+			"target": "runtime",
+			"label": "alias: createMessage / abort"
+		},
+		{
+			"id": "context-builder-agent",
+			"kind": "dependency",
+			"source": "context-builder",
+			"target": "builder",
+			"label": "borrows agent profile + runtime"
+		},
+		{
+			"id": "runner-execution",
+			"kind": "api_call",
+			"source": "runner",
+			"target": "execution",
+			"label": "starts; races termination"
+		},
+		{
+			"id": "execution-task-state",
+			"kind": "aggregation",
+			"source": "execution",
+			"target": "task-state",
+			"label": "owns local state"
+		},
+		{
+			"id": "runner-task-state",
+			"kind": "aggregation",
+			"source": "runner",
+			"target": "task-state",
+			"label": "also retains activeTaskState"
+		},
+		{
+			"id": "execution-context",
+			"kind": "aggregation",
+			"source": "execution",
+			"target": "context-manager",
+			"label": "owns local"
+		},
+		{
+			"id": "execution-coordinator",
+			"kind": "aggregation",
+			"source": "execution",
+			"target": "coordinator",
+			"label": "retains in current snapshot"
+		},
+		{
+			"id": "context-creates-coordinator",
+			"kind": "api_call",
+			"source": "context-builder",
+			"target": "coordinator",
+			"label": "creates / returns fresh sibling"
+		},
+		{
+			"id": "execution-stream",
+			"kind": "aggregation",
+			"source": "execution",
+			"target": "stream",
+			"label": "owns per API iteration"
+		},
+		{
+			"id": "executor-coordinator",
+			"kind": "api_call",
+			"source": "executor",
+			"target": "coordinator",
+			"label": "borrowed snapshot: execute tool"
+		},
+		{
+			"id": "state-progress",
+			"kind": "dependency",
+			"source": "run-state",
+			"target": "progress",
+			"label": "borrows; phase + heartbeat updates"
+		},
+		{
+			"id": "executor-progress",
+			"kind": "data_flow",
+			"source": "executor",
+			"target": "progress",
+			"label": "via observer: tool/progress records"
+		},
+		{
+			"id": "progress-recorder",
+			"kind": "dependency",
+			"source": "progress",
+			"target": "recorder",
+			"label": "borrows; append / flush"
+		},
+		{
+			"id": "progress-invoke",
+			"kind": "data_flow",
+			"source": "progress",
+			"target": "invoke",
+			"label": "onProgress callback: stats + updates"
+		},
+		{
+			"id": "usage-messages",
+			"kind": "dependency",
+			"source": "usage",
+			"target": "messages",
+			"label": "borrowed; serialized card writes"
+		},
+		{
+			"id": "usage-config",
+			"kind": "dependency",
+			"source": "usage",
+			"target": "config",
+			"label": "borrowed UI publish callback"
+		},
+		{
+			"id": "recorder-logs",
+			"kind": "data_flow",
+			"source": "recorder",
+			"target": "logs",
+			"label": "append; static per-path queue"
+		},
+		{
+			"id": "runner-config",
+			"kind": "dependency",
+			"source": "runner",
+			"target": "config",
+			"label": "borrows; abort + command callbacks"
+		},
+		{
+			"id": "context-config",
+			"kind": "dependency",
+			"source": "context-builder",
+			"target": "config",
+			"label": "borrows workspace / tools / skills"
+		},
+		{
+			"id": "state-config",
+			"kind": "dependency",
+			"source": "run-state",
+			"target": "config",
+			"label": "reads parent abort flag"
+		},
+		{
+			"id": "coordinator-config",
+			"kind": "dependency",
+			"source": "coordinator",
+			"target": "config",
+			"label": "same environmentFactory"
+		}
+	]
+}

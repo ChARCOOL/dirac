@@ -17,6 +17,9 @@ import { findLastIndex } from "@shared/array"
 import { Logger } from "@/shared/services/Logger"
 import { orchestrateCommandExecution } from "./CommandOrchestrator"
 import { StandaloneTerminalManager } from "./standalone/StandaloneTerminalManager"
+import { StandaloneTerminalProcess } from "./standalone/StandaloneTerminalProcess"
+import { NativeSandboxError, type PreparedSandboxLaunch } from "./sandbox"
+import type { SandboxExecutionStatus } from "@shared/SandboxExecution"
 import type {
 	CommandExecutionMetadata,
 	CommandExecutionOptions,
@@ -41,6 +44,11 @@ function waitForTerminalProcessCompletion(process: TerminalProcessResultPromise)
 	})
 }
 
+interface CommandExecution {
+	cancelled: boolean
+	process?: TerminalProcessResultPromise
+}
+
 
 export class CommandExecutor {
 	private cwd: string
@@ -54,8 +62,10 @@ export class CommandExecutor {
 	// Track the currently executing foreground process for cancellation
 	private currentProcess: TerminalProcessResultPromise | null = null
 
-	// Flag to track if the current command was cancelled externally
-	private wasCancelledExternally = false
+	private executions = new Set<CommandExecution>()
+	private disposed = false
+	private disposal?: Promise<void>
+	private cancellation?: Promise<boolean>
 
 	// Track shell integration warnings to determine when to show background terminal suggestion
 	private shellIntegrationWarningTracker: ShellIntegrationWarningTracker = {
@@ -93,30 +103,80 @@ export class CommandExecutor {
 		}
 	}
 
-	async execute(
+	execute(command: string, timeoutSeconds: number | undefined, options?: CommandExecutionOptions): Promise<CommandExecutionResult> {
+		if (this.disposed) return Promise.reject(new Error("Command executor is disposed"))
+		if (this.cancellation) return Promise.reject(new Error("Command cancellation is in progress"))
+		const execution: CommandExecution = { cancelled: false }
+		this.executions.add(execution)
+		return this.executeCommand(execution, command, timeoutSeconds, options).finally(() => {
+			this.executions.delete(execution)
+		})
+	}
+
+	private async executeCommand(
+		execution: CommandExecution,
 		command: string,
 		timeoutSeconds: number | undefined,
 		options?: CommandExecutionOptions,
 	): Promise<CommandExecutionResult> {
+		const cwd = options?.cwd ?? this.cwd
 		const workspaceCdPrefix = `cd ${this.cwd} && `
-		if (command.startsWith(workspaceCdPrefix)) {
+		if (options?.cwd === undefined && command.startsWith(workspaceCdPrefix)) {
 			command = command.substring(workspaceCdPrefix.length)
 		}
 
-		const useStandalone = options?.useBackgroundExecution || this.terminalExecutionMode === "backgroundExec"
-		const manager = useStandalone ? this.standaloneManager : this.terminalManager
+		const normalStandalone = options?.useBackgroundExecution || this.terminalExecutionMode === "backgroundExec"
+		let useStandalone = !!options?.sandbox || normalStandalone
+		let manager: ITerminalManager = useStandalone ? this.standaloneManager : this.terminalManager
+		let sandboxStatus: SandboxExecutionStatus | undefined = options?.sandboxContext
+			? { requested: options.sandboxContext, effective: "off" } : undefined
 
-		const env = await this.callbacks.getEnvironmentVariables(this.cwd)
+		const env = await this.callbacks.getEnvironmentVariables(cwd)
+		if (execution.cancelled) return [true, "Command was cancelled before terminal acquisition."]
 		Logger.info(`Executing command in ${useStandalone ? "standalone" : "VSCode"} terminal: ${command}`)
 
-		const terminalInfo = await manager.getOrCreateTerminal(this.cwd, env)
-		terminalInfo.terminal.show()
-		const process = manager.runCommand(terminalInfo, command)
+		let terminalInfo = await manager.getOrCreateTerminal(cwd, env)
+		if (execution.cancelled) {
+			manager.releaseTerminalReservation?.(terminalInfo)
+			return [true, "Command was cancelled before startup."]
+		}
+		let process: TerminalProcessResultPromise
+		let sandbox: PreparedSandboxLaunch | undefined
+		try {
+			if (options?.sandbox) {
+				try {
+					sandbox = await StandaloneTerminalProcess.prepareSandbox(
+						terminalInfo.terminal, command, options.sandboxContext?.profile ?? { id: options.sandbox.profile }, options.sandbox.context,
+					)
+					if (sandboxStatus) sandboxStatus = { ...sandboxStatus, effective: "native", backend: sandbox.backend }
+				} catch (error) {
+					if (!(error instanceof NativeSandboxError) || error.stage !== "before-launch" || !error.fallbackEligible || !options.sandbox.allowUnsandboxedFallback) throw error
+					if (sandboxStatus) sandboxStatus = { ...sandboxStatus, effective: "unsandboxed-fallback", reason: error.message }
+					manager.releaseTerminalReservation?.(terminalInfo)
+					useStandalone = !!normalStandalone
+					manager = useStandalone ? this.standaloneManager : this.terminalManager
+					if (execution.cancelled) return [true, "Command was cancelled before fallback startup."]
+					terminalInfo = await manager.getOrCreateTerminal(cwd, env)
+				}
+			}
+			if (execution.cancelled) {
+				manager.releaseTerminalReservation?.(terminalInfo)
+				return [true, "Command was cancelled before startup."]
+			}
+			terminalInfo.terminal.show()
+			options?.assertAuthorized?.()
+			process = sandbox ? manager.runCommand(terminalInfo, command, sandbox) : manager.runCommand(terminalInfo, command)
+		} catch (error) {
+			manager.releaseTerminalReservation?.(terminalInfo)
+			throw error
+		} finally {
+			sandbox?.dispose()
+		}
 
-		this.wasCancelledExternally = false
+		execution.process = process
 		this.currentProcess = process
 		const clearCurrentProcess = () => {
-			this.currentProcess = null
+			if (this.currentProcess === process) this.currentProcess = null
 		}
 		process.once("completed", clearCurrentProcess)
 		process.once("error", clearCurrentProcess)
@@ -151,9 +211,10 @@ export class CommandExecutor {
 			signal: result.signal,
 			logFilePath: result.logFilePath,
 			backgroundCompletion: result.backgroundCompletion,
+			...(sandboxStatus ? { sandbox: sandboxStatus } : {}),
 		}
 
-		if (this.wasCancelledExternally) {
+		if (execution.cancelled) {
 			const outputSoFar =
 				result.outputLines.length > 0
 					? `\nOutput captured before cancellation:\n${manager.processOutput(result.outputLines)}`
@@ -173,39 +234,31 @@ export class CommandExecutor {
 	 *
 	 * @returns true if any commands were cancelled, false otherwise
 	 */
-	async cancelBackgroundCommand(): Promise<boolean> {
-		let cancelled = false
+	cancelBackgroundCommand(): Promise<boolean> {
+		if (this.cancellation) return this.cancellation
+		const cancellation = this.cancelCommands()
+		this.cancellation = cancellation
+		void cancellation.finally(() => { if (this.cancellation === cancellation) this.cancellation = undefined }).catch(() => { })
+		return cancellation
+	}
 
-		// 1. Cancel all detached background commands
+	private async cancelCommands(notifyUser = true): Promise<boolean> {
+		const executions = [...this.executions]
+		for (const execution of executions) execution.cancelled = true
+		const processes = new Set(executions.flatMap((execution) => execution.process ? [execution.process] : []))
+		if (this.currentProcess) processes.add(this.currentProcess)
 		const runningCommands = this.standaloneManager.getRunningBackgroundCommands()
-		for (const cmd of runningCommands) {
-			if (this.standaloneManager.cancelBackgroundCommand(cmd.id)) {
-				cancelled = true
-				Logger.info(`Cancelled background command: ${cmd.command}`)
-			}
-		}
+		const cancelled = executions.length > 0 || processes.size > 0 || runningCommands.length > 0
+		const results = await Promise.allSettled([
+			...runningCommands.map((command) => this.standaloneManager.cancelBackgroundCommand(command.id)),
+			...Array.from(processes, (process) => Promise.resolve().then(() => process.terminate?.())),
+		])
+		const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+		if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Command cancellation failed")
+		if (this.currentProcess && processes.has(this.currentProcess)) this.currentProcess = null
 
-		// 2. Cancel the current foreground process (if any)
-		if (this.currentProcess && typeof (this.currentProcess as any).terminate === "function") {
-			// Set flag so execute() knows the command was cancelled externally
-			this.wasCancelledExternally = true
-			const process = this.currentProcess
-			try {
-				await process.terminate?.()
-			} finally {
-				if (this.currentProcess === process) this.currentProcess = null
-			}
-			cancelled = true
-			Logger.info("Cancelled foreground command")
-		}
-
-		// 3. Update UI state and notify user by modifying existing message
-		if (cancelled) {
-			this.callbacks.updateBackgroundCommandState(false)
-
-			// Wait for terminal buffers to flush before updating the message
-			await new Promise((resolve) => setTimeout(resolve, 300))
-
+		if (cancelled) this.callbacks.updateBackgroundCommandState(false)
+		if (cancelled && notifyUser) {
 			// Find the last command_output message and update it
 			const messages = this.callbacks.getDiracMessages()
 			const lastCommandOutputIndex = findLastIndex(
@@ -232,6 +285,21 @@ export class CommandExecutor {
 		}
 
 		return cancelled
+	}
+
+	/** Stop commands and dispose the owned hidden pool; the task owns the primary manager. */
+	dispose(): Promise<void> {
+		if (this.disposal) return this.disposal
+		this.disposed = true
+		this.disposal = (async () => {
+			const results = await Promise.allSettled([
+				this.cancellation ?? this.cancelCommands(false),
+				...(this.standaloneManager !== this.terminalManager ? [this.standaloneManager.disposeAll()] : []),
+			])
+			const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+			if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Command executor cleanup failed")
+		})()
+		return this.disposal
 	}
 
 	/**

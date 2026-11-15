@@ -15,6 +15,7 @@ import type { TaskExecutionProfile } from "@core/task/TaskExecutionProfile"
  */
 export interface SystemPromptContext {
 	readonly executionProfile?: TaskExecutionProfile
+	readonly taskId?: string
 	readonly profileInstructions?: string
 	readonly providerInfo: ApiProviderInfo
 	readonly cwd?: string
@@ -24,7 +25,6 @@ export interface SystemPromptContext {
 		readonly visible?: readonly string[]
 	}
 	readonly supportsBrowserUse?: boolean
-	readonly taskHandoffCondensationAvailable?: boolean
 	readonly skills?: SkillMetadata[]
 	readonly globalDiracRulesFileInstructions?: string
 	readonly localDiracRulesFileInstructions?: string
@@ -42,13 +42,12 @@ export interface SystemPromptContext {
 	readonly yoloModeToggled?: boolean
 	readonly lowVerbosityEnabled?: boolean
 	readonly subagentsEnabled?: boolean
-	readonly utilityModelConfigured?: boolean
+	readonly subagentRoles?: readonly { name: string; description: string }[]
 	readonly diracWebToolsEnabled?: boolean
 	readonly isMultiRootEnabled?: boolean
 	readonly workspaceRoots?: Array<{ path: string; name: string; vcs?: string }>
 	readonly isSubagentsEnabledAndCliInstalled?: boolean
 	readonly isCliSubagent?: boolean
-	readonly isSubagentRun?: boolean
 	readonly isCliEnvironment?: boolean
 	readonly terminalExecutionMode?: "vscodeTerminal" | "backgroundExec"
 	readonly activeShellType?: ShellType

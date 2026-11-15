@@ -31,7 +31,6 @@ export interface TaskOptions {
 	maxConsecutiveMistakes?: string | number
 	yolo?: boolean
 	autoApproveAll?: boolean
-	doubleCheckCompletion?: boolean
 	autoCondense?: boolean
 	autoCondenseAt?: AutoCondenseAt
 	timeout?: string | number

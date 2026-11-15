@@ -1,7 +1,7 @@
-import { askDiracToolResponse, condenseToolResponse, newRuleToolResponse, newTaskToolResponse } from "../prompts/commands"
+import { askDiracToolResponse, condenseToolResponse, newRuleToolResponse } from "../prompts/commands"
 
 // Builtin slash commands recognized by the parser.
-export const SUPPORTED_DEFAULT_COMMANDS = ["newtask", "smol", "compact", "newrule", "permissions", "askDirac", "reloadtools"]
+export const SUPPORTED_DEFAULT_COMMANDS = ["smol", "compact", "newrule", "permissions", "askDirac", "reloadtools"]
 
 // Regex patterns to extract content from different XML tags.
 export const TAG_PATTERNS = [
@@ -14,7 +14,7 @@ export const TAG_PATTERNS = [
 
 // Regex to find slash commands anywhere in text (not just at the beginning).
 // (^|\s) ensures the slash is at start or preceded by whitespace, avoiding
-// false matches in URLs (http://example.com/newtask) and file paths (foo/bar).
+// false matches in URLs (http://example.com/compact) and file paths (foo/bar).
 // Only ONE slash command per message is processed (first match found).
 export const SLASH_COMMAND_IN_TEXT_REGEX = /(^|\s)\/([a-zA-Z0-9_.:@-]+)(?=\s|$)/
 
@@ -23,10 +23,8 @@ export function buildCommandReplacements(
 	extensionPath: string | undefined,
 	sourceDir: string,
 	conversationCondensationAvailable = false,
-	taskHandoffCondensationAvailable = false,
 ): Record<string, string | Promise<string>> {
 	return {
-		newtask: newTaskToolResponse(taskHandoffCondensationAvailable),
 		smol: condenseToolResponse(conversationCondensationAvailable),
 		compact: condenseToolResponse(conversationCondensationAvailable),
 		newrule: newRuleToolResponse(),

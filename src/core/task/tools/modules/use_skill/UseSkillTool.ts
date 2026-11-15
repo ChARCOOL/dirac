@@ -36,32 +36,31 @@ export class UseSkillTool implements IDiracTool {
 		if (!skill_name) {
 			throw new Error("Missing required parameter 'skill_name'. Please provide the name of the skill to activate.")
 		}
-		const deadline = new ToolExecutionDeadline(this.spec().name)
+		const deadline = new ToolExecutionDeadline(this.spec().name, {
+			cancellationSignal: env.orchestration.getTaskState("abortSignal"),
+		})
 
-		const card = !env.config.isSubagentExecution
-			? await env.ui.createCard({
-				icon: DiracIcon.SKILL,
-				header: `Activate skill: ${skill_name}`,
-				collapsed: true,
-			})
-			: undefined
+		const card = await env.ui.createCard({
+			icon: DiracIcon.SKILL,
+			header: `Activate skill: ${skill_name}`,
+			collapsed: true,
+		})
 
 		try {
-			const availableSkills = await deadline.run("discovering available skills", async () =>
+			const availableSkills = await deadline.observe("discovering available skills", async () =>
 				await env.skills.getAvailableSkills())
-			const skillContent = await deadline.run(`loading skill ${skill_name}`, async () =>
+			const skillContent = await deadline.observe(`loading skill ${skill_name}`, async () =>
 				await env.skills.getSkillContent(skill_name, availableSkills))
 
 			if (!skillContent) {
 				const availableNames = availableSkills.map((s) => s.name).join(", ")
 				const errorMsg = `Error: Skill "${skill_name}" not found. Available skills: ${availableNames || "none"}`
-				if (card) {
-					await card.update({ status: CardStatus.ERROR, body: errorMsg })
-					await card.finalize(CardStatus.ERROR)
-				}
+				await card.update({ status: CardStatus.ERROR, body: errorMsg })
+				await card.finalize(CardStatus.ERROR)
+				env.orchestration.reportFailure()
 				return errorMsg
 			}
-			const { docs, scripts } = await deadline.run(`listing support files for ${skill_name}`, async () =>
+			const { docs, scripts } = await deadline.observe(`listing support files for ${skill_name}`, async () =>
 				await env.skills.listSupportingFiles(skillContent.path))
 
 			const activeSkillIds = env.orchestration.getTaskState("activeSkillIds")
@@ -97,23 +96,19 @@ export class UseSkillTool implements IDiracTool {
 				activationMessage += `\nYou may access other files in the skill directory at: ${skillDir}`
 			}
 
-			if (card) {
-				await card.update({
-					header: alreadyActive ? `Reloaded active skill: ${skill_name}` : `Activated skill: ${skill_name}`,
-					status: CardStatus.SUCCESS,
-					body: `✓ Skill source: ${skillContent.source}\nDirectory: ${skillDir}`,
-				})
-				await card.finalize(CardStatus.SUCCESS)
-			}
+			await card.update({
+				header: alreadyActive ? `Reloaded active skill: ${skill_name}` : `Activated skill: ${skill_name}`,
+				status: CardStatus.SUCCESS,
+				body: `✓ Skill source: ${skillContent.source}\nDirectory: ${skillDir}`,
+			})
+			await card.finalize(CardStatus.SUCCESS)
 			return activationMessage
 		} catch (error: any) {
 			if (error instanceof ToolTimeoutError) {
-				return await presentToolTimeout(env, error, card ? [card] : [])
+				return await presentToolTimeout(env, error, [card])
 			}
-			if (card) {
-				await card.update({ status: CardStatus.ERROR, body: `✕ ${error.message}` })
-				await card.finalize(CardStatus.ERROR)
-			}
+			await card.update({ status: CardStatus.ERROR, body: `✕ ${error.message}` })
+			await card.finalize(CardStatus.ERROR)
 			throw error
 		}
 	}

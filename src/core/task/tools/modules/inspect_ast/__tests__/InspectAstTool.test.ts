@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert"
+import sinon from "sinon"
+import { ToolTimeoutError } from "../../../runtime/ToolExecutionDeadline"
 import { CardStatus } from "@shared/ExtensionMessage"
 import type { IToolEnvironment } from "../../../interfaces/IToolEnvironment"
 import { InspectAstTool, inspect_ast_spec } from "../InspectAstTool"
@@ -44,7 +46,6 @@ function makeCard(params: any) {
 }
 
 function createEnvironment(options: {
-	subagent?: boolean
 	result?: any
 	outlineResult?: any
 	implementationResult?: any
@@ -64,7 +65,7 @@ function createEnvironment(options: {
 		}],
 	}
 	const env = {
-		config: { isSubagentExecution: options.subagent === true },
+		config: {},
 		context: {
 			task: {
 				get: async (key: string) => taskContext.get(key),
@@ -84,7 +85,8 @@ function createEnvironment(options: {
 			},
 		},
 		orchestration: {
-			getTaskState: () => mistakeCount,
+			reportFailure: sinon.spy(),
+			getTaskState: (key: string) => key === "consecutiveMistakeCount" ? mistakeCount : undefined,
 			setTaskState: (_key: string, value: number) => { mistakeCount = value },
 		},
 		ui: {
@@ -107,6 +109,55 @@ function createEnvironment(options: {
 }
 
 describe("InspectAstTool", () => {
+	for (const [operation, method] of [["outline", "outline"], ["implementation", "implementations"], ["occurrences", "occurrences"]] as const) {
+		for (const stop of ["timeout", "cancellation"] as const) {
+			it(`bounds unresolved ${operation} on ${stop} without committing late results`, async () => {
+				const clock = sinon.useFakeTimers()
+				try {
+					const { env, cards, telemetry, getMistakeCount } = createEnvironment()
+					const controller = new AbortController()
+					const getState = env.orchestration.getTaskState
+					sinon.stub(env.orchestration, "getTaskState").callsFake(((key: any) => key === "abortSignal" ? controller.signal : getState(key)) as any)
+					let finishQuery!: (value: any) => void
+					const query = new Promise<any>((resolve) => { finishQuery = resolve })
+					sinon.stub(env.sourceAst, method).returns(query)
+					const contextWrites = sinon.spy(env.context.task, "updateEntries")
+					const reason = new Error("cancelled AST query")
+					const pending = new InspectAstTool().processCall({ operation, paths: ["a.ts"], symbols: operation === "outline" ? undefined : ["run"] }, env)
+					const rejection = assert.rejects(pending, (error) => stop === "timeout" ? error instanceof ToolTimeoutError : error === reason)
+					if (stop === "timeout") await clock.tickAsync(30_000)
+					else controller.abort(reason)
+					await rejection
+					const terminalCards = JSON.stringify(cards)
+					finishQuery({ files: [], targets: [], occurrences: [] })
+					await clock.tickAsync(1)
+					assert.equal(JSON.stringify(cards), terminalCards)
+					assert.equal(telemetry.length, 0)
+					assert.equal(getMistakeCount(), 3)
+					sinon.assert.notCalled(contextWrites)
+				} finally {
+					sinon.restore()
+					clock.restore()
+				}
+			})
+		}
+
+		it(`does not invoke ${operation} when pre-aborted`, async () => {
+			const { env } = createEnvironment()
+			const controller = new AbortController()
+			const reason = new Error("already cancelled")
+			controller.abort(reason)
+			const query = sinon.spy(env.sourceAst, method)
+			sinon.stub(env.orchestration, "getTaskState").returns(controller.signal as any)
+			try {
+				await assert.rejects(new InspectAstTool().processCall({ operation, paths: ["a.ts"], symbols: operation === "outline" ? undefined : ["run"] }, env), (error) => error === reason)
+				sinon.assert.notCalled(query)
+			} finally {
+				sinon.restore()
+			}
+		})
+	}
+
 	it("advertises a strongly directive read-only schema", () => {
 		assert.equal(inspect_ast_spec.name, "inspect_ast")
 		assert.match(inspect_ast_spec.description, /Prefer inspect_ast over broad read_file or text search/)
@@ -331,11 +382,45 @@ describe("InspectAstTool", () => {
 		assert.match(output, /card creation failed/)
 	})
 
-	it("does not create interactive cards during subagent execution", async () => {
-		const { env, cards } = createEnvironment({ subagent: true })
-		await new InspectAstTool().processCall({ operation: "outline", paths: "src/a.ts" }, env)
-		assert.equal(cards.length, 0)
-	})
+	for (const order of [["tasklet", "main", "sibling"], ["main", "tasklet", "sibling"]] as const) {
+		it(`isolates implementation-read history in ${order.join(" → ")} order`, async () => {
+			const main = definition()
+			const target = {
+				path: "src/a.ts",
+				absolutePath: "/repo/src/a.ts",
+				symbol: "main",
+				status: "success",
+				definition: main,
+				contentHash: "original-hash",
+				lines: [{ lineNumber: 1, text: "function main() {}", anchor: "Apple" }],
+			}
+			const implementationResult = { targets: [target] }
+			const parent = createEnvironment({ implementationResult }).env
+			const environments = {
+				main: parent,
+				tasklet: createEnvironment({ implementationResult }).env,
+				sibling: createEnvironment({ implementationResult }).env,
+			}
+			const args = { operation: "implementation" as const, paths: ["src/a.ts"], symbols: ["main"] }
+
+			for (const agent of order) {
+				const firstRead = await new InspectAstTool().processCall(args, environments[agent])
+				assert.match(firstRead, /function main\(\) \{\}/)
+				const repeatedRead = await new InspectAstTool().processCall(args, environments[agent])
+				assert.match(repeatedRead, /unchanged/)
+			}
+
+			target.contentHash = "updated-hash"
+			target.lines[0].text = "function main() { return 1 }"
+			for (const agent of order) {
+				const changedRead = await new InspectAstTool().processCall(args, environments[agent])
+				assert.match(changedRead, /return 1/)
+				const anchoredRead = await new InspectAstTool().processCall({ ...args, include_anchors: true }, environments[agent])
+				assert.match(anchoredRead, /Apple§function main\(\) \{ return 1 \}/)
+			}
+		})
+	}
+
 
 	it("returns valid empty inspections without an execution-error wrapper", async () => {
 		const { env } = createEnvironment({ implementationResult: { targets: [] } })

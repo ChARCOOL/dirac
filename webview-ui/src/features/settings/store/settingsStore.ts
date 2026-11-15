@@ -1,5 +1,6 @@
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
 import { DEFAULT_BROWSER_SETTINGS } from "@shared/BrowserSettings"
+import { DEFAULT_SANDBOX_SETTINGS, type SandboxSettings } from "@shared/SandboxSettings"
 import { Environment } from "@shared/config-types"
 import type { DiracMessage, ExtensionState } from "@shared/ExtensionMessage"
 import type { OpenAiCodexUsageSnapshot } from "@shared/openai-codex-usage"
@@ -19,6 +20,7 @@ import {
 	type ApiConfiguration,
 } from "@shared/api"
 import type { ModelProviderPreset, ModelProviderSelection } from "@shared/api"
+import { DEFAULT_SUBAGENT_ROLES, type SubagentRole } from "@shared/subagentRoles"
 import { fromProtobufModels } from "@shared/proto-conversions/models/typeConversion"
 import { fromProtobufOpenAiCodexUsage } from "@shared/proto-conversions/openai-codex-usage"
 import {
@@ -43,10 +45,12 @@ interface SettingsState {
 	apiConfigurationError?: string
 	pendingApiConfigurationUpdates: Partial<ApiConfiguration>
 	modelProviderPresets: ModelProviderPreset[]
+	configuredApiProviders: NonNullable<ExtensionState["configuredApiProviders"]>
+	addedApiProviders: NonNullable<ExtensionState["addedApiProviders"]>
 	utilityModelEnabled: boolean
 	utilityModelSelection?: ModelProviderSelection
+	subagentRoles: SubagentRole[]
 	utilityModelUseCondense: boolean
-	utilityModelUseNewTask: boolean
 	utilityModelUseGenerateCommitMessage: boolean
 	utilityModelUsePermissionHandling: boolean
 	utilityModelPermissionPolicy: string
@@ -73,10 +77,11 @@ interface SettingsState {
 	huggingFaceModels: any
 	requestyModels: any
 	openAiModels: any
-	refreshOpenAiModels: (baseUrl: string, apiKey: string) => Promise<void>
+	refreshOpenAiModels: (baseUrl?: string, apiKey?: string, headers?: Record<string, string>) => Promise<void>
 	githubCopilotModels: any
 	githubCopilotIsAuthenticated: boolean
 	githubCopilotEmail?: string
+	unbiasedWorkloadName?: string | null
 	openAiCodexIsAuthenticated: boolean
 	openAiCodexEmail?: string
 	openAiCodexUsage?: OpenAiCodexUsageSnapshot
@@ -86,6 +91,7 @@ interface SettingsState {
 	autoApprovalSettings: ExtensionState["autoApprovalSettings"]
 	userApprovedCommands: ExtensionState["userApprovedCommands"]
 	browserSettings: ExtensionState["browserSettings"]
+	sandboxSettings: SandboxSettings
 	preferredLanguage: string
 	mode: string
 	platform: string
@@ -122,7 +128,6 @@ interface SettingsState {
 	backgroundCommandTaskId?: string
 	lastDismissedCliBannerVersion: number
 	backgroundEditEnabled: boolean
-	doubleCheckCompletionEnabled: boolean
 	lowVerbosityEnabled: boolean
 
 	// Toggles
@@ -193,11 +198,13 @@ interface SettingsState {
 }
 
 let openAiCodexUsageRefreshGeneration = 0
+let openAiModelsRefreshGeneration = 0
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
 	autoApprovalSettings: DEFAULT_AUTO_APPROVAL_SETTINGS,
 	userApprovedCommands: [],
 	browserSettings: DEFAULT_BROWSER_SETTINGS,
+	sandboxSettings: DEFAULT_SANDBOX_SETTINGS,
 	preferredLanguage: "English",
 	mode: "act",
 	platform: DEFAULT_PLATFORM,
@@ -234,7 +241,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 	backgroundCommandTaskId: undefined,
 	lastDismissedCliBannerVersion: 0,
 	backgroundEditEnabled: false,
-	doubleCheckCompletionEnabled: false,
 	lowVerbosityEnabled: true,
 
 	globalDiracRulesToggles: {},
@@ -267,10 +273,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 	apiConfigurationError: undefined,
 	pendingApiConfigurationUpdates: {},
 	modelProviderPresets: [],
+	configuredApiProviders: [],
+	addedApiProviders: [],
 	utilityModelEnabled: false,
 	utilityModelSelection: undefined,
+	subagentRoles: structuredClone(DEFAULT_SUBAGENT_ROLES),
 	utilityModelUseCondense: true,
-	utilityModelUseNewTask: true,
 	utilityModelUseGenerateCommitMessage: true,
 	utilityModelUsePermissionHandling: false,
 	utilityModelPermissionPolicy: "",
@@ -352,12 +360,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 			set({ openRouterModelRankings: [] })
 		}
 	},
-	refreshOpenAiModels: async (baseUrl: string, apiKey: string) => {
+	refreshOpenAiModels: async (baseUrl?: string, apiKey?: string, headers?: Record<string, string>) => {
+		const generation = ++openAiModelsRefreshGeneration
+		set({ openAiModels: {} })
+		if (!baseUrl) return
 		try {
 			const response = await ModelsServiceClient.refreshOpenAiModels(
 				OpenAiModelsRequest.create({
-					baseUrl,
-					apiKey,
+					baseUrl: baseUrl ?? "",
+					apiKey: apiKey ?? "",
+					headers: headers ?? {},
 				}),
 			)
 			if (response?.values) {
@@ -367,7 +379,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 						...openAiModelInfoSaneDefaults,
 					}
 				})
-				set({ openAiModels: models })
+				if (generation === openAiModelsRefreshGeneration) set({ openAiModels: models })
 			}
 		} catch (error) {
 			console.error("Failed to refresh OpenAI models:", error)
@@ -415,6 +427,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 	openAiModels: {},
 	githubCopilotIsAuthenticated: false,
 	githubCopilotEmail: undefined,
+	unbiasedWorkloadName: null,
 	openAiCodexIsAuthenticated: false,
 	openAiCodexEmail: undefined,
 	openAiCodexUsage: undefined,

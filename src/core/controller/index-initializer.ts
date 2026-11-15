@@ -75,7 +75,7 @@ export class Initializer {
 				clearTaskSettings: () => stateManager.clearTaskSettings(),
 				toggleActModeForYoloMode: () => controller.toggleActModeForYoloMode(),
 			},
-			undefined, // tryAcquireTaskLockWithRetry - use default
+			undefined, // acquireTaskLock - use default
 			undefined, // setupWorkspaceManager - use default
 			undefined, // detectRoots - use default
 			undefined, // getCwd - use default
@@ -91,7 +91,6 @@ export class Initializer {
 			},
 			buildApiHandlerFn: buildApiHandler,
 			postStateToWebviewFn: () => controller.postStateToWebview(),
-			cancelTaskFn: () => controller.cancelTask(),
 			captureModeSwitchFn: (taskId, mode) => void telemetryService.captureModeSwitch(taskId, mode),
 		})
 

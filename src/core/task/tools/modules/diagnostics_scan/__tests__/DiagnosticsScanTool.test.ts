@@ -6,14 +6,52 @@ import { CardStatus } from "@shared/ExtensionMessage"
 import { DiracDefaultTool } from "@shared/tools"
 import { afterEach, beforeEach, describe, it } from "mocha"
 import sinon from "sinon"
+import { setHostCapabilities } from "@/hosts/host-capabilities"
 import { HostProvider } from "@/hosts/host-provider"
 import { DiagnosticSeverity } from "@/shared/proto/index.dirac"
 import { setVscodeHostProviderMock } from "@/test/host-provider-test-utils"
 import { ToolExecutorCoordinator } from "../../../ToolExecutorCoordinator"
+import { SurfaceAdapter } from "../../../adapters/SurfaceAdapter"
 import { createMockTaskConfig } from "../../../__tests__/helpers/mockTaskConfig"
 import { DiagnosticsScanTool } from "../index"
 
 describe("DiagnosticsScanTool", () => {
+	for (const stage of ["prepare", "getRaw"] as const) {
+		for (const stop of ["timeout", "cancellation"] as const) {
+			it(`bounds unresolved ${stage} on ${stop} and ignores its late result`, async () => {
+				const controller = new AbortController()
+				const { config } = createConfig(controller.signal)
+				await fs.writeFile(path.join(tmpDir, "test.ts"), "const x = 1;")
+				const env = new SurfaceAdapter(config, "diagnostics_scan")
+				const taskEffects = sandbox.spy(env.orchestration, "setTaskState")
+				let entered!: () => void
+				const started = new Promise<void>((resolve) => { entered = resolve })
+				let finishQuery!: (value: any) => void
+				const unresolved = new Promise<any>((resolve) => { finishQuery = resolve })
+				const stub = stage === "prepare" ? prepareDiagnosticsStub : getDiagnosticsStub
+				stub.callsFake(() => { entered(); return unresolved })
+				const clock = sandbox.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+				const pending = new DiagnosticsScanTool().processCall({ paths: ["test.ts"] }, env)
+				const reason = new Error("cancelled unresolved diagnostics")
+				const rejection = assert.rejects(pending, (error) => stop === "timeout" ? (error as Error).name === "ToolTimeoutError" : error === reason)
+				await started
+				if (stop === "timeout") await clock.tickAsync(30_000)
+				else controller.abort(reason)
+				await rejection
+				const card = await config.taskMessenger.createCard.returnValues[0]
+				assert.equal(card.getCard().status, stop === "timeout" ? CardStatus.ERROR : CardStatus.CANCELLED)
+				const terminalCard = JSON.stringify(card.getCard())
+				const collectionCount = getDiagnosticsStub.callCount
+				const effectCount = taskEffects.callCount
+				finishQuery({ fileDiagnostics: [] })
+				await clock.tickAsync(1)
+				assert.equal(JSON.stringify(card.getCard()), terminalCard)
+				assert.equal(getDiagnosticsStub.callCount, collectionCount)
+				assert.equal(taskEffects.callCount, effectCount)
+			})
+		}
+	}
+
 	let sandbox: sinon.SinonSandbox
 	let tmpDir: string
 	let prepareDiagnosticsStub: sinon.SinonStub
@@ -27,6 +65,7 @@ describe("DiagnosticsScanTool", () => {
 		getDiagnosticsStub = sandbox.stub().resolves({ fileDiagnostics: [] })
 
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					prepareDiagnostics: prepareDiagnosticsStub,
@@ -39,15 +78,12 @@ describe("DiagnosticsScanTool", () => {
 	afterEach(async () => {
 		sandbox.restore()
 		HostProvider.reset()
-		await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+		await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => { })
 	})
 
 	function createConfig(abortSignal?: AbortSignal) {
 		const { config, taskState } = createMockTaskConfig({
 			cwd: tmpDir,
-			overrides: {
-				isSubagentExecution: false,
-			},
 		})
 		if (abortSignal) {
 			Object.defineProperty(taskState, "abortSignal", {
@@ -70,31 +106,48 @@ describe("DiagnosticsScanTool", () => {
 		}
 	}
 
-	it("increments consecutiveMistakeCount when paths parameter is missing or empty", async () => {
+	it("rejects direct execution on unsupported hosts without collecting diagnostics", async () => {
+		setHostCapabilities({})
+		const { config } = createConfig()
+		const env = new SurfaceAdapter(config, "diagnostics_scan")
+
+		await assert.rejects(
+			new DiagnosticsScanTool().processCall({ paths: ["file.ts"] }, env),
+			/Diagnostics not available on this host\./,
+		)
+		sinon.assert.notCalled(prepareDiagnosticsStub)
+		sinon.assert.notCalled(getDiagnosticsStub)
+		sinon.assert.notCalled(config.taskMessenger.createCard)
+	})
+
+	it("returns mistake effects without mutating task state when paths parameter is missing or empty", async () => {
 		const { config, taskState } = createConfig()
 		const handler = new DiagnosticsScanTool()
 		const coordinator = new ToolExecutorCoordinator()
 		coordinator.registerModularTool(handler)
 
 		const result1 = await coordinator.execute(config, makeBlock())
-		assert.ok(typeof result1 === "string" && result1.includes("Missing required parameter 'paths'"))
-		assert.equal(taskState.consecutiveMistakeCount, 1)
+		assert.ok(typeof result1.content === "string" && result1.content.includes("Missing required parameter 'paths'"))
+		assert.deepEqual(result1.effects, { mistake: "increment" })
+		assert.equal(taskState.consecutiveMistakeCount, 0)
 
 		const result2 = await coordinator.execute(config, makeBlock([]))
-		assert.ok(typeof result2 === "string" && result2.includes("Missing required parameter 'paths'"))
-		assert.equal(taskState.consecutiveMistakeCount, 2)
+		assert.ok(typeof result2.content === "string" && result2.content.includes("Missing required parameter 'paths'"))
+		assert.deepEqual(result2.effects, { mistake: "increment" })
+		assert.equal(taskState.consecutiveMistakeCount, 0)
 	})
 
-	it("increments consecutiveMistakeCount and finalizes card as ERROR when all files fail (FB-43)", async () => {
+	it("returns a mistake effect and finalizes card as ERROR when all files fail (FB-43)", async () => {
 		const { config, taskState } = createConfig()
 		const handler = new DiagnosticsScanTool()
 		const coordinator = new ToolExecutorCoordinator()
 		coordinator.registerModularTool(handler)
 
 		const result = await coordinator.execute(config, makeBlock(["non-existent-file.ts"]))
-		assert.equal(typeof result, "string")
-		assert.ok((result as string).includes("non-existent-file.ts"))
-		assert.equal(taskState.consecutiveMistakeCount, 1)
+		assert.equal(typeof result.content, "string")
+		assert.ok((result.content as string).includes("non-existent-file.ts"))
+		assert.deepEqual(result.effects, { mistake: "increment" })
+		assert.equal(taskState.consecutiveMistakeCount, 0)
 
 		const createdCards = config.taskMessenger.createCard.returnValues
 		assert.equal(createdCards.length, 1)
@@ -114,7 +167,7 @@ describe("DiagnosticsScanTool", () => {
 		const testFile = path.join(tmpDir, "test.ts")
 		await fs.writeFile(testFile, "const x = 1;")
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.ok(typeof result === "string" && result.includes("Execution failed"))
 
 		assert.equal(prepareDiagnosticsStub.called, false)
@@ -142,7 +195,7 @@ describe("DiagnosticsScanTool", () => {
 			return { fileDiagnostics: [] }
 		})
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.ok(typeof result === "string" && result.includes("Execution failed"))
 
 		const createdCards = config.taskMessenger.createCard.returnValues
@@ -166,7 +219,7 @@ describe("DiagnosticsScanTool", () => {
 			abortController.abort(new Error("Aborted during prepare"))
 		})
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.ok(typeof result === "string" && result.includes("Execution failed"))
 
 		const createdCards = config.taskMessenger.createCard.returnValues
@@ -202,7 +255,7 @@ describe("DiagnosticsScanTool", () => {
 			],
 		})
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.equal(typeof result, "string")
 		assert.ok((result as string).includes("Type 'string' is not assignable to type 'number'"))
 		assert.equal(taskState.consecutiveMistakeCount, 0)
@@ -216,7 +269,7 @@ describe("DiagnosticsScanTool", () => {
 	it("polls and sleeps between iterations until diagnostics appear", async () => {
 		const { config } = createConfig()
 		const handler = new DiagnosticsScanTool()
-		;(handler as any).diagnosticsDelayMs = 10
+			; (handler as any).diagnosticsDelayMs = 10
 		const coordinator = new ToolExecutorCoordinator()
 		coordinator.registerModularTool(handler)
 
@@ -245,7 +298,7 @@ describe("DiagnosticsScanTool", () => {
 			}
 		})
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.equal(typeof result, "string")
 		assert.ok((result as string).includes("Test warning"))
 		assert.ok(callCount >= 2)
@@ -255,7 +308,7 @@ describe("DiagnosticsScanTool", () => {
 		const abortController = new AbortController()
 		const { config } = createConfig(abortController.signal)
 		const handler = new DiagnosticsScanTool()
-		;(handler as any).diagnosticsDelayMs = 50
+			; (handler as any).diagnosticsDelayMs = 50
 		const coordinator = new ToolExecutorCoordinator()
 		coordinator.registerModularTool(handler)
 
@@ -270,7 +323,7 @@ describe("DiagnosticsScanTool", () => {
 			return { fileDiagnostics: [] }
 		})
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.ok(typeof result === "string" && result.includes("Execution failed"))
 
 		const createdCards = config.taskMessenger.createCard.returnValues
@@ -282,8 +335,8 @@ describe("DiagnosticsScanTool", () => {
 	it("handles mixed valid and invalid files", async () => {
 		const { config } = createConfig()
 		const handler = new DiagnosticsScanTool()
-		;(handler as any).baseDiagnosticsTimeoutMs = 30
-		;(handler as any).diagnosticsDelayMs = 10
+			; (handler as any).baseDiagnosticsTimeoutMs = 30
+			; (handler as any).diagnosticsDelayMs = 10
 		const coordinator = new ToolExecutorCoordinator()
 		coordinator.registerModularTool(handler)
 
@@ -292,7 +345,7 @@ describe("DiagnosticsScanTool", () => {
 
 		getDiagnosticsStub.resolves({ fileDiagnostics: [] })
 
-		const result = await coordinator.execute(config, makeBlock(["valid.ts", "missing.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["valid.ts", "missing.ts"]))).content
 		assert.equal(typeof result, "string")
 		assert.ok((result as string).includes("missing.ts"))
 		assert.ok((result as string).includes("valid.ts"))
@@ -303,28 +356,6 @@ describe("DiagnosticsScanTool", () => {
 		assert.equal(card.getCard().status, CardStatus.SUCCESS)
 	})
 
-	it("handles execution in subagent mode without card", async () => {
-		const { config } = createMockTaskConfig({
-			cwd: tmpDir,
-			overrides: { isSubagentExecution: true },
-		})
-		const handler = new DiagnosticsScanTool()
-		;(handler as any).baseDiagnosticsTimeoutMs = 30
-		;(handler as any).diagnosticsDelayMs = 10
-		const coordinator = new ToolExecutorCoordinator()
-		coordinator.registerModularTool(handler)
-
-		const testFile = path.join(tmpDir, "test.ts")
-		await fs.writeFile(testFile, "const a = 1;")
-
-		getDiagnosticsStub.resolves({ fileDiagnostics: [] })
-
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
-		assert.equal(typeof result, "string")
-
-		const createdCards = config.taskMessenger.createCard.returnValues
-		assert.equal(createdCards.length, 0)
-	})
 
 	it("handles ToolTimeoutError via presentToolTimeout", async () => {
 		const { config } = createConfig()
@@ -338,7 +369,7 @@ describe("DiagnosticsScanTool", () => {
 		const { ToolTimeoutError } = await import("../../../runtime/ToolExecutionDeadline")
 		prepareDiagnosticsStub.rejects(new ToolTimeoutError("diagnostics_scan", "preparing diagnostics", 2000))
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.equal(typeof result, "string")
 		assert.ok((result as string).includes("timed out"))
 	})
@@ -354,7 +385,7 @@ describe("DiagnosticsScanTool", () => {
 
 		prepareDiagnosticsStub.rejects(new Error("Unexpected crash"))
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.ok(typeof result === "string" && result.includes("Unexpected crash"))
 
 		const createdCards = config.taskMessenger.createCard.returnValues
@@ -363,25 +394,6 @@ describe("DiagnosticsScanTool", () => {
 		assert.equal(card.getCard().status, CardStatus.ERROR)
 	})
 
-	it("handles ToolTimeoutError in subagent mode without card", async () => {
-		const { config } = createMockTaskConfig({
-			cwd: tmpDir,
-			overrides: { isSubagentExecution: true },
-		})
-		const handler = new DiagnosticsScanTool()
-		const coordinator = new ToolExecutorCoordinator()
-		coordinator.registerModularTool(handler)
-
-		const testFile = path.join(tmpDir, "test.ts")
-		await fs.writeFile(testFile, "const a = 1;")
-
-		const { ToolTimeoutError } = await import("../../../runtime/ToolExecutionDeadline")
-		prepareDiagnosticsStub.rejects(new ToolTimeoutError("diagnostics_scan", "preparing diagnostics", 2000))
-
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
-		assert.equal(typeof result, "string")
-		assert.ok((result as string).includes("timed out"))
-	})
 
 	it("handles abort with default undefined reason", async () => {
 		const abortController = new AbortController()
@@ -396,7 +408,7 @@ describe("DiagnosticsScanTool", () => {
 		const testFile = path.join(tmpDir, "test.ts")
 		await fs.writeFile(testFile, "const x = 1;")
 
-		const result = await coordinator.execute(config, makeBlock(["test.ts"]))
+		const result = (await coordinator.execute(config, makeBlock(["test.ts"]))).content
 		assert.ok(typeof result === "string" && result.includes("Tool execution cancelled"))
 	})
 

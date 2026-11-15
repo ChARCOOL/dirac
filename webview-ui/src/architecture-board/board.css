@@ -1,0 +1,1418 @@
+/* This stylesheet is delivered only by the standalone board entry. */
+body {
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+	color: #263247;
+	background: #f7f8fb;
+	font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.architecture-board {
+	--board-bg: #f7f8fb;
+	--board-surface: #ffffff;
+	--board-fg: #263247;
+	--board-muted: #5d6b80;
+	--board-border: #d5dce6;
+	--board-accent: #285cba;
+	--board-action: var(--board-accent);
+	--board-action-fg: #fff;
+	--board-action-hover: color-mix(in srgb, var(--board-action) 85%, #000);
+	--board-danger: #aa4545;
+	--board-success: #39704a;
+	--board-warning: #946729;
+	--board-edge: color-mix(in srgb, var(--board-fg) 48%, var(--board-bg));
+	--board-edge-idle-opacity: 0.68;
+	--board-grid: color-mix(in srgb, var(--board-fg) 6%, var(--board-bg));
+	--board-tint: color-mix(in srgb, var(--board-accent) 7%, var(--board-bg));
+	--board-blue: #3975d9;
+	--board-violet: #8c62bb;
+	--board-teal: #138e86;
+	--board-amber: #b77a20;
+	--board-orange: #b87939;
+	--board-rose: #b55364;
+	--board-cyan: #50b9cf;
+	--board-edge-api_call: color-mix(in srgb, var(--board-blue) 72%, var(--board-fg));
+	--board-edge-data_flow: color-mix(in srgb, var(--board-teal) 72%, var(--board-fg));
+	--board-edge-dependency: color-mix(in srgb, var(--board-amber) 72%, var(--board-fg));
+	--board-edge-aggregation: color-mix(in srgb, var(--board-violet) 72%, var(--board-fg));
+	color: var(--board-fg);
+	background: var(--board-bg);
+	display: flex;
+	flex-direction: column;
+	height: 100dvh;
+	min-height: 0;
+	position: relative;
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+.architecture-board * {
+	box-sizing: border-box;
+}
+
+.architecture-board h1,
+.architecture-board h2,
+.architecture-board h3,
+.architecture-board h4,
+.architecture-board p {
+	margin: 0;
+}
+
+.architecture-board button,
+.architecture-board select,
+.architecture-board input,
+.architecture-board textarea {
+	font: inherit;
+}
+
+.architecture-board button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	min-height: 30px;
+	padding: 5px 9px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	color: var(--board-fg);
+	background: transparent;
+	cursor: pointer;
+	line-height: 1.4;
+}
+
+.architecture-board button:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--board-fg) 8%, transparent);
+}
+
+.architecture-board button[aria-pressed="true"] {
+	background: var(--board-tint);
+	color: var(--board-accent);
+	border-color: color-mix(in srgb, var(--board-accent) 35%, transparent);
+}
+
+.architecture-board button:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.architecture-board button svg {
+	flex-shrink: 0;
+}
+
+.architecture-board :focus-visible {
+	outline: 2px solid var(--board-accent);
+	outline-offset: 3px;
+}
+
+.architecture-board .primary-button {
+	background: var(--board-action);
+	color: var(--board-action-fg);
+	padding-inline: 13px;
+}
+
+.architecture-board .primary-button:hover:not(:disabled) {
+	background: var(--board-action-hover);
+}
+
+.architecture-board .primary-button:disabled {
+	background: transparent;
+	color: var(--board-muted);
+	opacity: 0.7;
+}
+
+.architecture-board .board-header,
+.architecture-board .pane-toolbar,
+.architecture-board .diagram-heading {
+	background: color-mix(in srgb, var(--board-surface) 72%, var(--board-bg));
+}
+
+.architecture-board .board-header button {
+	min-height: 28px;
+	padding-block: 3px;
+	white-space: nowrap;
+}
+
+.architecture-board .board-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 36px;
+	padding: 3px 8px;
+	border-bottom: 1px solid var(--board-border);
+	flex-shrink: 0;
+}
+
+.architecture-board .fullscreen-button {
+	flex-shrink: 0;
+	white-space: nowrap;
+	font-weight: 400;
+	color: var(--board-muted);
+	border-color: transparent;
+	background: transparent;
+	padding-inline: 10px;
+}
+
+.architecture-board .fullscreen-button:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--board-fg) 8%, transparent);
+	color: var(--board-fg);
+}
+
+.architecture-board .board-brand {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 9px;
+}
+
+.architecture-board .board-brand svg {
+	color: var(--board-accent);
+}
+
+.architecture-board h1 {
+	font-size: 13px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.architecture-board .board-style-select {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+	color: var(--board-muted);
+	font-size: 12px;
+}
+
+.architecture-board .board-style-select select {
+	width: auto;
+	max-width: 120px;
+	height: 28px;
+	margin: 0;
+	padding: 3px 7px;
+	line-height: 20px;
+	background: var(--board-surface);
+}
+
+.architecture-board .board-version-menu,
+.architecture-board .board-overflow,
+.architecture-board .canvas-layout-menu {
+	position: relative;
+	flex-shrink: 0;
+}
+
+.architecture-board .board-version-menu>summary,
+.architecture-board .board-overflow>summary,
+.architecture-board .canvas-layout-menu>summary {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	min-height: 28px;
+	padding: 3px 6px;
+	border-radius: 5px;
+	list-style: none;
+	white-space: nowrap;
+}
+
+.architecture-board .board-version-menu>summary::-webkit-details-marker,
+.architecture-board .board-overflow>summary::-webkit-details-marker,
+.architecture-board .canvas-layout-menu>summary::-webkit-details-marker {
+	display: none;
+}
+
+.architecture-board .board-version-menu>summary:hover,
+.architecture-board .board-overflow>summary:hover,
+.architecture-board .canvas-layout-menu>summary:hover {
+	background: var(--board-tint);
+}
+
+.architecture-board .version-menu-content,
+.architecture-board .board-overflow-content,
+.architecture-board .layout-menu-content {
+	position: absolute;
+	top: calc(100% + 5px);
+	right: 0;
+	z-index: 40;
+	width: min(260px, calc(100vw - 24px));
+	padding: 8px;
+	border: 1px solid var(--board-border);
+	border-radius: 7px;
+	background: var(--board-surface);
+	box-shadow: 0 8px 24px #0003;
+	color: var(--board-fg);
+	font-size: 12px;
+}
+
+.architecture-board .version-menu-content {
+	left: 0;
+	right: auto;
+}
+
+.architecture-board .version-menu-content button,
+.architecture-board .board-overflow-content button,
+.architecture-board .layout-menu-content button {
+	justify-content: flex-start;
+	width: 100%;
+	white-space: normal;
+	text-align: left;
+}
+
+.architecture-board .version-menu-content p,
+.architecture-board .layout-menu-content p {
+	padding: 4px 6px;
+	color: var(--board-muted);
+	font-size: 11px;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.architecture-board .version-menu-content input {
+	width: 100%;
+	height: 28px;
+	margin-block: 5px;
+	padding: 3px 6px;
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+	color: var(--board-fg);
+	background: var(--board-bg);
+}
+
+.architecture-board .version-update {
+	flex-shrink: 0;
+	color: var(--board-accent);
+	font-size: 11px;
+}
+
+.architecture-board .canvas-fit-control {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	border: 1px solid var(--board-border);
+	border-radius: 6px;
+}
+
+.architecture-board .canvas-fit-control>button {
+	border-radius: 5px 0 0 5px;
+}
+
+.architecture-board .canvas-layout-menu>summary {
+	border-left: 1px solid var(--board-border);
+	border-radius: 0 5px 5px 0;
+	padding-inline: 4px;
+}
+
+.architecture-board .diagram-overview-button {
+	flex-shrink: 0;
+	margin-left: auto;
+	color: var(--board-muted);
+}
+
+.architecture-board .diagram-metadata {
+	font-size: 11px;
+	color: var(--board-muted);
+}
+
+.architecture-board .diagram-legend {
+	margin-top: 16px;
+}
+
+.architecture-board .diagram-legend>summary {
+	font-weight: 500;
+	color: var(--board-muted);
+}
+
+.architecture-board .toolbar-spacer {
+	flex: 1;
+}
+
+.architecture-board .feedback-submission {
+	position: relative;
+}
+
+.architecture-board .feedback-submission>p {
+	position: absolute;
+	right: 0;
+	top: 38px;
+	width: min(400px, 80vw);
+	padding: 14px;
+	background: var(--board-surface);
+	box-shadow: 0 8px 28px #0003;
+	border: 1px solid var(--board-border);
+	z-index: 20;
+}
+
+.architecture-board .presentation-notices {
+	position: absolute;
+	bottom: 32px;
+	right: 8px;
+	z-index: 25;
+	max-width: min(420px, calc(100% - 16px));
+	max-height: 35%;
+	overflow: auto;
+	pointer-events: none;
+}
+
+.architecture-board .presentation-notices button {
+	pointer-events: auto;
+}
+
+.architecture-board .presentation-status {
+	padding: 4px 8px;
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+	font-size: 11px;
+	color: var(--board-muted);
+}
+
+.architecture-board [role="alert"] {
+	padding: 10px 16px;
+	border: 1px solid var(--board-danger);
+	background: var(--board-surface);
+	overflow-wrap: anywhere;
+}
+
+.architecture-board .review-summary {
+	flex-shrink: 0;
+}
+
+.architecture-board .review-summary>p:not(.review-scope-status) {
+	padding: 5px 8px;
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+	font-size: 11px;
+}
+
+/* The button carries the live count; retain a detailed announcement without repeating chrome. */
+.architecture-board .review-scope-status {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+}
+
+.architecture-board .panes {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+}
+
+.architecture-board .comparison {
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.architecture-board .diagram-pane {
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	container-type: inline-size;
+}
+
+.architecture-board .comparison .diagram-pane+.diagram-pane {
+	border-left: 1px solid var(--board-border);
+}
+
+.architecture-board .diagram-heading {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 30px;
+	padding: 3px 8px;
+	flex-shrink: 0;
+}
+
+.architecture-board .version-badge {
+	flex-shrink: 0;
+	font-size: 10px;
+	white-space: nowrap;
+	padding: 1px 7px;
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+	color: var(--board-fg);
+}
+
+.architecture-board .comparison-side {
+	display: none;
+}
+
+.architecture-board .comparison .comparison-side {
+	display: inline;
+}
+
+.architecture-board h2 {
+	min-width: 0;
+	font-size: 12px;
+	line-height: 1.4;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+
+.architecture-board summary {
+	cursor: pointer;
+	width: fit-content;
+}
+
+
+.architecture-board .diagram-workspace {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.architecture-board .pane-toolbar {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 36px;
+	padding: 3px 8px;
+	border-bottom: 1px solid var(--board-border);
+	flex-shrink: 0;
+}
+
+.architecture-board .pane-toolbar button {
+	min-height: 28px;
+	padding: 4px 6px;
+	flex-shrink: 0;
+	font-size: 12px;
+}
+
+.architecture-board .board-search {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	flex: 0 1 180px;
+	min-width: 60px;
+	color: var(--board-muted);
+	margin-right: 6px;
+}
+
+.architecture-board .board-search>svg {
+	position: absolute;
+	left: 10px;
+	pointer-events: none;
+}
+
+.architecture-board .board-search input {
+	width: 100%;
+	color: var(--board-fg);
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 6px;
+	height: 28px;
+	padding: 4px 6px 4px 28px;
+	font-size: 12px;
+}
+
+.architecture-board input::placeholder,
+.architecture-board textarea::placeholder {
+	color: var(--board-muted);
+	opacity: 1;
+}
+
+.architecture-board .search-results {
+	position: absolute;
+	z-index: 30;
+	top: 37px;
+	left: 0;
+	width: min(360px, 85vw);
+	padding: 5px;
+	max-height: 350px;
+	overflow: auto;
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 24px #0003;
+}
+
+.architecture-board .search-results button {
+	display: flex;
+	align-items: flex-start;
+	flex-direction: column;
+	width: 100%;
+	text-align: left;
+	padding: 8px;
+}
+
+.architecture-board .search-results small {
+	color: var(--board-muted);
+}
+
+.architecture-board .search-results p {
+	padding: 8px;
+}
+
+.architecture-board .zoom-controls {
+	display: flex;
+	align-items: center;
+}
+
+.architecture-board .zoom-level {
+	font-size: 11px;
+	min-width: 43px;
+	color: var(--board-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.architecture-board .arranging-status {
+	position: absolute;
+	z-index: 10;
+	top: calc(100% + 12px);
+	left: 50%;
+	transform: translateX(-50%);
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	padding: 5px 12px;
+	border: 1px solid var(--board-border);
+	border-radius: 8px;
+	background: var(--board-surface);
+	box-shadow: 0 4px 16px #0002;
+}
+
+.architecture-board .canvas-inspector {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.architecture-board .canvas-inspector.inspector-open {
+	grid-template-columns: minmax(0, 1fr) 330px;
+}
+
+.architecture-board .board-canvas {
+	position: relative;
+	min-width: 0;
+	min-height: 0;
+	background: var(--board-bg);
+}
+
+.architecture-board .selection-popover {
+	position: absolute;
+	z-index: 15;
+	display: flex;
+	flex-direction: column;
+	padding: 10px 12px;
+	overflow: auto;
+	border: 1px solid var(--board-border);
+	border-radius: 8px;
+	background: var(--board-surface);
+	box-shadow: 0 8px 28px #0004;
+	font-size: 12px;
+}
+
+.architecture-board .popover-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.architecture-board .popover-heading button {
+	min-height: 24px;
+	padding: 3px;
+}
+
+.architecture-board .popover-title {
+	display: block;
+	font-size: 13px;
+	margin-bottom: 6px;
+}
+
+.architecture-board .popover-description,
+.architecture-board .popover-endpoints {
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	color: var(--board-muted);
+	margin-bottom: 8px;
+}
+
+.architecture-board .popover-summary {
+	min-height: 36px;
+	overflow: auto;
+}
+
+.architecture-board .selection-popover> :not(.popover-summary) {
+	flex-shrink: 0;
+}
+
+.architecture-board .selection-popover small {
+	color: var(--board-muted);
+}
+
+.architecture-board .popover-more {
+	display: flex;
+	margin-top: 8px;
+	padding-left: 0;
+	color: var(--board-accent);
+}
+
+.architecture-board .inline-comment {
+	border-top: 1px solid var(--board-border);
+	margin-top: 6px;
+	padding-top: 8px;
+}
+
+.architecture-board .comment-composer.compact label {
+	margin: 0 0 5px;
+}
+
+.architecture-board .comment-composer.compact textarea {
+	min-height: 60px;
+	padding: 7px 8px;
+}
+
+.architecture-board .comment-save-hint,
+.architecture-board .inline-comment-count {
+	font-size: 10px;
+	color: var(--board-muted);
+	margin-top: 5px;
+}
+
+.architecture-board .comment-actions {
+	display: flex;
+	flex-wrap: wrap;
+}
+
+.architecture-board .diagram-workspace:focus-visible,
+.architecture-board .selection-popover:focus-visible,
+.architecture-board .board-inspector:focus-visible {
+	outline: none;
+}
+
+.architecture-board .canvas-hint {
+	position: absolute;
+	pointer-events: none;
+	bottom: 12px;
+	left: 14px;
+	right: 90px;
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--board-muted);
+}
+
+.architecture-board .canvas-hint>span {
+	padding: 3px 6px;
+	background: var(--board-bg);
+	border-radius: 4px;
+}
+
+.architecture-board .canvas-hint button {
+	pointer-events: auto;
+	font-size: 11px;
+	min-height: 24px;
+	padding: 3px 6px;
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+}
+
+.architecture-board .board-node {
+	--node-accent: var(--board-blue);
+	--node-face: color-mix(in srgb, var(--board-fg) 3%, var(--board-bg));
+	--node-outline: color-mix(in srgb, var(--board-fg) 55%, var(--board-bg));
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	padding: 20px 22px 20px 30px;
+	color: var(--board-fg);
+	transition: opacity 120ms;
+}
+
+.architecture-board .node-silhouette {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+	pointer-events: none;
+}
+
+.architecture-board .node-outline {
+	fill: var(--node-surface-fill, var(--node-gradient, var(--node-face, var(--board-bg))));
+	stroke: var(--node-outline, var(--board-muted));
+	stroke-width: 1.4;
+	stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
+}
+
+.architecture-board .node-structure {
+	fill: none;
+	stroke: var(--node-accent);
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+
+.architecture-board .node-title {
+	position: relative;
+	display: block;
+	font-size: 16px;
+	font-weight: 600;
+	letter-spacing: -0.15px;
+	line-height: 1.45;
+	overflow-wrap: anywhere;
+	text-wrap: pretty;
+}
+
+.architecture-board .node-group-drag-handle {
+	position: absolute;
+	inset: -12px 0 auto;
+	height: 56px;
+	pointer-events: auto;
+	cursor: grab;
+}
+
+.architecture-board .react-flow__node.dragging .node-group-drag-handle {
+	cursor: grabbing;
+}
+
+.architecture-board .kind-group.board-node {
+	--node-face: transparent;
+	--node-outline: color-mix(in srgb, var(--board-fg) 28%, var(--board-bg));
+	justify-content: flex-start;
+	align-items: flex-start;
+	padding: 0 24px;
+	min-height: 0;
+}
+
+.architecture-board .kind-group .node-title {
+	margin-top: -12px;
+	padding: 0 10px;
+	background: var(--board-bg);
+	font-size: 16px;
+	font-weight: 600;
+	max-width: 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.architecture-board .kind-group>.proposal {
+	position: absolute;
+	top: 16px;
+	right: 24px;
+	margin: 0;
+}
+
+.architecture-board .kind-component,
+.architecture-board .kind-class,
+.architecture-board .kind-function {
+	--node-accent: color-mix(in srgb, var(--board-blue) 65%, var(--board-fg));
+}
+
+/* Leaf dimensions are shared across themes; contain long titles within each silhouette. */
+.architecture-board .board-node:not(.kind-group)>.node-title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	overflow: hidden;
+	text-align: center;
+}
+
+.architecture-board .board-node:not(.kind-group)>.proposal {
+	position: absolute;
+	bottom: 8px;
+	left: 50%;
+	transform: translateX(-50%);
+	margin: 0;
+	max-width: calc(100% - 72px);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.architecture-board .kind-class.board-node {
+	padding: 58px 24px 24px;
+}
+
+.architecture-board .kind-function .node-title {
+	-webkit-line-clamp: 2;
+}
+
+.architecture-board .kind-function.board-node {
+	min-height: 0;
+	padding: 16px 38px;
+	text-align: center;
+}
+
+.architecture-board .kind-api_endpoint,
+.architecture-board .kind-service {
+	--node-accent: color-mix(in srgb, var(--board-teal) 65%, var(--board-fg));
+}
+
+.architecture-board .kind-api_endpoint.board-node {
+	padding: 30px 20px 30px 53px;
+}
+
+.architecture-board .kind-database {
+	--node-accent: color-mix(in srgb, var(--board-amber) 65%, var(--board-fg));
+}
+
+.architecture-board .kind-database.board-node {
+	padding: 37px 18px 30px;
+}
+
+.architecture-board .board-node.is-selected .node-outline,
+.architecture-board .react-flow__node:focus-visible .node-outline {
+	stroke: var(--board-accent);
+	stroke-width: 2.5;
+}
+
+.architecture-board .board-edge-label.is-selected {
+	outline: 2px solid var(--board-accent);
+}
+
+.architecture-board .board-node.is-dimmed {
+	opacity: 0.27;
+}
+
+.architecture-board .kind-group.is-dimmed {
+	opacity: 0.55;
+}
+
+.architecture-board .proposal {
+	display: block;
+	width: fit-content;
+	font-size: 10px;
+	font-weight: 600;
+	margin-top: 8px;
+	padding: 1px 5px;
+	border: 1px solid currentColor;
+	border-radius: 4px;
+}
+
+.architecture-board .change-added {
+	color: var(--board-success);
+}
+
+.architecture-board .change-modified {
+	color: var(--board-warning);
+}
+
+.architecture-board .change-removed {
+	color: var(--board-danger);
+	text-decoration: line-through;
+}
+
+.architecture-board .board-edge-label {
+	position: absolute;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	width: max-content;
+	max-width: 220px;
+	background: var(--board-surface);
+	color: var(--board-fg);
+	border: 1px solid var(--board-border);
+	border-left-width: 3px;
+	border-radius: 5px;
+	font-size: 11px;
+	line-height: 1.4;
+	padding: 5px 8px;
+	overflow-wrap: anywhere;
+	pointer-events: none;
+	box-shadow: 0 2px 5px #0002;
+}
+
+.architecture-board .board-edge-label.is-selected {
+	z-index: 10;
+	border-color: var(--board-accent);
+}
+
+.architecture-board .board-edge-label.is-dimmed {
+	opacity: 0.2;
+}
+
+.architecture-board .edge-kind {
+	color: var(--board-muted);
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.architecture-board .react-flow__handle {
+	width: 5px;
+	height: 5px;
+	min-width: 0;
+	min-height: 0;
+	opacity: 0;
+	background: var(--board-accent);
+	border: none;
+}
+
+.architecture-board .is-selected .react-flow__handle,
+.architecture-board .board-node:hover .react-flow__handle {
+	opacity: 1;
+}
+
+.architecture-board .react-flow__edge:focus-visible {
+	outline: none;
+}
+
+.architecture-board .react-flow__edge:focus-visible .react-flow__edge-path {
+	stroke-width: 3px;
+	opacity: 1;
+}
+
+.architecture-board .react-flow__attribution {
+	background: var(--board-bg);
+	font-size: 9px;
+}
+
+.architecture-board .react-flow__attribution a {
+	color: var(--board-muted);
+}
+
+.architecture-board .inspector-container {
+	min-height: 0;
+	overflow: auto;
+	border-left: 1px solid var(--board-border);
+	background: var(--board-bg);
+}
+
+.architecture-board .inspector-container[hidden] {
+	display: none;
+}
+
+.architecture-board .board-inspector {
+	padding: 16px;
+	font-size: 12px;
+}
+
+.architecture-board .inspector-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.architecture-board h3 {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.architecture-board .inspector-tabs {
+	margin: 7px 0 16px;
+}
+
+.architecture-board .element-picker {
+	display: block;
+	font-size: 11px;
+	color: var(--board-muted);
+}
+
+.architecture-board select {
+	display: block;
+	width: 100%;
+	padding: 7px;
+	margin: 5px 0 20px;
+	color: var(--board-fg);
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+}
+
+.architecture-board .inspector-eyebrow {
+	color: var(--board-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.8px;
+	font-size: 10px;
+}
+
+.architecture-board .board-inspector h4 {
+	margin-top: 20px;
+	margin-bottom: 7px;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.architecture-board .board-inspector .element-title {
+	font-size: 17px;
+	line-height: 1.4;
+	margin-top: 6px;
+	color: var(--board-fg);
+}
+
+.architecture-board .board-inspector p {
+	color: var(--board-muted);
+	line-height: 1.65;
+	margin-top: 7px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.architecture-board .board-inspector button {
+	text-align: left;
+	max-width: 100%;
+	overflow-wrap: anywhere;
+}
+
+.architecture-board .relationship-endpoints {
+	display: flex;
+	align-items: center;
+	flex-direction: column;
+	gap: 3px;
+	padding: 10px 0;
+}
+
+.architecture-board .relationship-endpoints button {
+	border: 1px solid var(--board-border);
+	width: 100%;
+	justify-content: flex-start;
+}
+
+.architecture-board .relationship-endpoints>svg {
+	transform: rotate(90deg);
+	color: var(--board-muted);
+}
+
+.architecture-board .relationship-list>button {
+	display: flex;
+	align-items: flex-start;
+	flex-direction: column;
+	gap: 5px;
+	width: 100%;
+	padding: 10px 0;
+	border-bottom: 1px solid var(--board-border);
+	border-radius: 0;
+}
+
+.architecture-board .relationship-direction,
+.architecture-board .relationship-list small {
+	font-size: 10px;
+	color: var(--board-muted);
+	font-weight: 400;
+}
+
+.architecture-board .relationship-list strong {
+	font-size: 12px;
+	font-weight: 500;
+}
+
+.architecture-board .count-pill {
+	display: inline-block;
+	margin-left: 4px;
+	padding: 0 5px;
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+	color: var(--board-muted);
+}
+
+.architecture-board .code-links {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.architecture-board .code-links button {
+	color: var(--board-accent);
+	font-size: 11px;
+	align-items: flex-start;
+	justify-content: flex-start;
+	padding: 6px 0;
+}
+
+.architecture-board .kind-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px 18px;
+	margin: 12px 0;
+}
+
+.architecture-board .kind-legend>span {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 11px;
+}
+
+.architecture-board .legend-silhouette {
+	position: relative;
+	width: 42px;
+	height: 22px;
+}
+
+.architecture-board .relationship-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 14px;
+	font-size: 11px;
+	color: var(--board-muted);
+}
+
+.architecture-board .relationship-legend>span {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.architecture-board .canvas-hint .relationship-legend {
+	padding: 4px 8px;
+	border: 1px solid var(--board-border);
+	border-radius: 5px;
+	background: var(--board-bg);
+}
+
+.architecture-board .legend-line {
+	display: inline-block;
+	width: 36px;
+	height: 12px;
+	flex-shrink: 0;
+}
+
+.architecture-board .inspector-comments {
+	border-top: 1px solid var(--board-border);
+	margin-top: 22px;
+	padding-top: 4px;
+	position: relative;
+}
+
+.architecture-board .inspector-comments>svg {
+	position: absolute;
+	right: 0;
+	top: 21px;
+	color: var(--board-muted);
+}
+
+.architecture-board .comment-thread ul {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+.architecture-board .comment-thread li {
+	padding: 10px;
+	margin-bottom: 10px;
+	border: 1px solid var(--board-border);
+	border-radius: 6px;
+}
+
+.architecture-board .comment-thread li>strong {
+	font-size: 10px;
+	text-transform: uppercase;
+	color: var(--board-muted);
+}
+
+.architecture-board .comment-thread label,
+.architecture-board .comment-composer label {
+	display: block;
+	margin: 12px 0 6px;
+	color: var(--board-muted);
+	font-size: 11px;
+}
+
+.architecture-board .comment-thread textarea,
+.architecture-board .comment-composer textarea {
+	display: block;
+	width: 100%;
+	min-height: 88px;
+	padding: 9px;
+	resize: vertical;
+	color: var(--board-fg);
+	background: var(--board-surface);
+	border: 1px solid var(--board-border);
+	border-radius: 6px;
+}
+
+.architecture-board .comment-thread>p {
+	font-size: 11px;
+}
+
+.architecture-board .comment-thread button,
+.architecture-board .comment-composer button {
+	margin-top: 6px;
+	border: 1px solid var(--board-border);
+	margin-right: 4px;
+	font-size: 11px;
+}
+
+.architecture-board .comment-badges {
+	display: flex;
+	gap: 5px;
+	font-size: 10px;
+	color: var(--board-muted);
+	margin-top: 8px;
+}
+
+.architecture-board .board-node>.comment-badges {
+	position: absolute;
+	top: -12px;
+	right: 8px;
+	margin: 0;
+}
+
+.architecture-board .comment-badges>span {
+	padding: 1px 5px;
+	border: 1px solid var(--board-border);
+	border-radius: 4px;
+	background: var(--board-surface);
+}
+
+.architecture-board .comment-badges>span:first-child {
+	color: var(--board-accent);
+}
+
+.architecture-board .element-identity {
+	margin-top: 20px;
+	color: var(--board-muted);
+	font-size: 10px;
+}
+
+.architecture-board .element-identity code {
+	overflow-wrap: anywhere;
+}
+
+.architecture-board .textual-diagram {
+	border-top: 1px solid var(--board-border);
+	padding: 3px 10px;
+	color: var(--board-muted);
+	font-size: 11px;
+	flex-shrink: 0;
+}
+
+.architecture-board .textual-content {
+	max-height: 240px;
+	overflow: auto;
+	font-size: 12px;
+}
+
+.architecture-board .textual-content li {
+	margin-block: 8px;
+}
+
+.architecture-board .textual-content button {
+	color: var(--board-accent);
+	text-align: left;
+}
+
+@container (max-width: 850px) {
+	.architecture-board .canvas-hint>span {
+		display: none;
+	}
+
+	.architecture-board .toolbar-label {
+		display: none;
+	}
+
+	.architecture-board .board-search {
+		flex: 1;
+	}
+
+	.architecture-board .diagram-overview-button span {
+		display: none;
+	}
+
+	.architecture-board .board-style-select select {
+		max-width: 90px;
+	}
+
+	.architecture-board .canvas-inspector.inspector-open {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr);
+	}
+
+	.architecture-board .inspector-container:not([hidden]) {
+		border-left: none;
+		border-top: 1px solid var(--board-border);
+	}
+
+	.architecture-board .canvas-hint {
+		font-size: 10px;
+	}
+}
+
+@container (max-width: 450px) {
+	.architecture-board .zoom-controls>button:not(.zoom-level) {
+		display: none;
+	}
+}
+
+
+@media (max-width: 700px) {
+	.architecture-board .board-header {
+		gap: 3px;
+	}
+
+	.architecture-board .board-header .diagram-overview-button span,
+	.architecture-board .board-header .fullscreen-button span {
+		display: none;
+	}
+
+	.architecture-board .board-brand {
+		gap: 5px;
+	}
+
+	.architecture-board .board-brand>svg {
+		display: none;
+	}
+
+	.architecture-board .board-header button {
+		font-size: 11px;
+	}
+
+	.architecture-board .comparison {
+		overflow-x: auto;
+		grid-template-columns: minmax(340px, 1fr) minmax(340px, 1fr);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.architecture-board .board-node {
+		transition: none;
+	}
+}
+
+.vscode-high-contrast .architecture-board,
+.vscode-high-contrast-light .architecture-board {
+	--board-edge: var(--board-fg);
+	--board-edge-api_call: var(--board-fg);
+	--board-edge-data_flow: var(--board-fg);
+	--board-edge-dependency: var(--board-fg);
+	--board-edge-aggregation: var(--board-fg);
+	--board-border: var(--vscode-contrastBorder, var(--board-fg));
+}
+
+.vscode-high-contrast .architecture-board .board-version-menu>summary,
+.vscode-high-contrast-light .architecture-board .board-version-menu>summary,
+.vscode-high-contrast .architecture-board .board-overflow>summary,
+.vscode-high-contrast-light .architecture-board .board-overflow>summary,
+.vscode-high-contrast .architecture-board .canvas-layout-menu>summary,
+.vscode-high-contrast-light .architecture-board .canvas-layout-menu>summary {
+	border: 1px solid var(--board-border);
+}
+
+.vscode-high-contrast .architecture-board button,
+.vscode-high-contrast-light .architecture-board button {
+	border-color: var(--board-border);
+}
+
+.vscode-high-contrast .architecture-board .board-node,
+.vscode-high-contrast-light .architecture-board .board-node {
+	--node-outline: var(--board-fg);
+	--node-accent: var(--board-fg);
+	--node-face: var(--board-bg);
+}

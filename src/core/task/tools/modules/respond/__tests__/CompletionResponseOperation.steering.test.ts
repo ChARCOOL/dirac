@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert"
+import { CardKind, CardStatus } from "@shared/ExtensionMessage"
+import { RESPOND_TOOL_NAME, ResponseOperation } from "@shared/responseTool"
 import { describe, it } from "mocha"
 import sinon from "sinon"
 import { CompletionResponseOperation } from "../CompletionResponseOperation"
-import { CardKind, CardStatus } from "@shared/ExtensionMessage"
-import { RESPOND_TOOL_NAME, ResponseOperation } from "@shared/responseTool"
 
 describe("completion response operation steering arbitration", () => {
 	it("skips every completion-only side effect when steering supersedes completion", async () => {
@@ -13,20 +13,21 @@ describe("completion response operation steering arbitration", () => {
 		const commitAttemptCompletion = sinon.stub().resolves({ committed: false, error: "steered" })
 		const state = {
 			consecutiveMistakeCount: 0,
-			doubleCheckCompletionPending: false,
 		}
 		const env = {
 			config: {
 				executionProfile: "standalone",
-				doubleCheckCompletionEnabled: false,
-				isSubagentExecution: false,
 				autoApprovalSettings: { enableNotifications: false },
 			},
 			ui: { createCard },
 			orchestration: {
+				reportFailure: sinon.stub(),
 				getTaskState: (key: keyof typeof state) => state[key],
 				setTaskState: (key: keyof typeof state, value: number | boolean) => {
 					state[key] = value as never
+				},
+				commitCompletionResponse: (response: string) => {
+					; (state as Record<string, unknown>).completionResponse = response
 				},
 				commitAttemptCompletion,
 				saveCheckpoint,
@@ -37,6 +38,7 @@ describe("completion response operation steering arbitration", () => {
 		const result = await new CompletionResponseOperation().execute("Done", env)
 
 		assert.equal(result, "Completion rejected: steered")
+		sinon.assert.calledOnce(env.orchestration.reportFailure as sinon.SinonStub)
 		assert.equal(commitAttemptCompletion.calledOnce, true)
 		assert.equal(createCard.notCalled, true)
 		assert.equal(saveCheckpoint.notCalled, true)
@@ -45,15 +47,12 @@ describe("completion response operation steering arbitration", () => {
 	it("keeps completion committed when presentation fails after arbitration", async () => {
 		const state = {
 			consecutiveMistakeCount: 0,
-			doubleCheckCompletionPending: false,
 			completionCommitted: false,
 			didAttemptCompletion: false,
 		}
 		const env = {
 			config: {
 				executionProfile: "standalone",
-				doubleCheckCompletionEnabled: false,
-				isSubagentExecution: false,
 				autoApprovalSettings: { enableNotifications: false },
 			},
 			ui: { createCard: sinon.stub().rejects(new Error("card failed")) },
@@ -69,6 +68,9 @@ describe("completion response operation steering arbitration", () => {
 					state.didAttemptCompletion = true
 					return { committed: true }
 				}),
+				commitCompletionResponse: (response: string) => {
+					; (state as Record<string, unknown>).completionResponse = response
+				},
 				runHook: sinon.stub(),
 			},
 		} as any
@@ -85,12 +87,10 @@ describe("completion response operation steering arbitration", () => {
 		const showNotification = sinon.stub()
 		const captureTaskCompleted = sinon.stub()
 		const captureCustomMetadata = sinon.stub()
-		const state = { doubleCheckCompletionPending: false }
+		const state = { completionCommitted: false, didAttemptCompletion: false }
 		const env = {
 			config: {
 				executionProfile: "standalone",
-				doubleCheckCompletionEnabled: false,
-				isSubagentExecution: false,
 				autoApprovalSettings: { enableNotifications: true },
 				taskId: "task",
 				ulid: "ulid",
@@ -103,6 +103,9 @@ describe("completion response operation steering arbitration", () => {
 			orchestration: {
 				getTaskState: (key: keyof typeof state) => state[key],
 				setTaskState: (key: keyof typeof state, value: boolean) => (state[key] = value),
+				commitCompletionResponse: (response: string) => {
+					; (state as Record<string, unknown>).completionResponse = response
+				},
 				commitAttemptCompletion: sinon.stub().resolves({ committed: true }),
 				saveCheckpoint,
 				runHook,

@@ -9,12 +9,13 @@ import { cn } from "@/lib/utils"
 import { getEnvironmentColor } from "@/shared/lib/environmentColors"
 import { formatLargeNumber as formatTokenNumber } from "@/shared/lib/format"
 import Thumbnails from "@/shared/ui/Thumbnails"
+import { TaskletActivityIndicator } from "../TaskletActivityIndicator"
 import CopyTaskButton from "./buttons/CopyTaskButton"
 import DeleteTaskButton from "./buttons/DeleteTaskButton"
 import OpenDiskConversationHistoryButton from "./buttons/OpenDiskConversationHistoryButton"
 import { CheckpointError } from "./CheckpointError"
 import ContextWindow from "./ContextWindow"
-import { getCostLabel } from "./getCostLabel"
+import { TaskCostBadge } from "./TaskCostBadge"
 import { highlightText } from "./Highlights"
 
 const IS_DEV = process.env.IS_DEV === '"true"'
@@ -52,7 +53,7 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, totalCost, cacheHitRate, 
 	const navigateToSettings = useAppStore((state) => state.navigateToSettings)
 	const currentTaskItem = useTaskStore((state) => state.currentTaskItem)
 
-	const { selectedModelInfo } = normalizeApiConfiguration(apiConfiguration, mode as Mode)
+	const { selectedProvider, selectedModelInfo } = normalizeApiConfiguration(apiConfiguration, mode as Mode)
 
 	const taskText = task.content.type === DiracMessageType.MARKDOWN ? task.content.content : ""
 	const highlightedText = useMemo(() => highlightText(taskText, false), [taskText])
@@ -73,8 +74,6 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, totalCost, cacheHitRate, 
 		if (!contextWindow || !lastApiReqTotalTokens) return 0
 		return (lastApiReqTotalTokens / contextWindow) * 100
 	}, [contextWindow, lastApiReqTotalTokens])
-
-	const costLabel = getCostLabel(totalCost, selectedModelInfo)
 
 	const toggleTaskExpanded = useCallback(() => setIsTaskExpanded(!isTaskExpanded), [setIsTaskExpanded, isTaskExpanded])
 
@@ -117,30 +116,30 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, totalCost, cacheHitRate, 
 								</span>
 							</div>
 						</div>
-
-						<div className="inline-flex shrink-0 select-none items-center justify-end gap-2">
-							{contextWindow > 0 && (
-								<div className="flex items-center gap-1 rounded-md border border-foreground/5 bg-foreground/5 px-2 py-1 font-mono text-xs">
-									<span className="mr-0.5 opacity-50">CTX</span>
-									<span className={cn("font-bold", getUsageColor(tokenPercentage))}>
-										{formatTokenNumber(lastApiReqTotalTokens)}
-									</span>
-								</div>
-							)}
-
-							<div className="rounded-md border border-foreground/5 bg-foreground/5 px-2 py-1 font-mono text-xs font-bold text-blue-400/90">
-								{costLabel}
-							</div>
-
-							{cacheHitRate > 0 && (
-								<div
-									className="rounded-md border border-foreground/5 bg-foreground/5 px-2 py-1 font-mono text-xs font-bold"
-									style={{ color: getCacheHitColor(cacheHitRate) }}>
-									{(cacheHitRate * 100).toFixed(0)}% cache
-								</div>
-							)}
-						</div>
 					</button>
+
+					<div className="inline-flex shrink-0 select-none items-center justify-end gap-2">
+						{contextWindow > 0 && (
+							<div className="flex items-center gap-1 rounded-md border border-foreground/5 bg-foreground/5 px-2 py-1 font-mono text-xs">
+								<span className="mr-0.5 opacity-50">CTX</span>
+								<span className={cn("font-bold", getUsageColor(tokenPercentage))}>
+									{formatTokenNumber(lastApiReqTotalTokens)}
+								</span>
+							</div>
+						)}
+
+						<TaskCostBadge provider={selectedProvider} modelInfo={selectedModelInfo} totalCost={totalCost} />
+
+						{cacheHitRate > 0 && (
+							<div
+								className="rounded-md border border-foreground/5 bg-foreground/5 px-2 py-1 font-mono text-xs font-bold"
+								style={{ color: getCacheHitColor(cacheHitRate) }}>
+								{(cacheHitRate * 100).toFixed(0)}% cache
+							</div>
+						)}
+					</div>
+
+					<TaskletActivityIndicator />
 
 					{isTaskExpanded && (
 						<div className="flex shrink-0 items-center gap-0.5">
@@ -171,13 +170,13 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ task, totalCost, cacheHitRate, 
 							(task.content.type === DiracMessageType.MARKDOWN &&
 								task.content.files &&
 								task.content.files.length > 0)) && (
-							<div className="px-1">
-								<Thumbnails
-									files={(task.content.type === DiracMessageType.MARKDOWN ? task.content.files : []) ?? []}
-									images={(task.content.type === DiracMessageType.MARKDOWN ? task.content.images : []) ?? []}
-								/>
-							</div>
-						)}
+								<div className="px-1">
+									<Thumbnails
+										files={(task.content.type === DiracMessageType.MARKDOWN ? task.content.files : []) ?? []}
+										images={(task.content.type === DiracMessageType.MARKDOWN ? task.content.images : []) ?? []}
+									/>
+								</div>
+							)}
 
 						<div className="border-t border-foreground/5 pt-2">
 							<ContextWindow lastApiReqInfo={lastApiReqInfo} onSendMessage={onSendMessage} />

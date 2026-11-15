@@ -7,9 +7,11 @@ import { CommandPermissionController } from "../../permissions/CommandPermission
 import type { TaskRequestRuntime } from "../runtime/TaskRequestRuntime"
 import type { StateManager } from "../../storage/StateManager"
 import { TaskState } from "../TaskState"
+import type { TaskExecutionProfile } from "../TaskExecutionProfile"
 
 import type { TextCondensationTemplateId } from "@core/text-condensation/TextCondenser"
 export interface ContextLoaderDependencies {
+	executionProfile: TaskExecutionProfile
 	ulid: string
 	stateManager: StateManager
 	getRequestRuntime: () => TaskRequestRuntime

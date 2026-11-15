@@ -1,0 +1,169 @@
+{
+	"title": "Dirac tool execution",
+	"summary": "The task orchestrates a tool call, the coordinator dispatches it, and a tool accesses capabilities through IToolEnvironment. UI renders cards without owning tool execution. Cross-group edges and the card/input cycle exercise layout, not a proposed source edit.",
+	"nodes": [
+		{
+			"id": "core",
+			"kind": "group",
+			"label": "Core task execution"
+		},
+		{
+			"id": "task",
+			"kind": "class",
+			"label": "Task",
+			"parentId": "core",
+			"description": "Owns the foreground execution lifecycle.",
+			"code": [
+				{
+					"path": "src/core/task/index.ts",
+					"symbol": "Task"
+				}
+			]
+		},
+		{
+			"id": "tools",
+			"kind": "group",
+			"label": "Tool dispatch and capabilities",
+			"parentId": "core"
+		},
+		{
+			"id": "coordinator",
+			"kind": "class",
+			"label": "ToolExecutorCoordinator",
+			"parentId": "tools",
+			"description": "Dispatches registered tools.",
+			"code": [
+				{
+					"path": "src/core/task/tools/ToolExecutorCoordinator.ts",
+					"symbol": "ToolExecutorCoordinator"
+				}
+			]
+		},
+		{
+			"id": "tool",
+			"kind": "component",
+			"label": "architecture_diagram",
+			"parentId": "tools",
+			"description": "Publishes, fetches and displays semantic architecture diagrams.",
+			"rationale": "Tool-specific behavior stays in the tool; environment access goes through its explicit contract.",
+			"change": "added",
+			"code": [
+				{
+					"path": "src/core/task/tools/modules/architecture_diagram/tool.ts",
+					"line": 1
+				}
+			]
+		},
+		{
+			"id": "environment",
+			"kind": "api_endpoint",
+			"label": "IToolEnvironment",
+			"parentId": "tools",
+			"description": "Exposes task capabilities to modular tools.",
+			"code": [
+				{
+					"path": "src/core/task/tools/interfaces/IToolEnvironment.ts",
+					"line": 1
+				}
+			]
+		},
+		{
+			"id": "storage",
+			"kind": "database",
+			"label": "Task-local immutable semantic versions and mutable review sidecars",
+			"description": "ArchitectureStorage is the sole writer.",
+			"change": "modified",
+			"code": [
+				{
+					"path": "src/core/architecture/ArchitectureStorage.ts",
+					"symbol": "ArchitectureStorage"
+				}
+			]
+		},
+		{
+			"id": "viewer",
+			"kind": "service",
+			"label": "Separate VS Code architecture board viewer",
+			"description": "Renders diagrams and handles navigation; it does not call the model."
+		},
+		{
+			"id": "input",
+			"kind": "function",
+			"label": "waitForInteraction",
+			"description": "Returns the user's conversation response through the existing input mechanism."
+		},
+		{
+			"id": "legacy",
+			"kind": "component",
+			"label": "Text-only preview",
+			"change": "removed"
+		}
+	],
+	"edges": [
+		{
+			"id": "dispatch",
+			"kind": "dependency",
+			"source": "task",
+			"target": "coordinator",
+			"label": "dispatch tool"
+		},
+		{
+			"id": "execute",
+			"kind": "api_call",
+			"source": "coordinator",
+			"target": "tool",
+			"label": "execute"
+		},
+		{
+			"id": "capabilities",
+			"kind": "dependency",
+			"source": "tool",
+			"target": "environment",
+			"label": "environment-only access"
+		},
+		{
+			"id": "persist",
+			"kind": "data_flow",
+			"source": "environment",
+			"target": "storage",
+			"label": "Save semantic diagrams independently of renderer availability; presentation remains a sidecar",
+			"description": "No board I/O during ordinary request assembly."
+		},
+		{
+			"id": "display",
+			"kind": "api_call",
+			"source": "environment",
+			"target": "viewer",
+			"label": "explicit Open"
+		},
+		{
+			"id": "wait",
+			"kind": "dependency",
+			"source": "tool",
+			"target": "input",
+			"label": "wait"
+		},
+		{
+			"id": "reply",
+			"kind": "data_flow",
+			"source": "input",
+			"target": "task",
+			"label": "ordinary response"
+		},
+		{
+			"id": "owns",
+			"kind": "aggregation",
+			"source": "viewer",
+			"target": "legacy",
+			"label": "textual fallback",
+			"change": "modified"
+		},
+		{
+			"id": "refresh",
+			"kind": "api_call",
+			"source": "viewer",
+			"target": "viewer",
+			"label": "refresh latest"
+		}
+	]
+}

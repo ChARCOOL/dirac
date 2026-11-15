@@ -1,9 +1,10 @@
+import { extendTranscriptPrefix, TranscriptIntegrityError } from "@core/api/TranscriptPrefix"
 import type { ApiConversationProviderState } from "@core/api/conversation"
 import CheckpointTracker from "@integrations/checkpoints/CheckpointTracker"
 import { EventEmitter } from "events"
 import getFolderSize from "get-folder-size"
 import Mutex from "p-mutex"
-import { Card, DiracApiReqInfo, DiracMessage, DiracMessageType } from "@/shared/ExtensionMessage"
+import { Card, CardStatus, DiracApiReqInfo, DiracMessage, DiracMessageType } from "@/shared/ExtensionMessage"
 import { getApiMetrics } from "@/shared/getApiMetrics"
 import { HistoryItem } from "@/shared/HistoryItem"
 import {
@@ -15,7 +16,7 @@ import {
 import type { PresentationOperation } from "@/shared/PresentationOperation"
 import { Logger } from "@/shared/services/Logger"
 import { getCwd, getDesktopDir } from "@/utils/path"
-import type { ApiConversationOperation } from "../storage/conversationHistory"
+import { type ApiConversationOperation, getSavedApiConversationState, readPresentationHistory } from "../storage/conversationHistory"
 import {
 	appendApiConversationOperations,
 	appendPresentationOperations,
@@ -26,6 +27,7 @@ import {
 } from "../storage/disk"
 import { GlobalFileNames } from "../storage/fileNames"
 import { operationLogExceedsBaselineThreshold } from "../storage/operationLog"
+import type { TaskStorageAddress } from "../storage/taskDirectory"
 import { TaskState } from "./TaskState"
 
 // Event types for diracMessages changes
@@ -56,10 +58,13 @@ export interface PresentationSnapshot {
 // Strongly-typed event emitter interface
 export interface MessageStateHandlerEvents {
 	diracMessagesChanged: [change: DiracMessageChange]
+	cardInteractionReady: [message: DiracMessage]
 }
 
 interface MessageStateHandlerParams {
 	taskId: string
+	/** Defaults to ordinary Task storage; contained executions supply their root-qualified address. */
+	storageAddress?: TaskStorageAddress
 	ulid: string
 	taskIsFavorited?: boolean
 	workspaceRootPath?: string
@@ -72,6 +77,14 @@ export const UI_MESSAGES_FLUSH_DEBOUNCE_MS = 250
 export const UI_MESSAGES_FLUSH_MAX_DELAY_MS = 2_000
 export const MAX_PENDING_PRESENTATION_PUBLICATION_BYTES = 2 * 1024 * 1024
 
+interface PendingDurableInput {
+	message: DiracMessage
+	messages: DiracMessage[]
+	generation: number
+	predecessorIds: Set<string>
+	taskDirectory: string
+}
+
 export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents> {
 	private workspaceRootPath?: string
 	private apiConversationHistory: DiracStorageMessage[] = []
@@ -81,6 +94,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	private checkpointTracker: CheckpointTracker | undefined
 	private updateTaskHistory: (historyItem: HistoryItem) => Promise<HistoryItem[]>
 	private taskId: string
+	private readonly storageAddress: TaskStorageAddress
 	private ulid: string
 	private taskState: TaskState
 	private apiMetrics = getApiMetrics([])
@@ -113,6 +127,16 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	private uiFlushDeadline?: number
 	private apiHistoryFlushScheduled = false
 	private persistenceRetired = false
+	private pendingDurableInput?: PendingDurableInput
+
+	private queuePresentationPublication(operation: PresentationOperation, bytes: number): void {
+		this.pendingPresentationPublications.push(operation)
+		this.pendingPresentationPublicationBytes += bytes
+		if (this.pendingPresentationPublicationBytes <= MAX_PENDING_PRESENTATION_PUBLICATION_BYTES) return
+		this.pendingPresentationPublications = []
+		this.pendingPresentationPublicationBytes = 0
+		this.presentationPublicationGapThroughOffset = operation.offset
+	}
 
 	private recordPresentationOperation(operation: PresentationOperation): void {
 		if (this.persistenceRetired) return
@@ -120,12 +144,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 		const operationBytes = Buffer.byteLength(JSON.stringify(recordedOperation), "utf8")
 		this.pendingPresentationOperations.push(recordedOperation)
 		this.pendingPresentationPersistenceBytes += operationBytes
-		this.pendingPresentationPublications.push(recordedOperation)
-		this.pendingPresentationPublicationBytes += operationBytes
-		if (this.pendingPresentationPublicationBytes <= MAX_PENDING_PRESENTATION_PUBLICATION_BYTES) return
-		this.pendingPresentationPublications = []
-		this.pendingPresentationPublicationBytes = 0
-		this.presentationPublicationGapThroughOffset = operation.offset
+		this.queuePresentationPublication(recordedOperation, operationBytes)
 	}
 
 	private recordApiConversationOperation(operation: ApiConversationOperation): void {
@@ -202,6 +221,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	constructor(params: MessageStateHandlerParams) {
 		super()
 		this.taskId = params.taskId
+		this.storageAddress = params.storageAddress ?? { kind: "task", taskId: params.taskId }
 		this.ulid = params.ulid
 		this.taskState = params.taskState
 		this.taskIsFavorited = params.taskIsFavorited ?? false
@@ -214,6 +234,12 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	 */
 	private emitDiracMessagesChanged(change: DiracMessageChange): void {
 		this.emit("diracMessagesChanged", change)
+	}
+
+	/** Announce an armed FIFO interaction without mutating or persisting its card. */
+	publishCardInteractionReady(cardId: string): void {
+		const index = this.requireCardMessageIndex(cardId)
+		this.emit("cardInteractionReady", this.diracMessages[index])
 	}
 
 	setCheckpointTracker(tracker: CheckpointTracker | undefined) {
@@ -277,6 +303,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 		this.apiHistoryFlushScheduled = false
 		await this.persistenceMutex.withLock(() =>
 			this.withStateLock(() => {
+				this.pendingDurableInput = undefined
 				this.pendingPresentationOperations = []
 				this.pendingPresentationPersistenceBytes = 0
 				this.pendingPresentationPublications = []
@@ -289,8 +316,9 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	}
 
 	/** Captures pending records under the state lock, then appends them without blocking mutations. */
-	private async persistPendingOperations(): Promise<void> {
+	private async persistPendingOperations(compact = true): Promise<void> {
 		if (this.persistenceRetired) return
+		if (this.pendingDurableInput) await this.reconcileDurableInput(this.pendingDurableInput)
 		const pending = await this.withStateLock(() => {
 			const hasPendingApiConversation = this.pendingApiConversationOperations.length > 0
 			const captured = {
@@ -307,7 +335,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 
 		let firstError: unknown
 		try {
-			await appendPresentationOperations(this.taskId, pending.presentation)
+			await appendPresentationOperations(this.storageAddress, pending.presentation)
 		} catch (error) {
 			firstError = error
 			await this.withStateLock(() => {
@@ -316,7 +344,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 			})
 		}
 		try {
-			await appendApiConversationOperations(this.taskId, pending.apiConversation, pending.apiConversationSnapshot)
+			await appendApiConversationOperations(this.storageAddress, pending.apiConversation, pending.apiConversationSnapshot)
 		} catch (error) {
 			firstError ??= error
 			await this.withStateLock(() => {
@@ -325,12 +353,12 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 			})
 		}
 		if (firstError) throw firstError
-		await this.createBaselinesWhenTailIsLarge()
+		if (compact) await this.createBaselinesWhenTailIsLarge()
 	}
 
 	private async createBaselinesWhenTailIsLarge(): Promise<void> {
 		if (this.persistenceRetired) return
-		const taskDirectory = await ensureTaskDirectoryExists(this.taskId)
+		const taskDirectory = await ensureTaskDirectoryExists(this.storageAddress)
 		const presentationTailPath = `${taskDirectory}/${GlobalFileNames.uiMessageOperations}`
 		const apiTailPath = `${taskDirectory}/${GlobalFileNames.apiConversationHistoryOperations}`
 		const [presentationNeedsBaseline, apiNeedsBaseline] = await Promise.all([
@@ -343,10 +371,10 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 			if (this.persistenceRetired) return
 			if (presentationNeedsBaseline && this.pendingPresentationOperations.length === 0) {
 				this.materializeAllPresentationAppends()
-				await createPresentationBaseline(this.taskId, this.diracMessages, this.presentationOffset)
+				await createPresentationBaseline(this.storageAddress, this.diracMessages, this.presentationOffset)
 			}
 			if (apiNeedsBaseline && this.pendingApiConversationOperations.length === 0) {
-				await createApiConversationBaseline(this.taskId, this.apiConversationHistory, this.apiHistoryOffset)
+				await createApiConversationBaseline(this.storageAddress, this.apiConversationHistory, this.apiHistoryOffset)
 			}
 		})
 	}
@@ -371,12 +399,19 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 		await this.persistenceMutex.withLock(() => this.updateTaskHistoryInternal())
 	}
 
+	private assertHistoryPrefix(history: DiracStorageMessage[]): void {
+		if (this.apiConversationProviderState.historyPrefix) {
+			extendTranscriptPrefix(this.apiConversationProviderState.historyPrefix, {}, history)
+		}
+	}
+
 	getApiConversationHistory(): DiracStorageMessage[] {
-		return this.apiConversationHistory
+		return structuredClone(this.apiConversationHistory)
 	}
 
 	setApiConversationHistory(newHistory: DiracStorageMessage[], lastOffset = -1): void {
-		this.apiConversationHistory = newHistory.map(removeUserInputMarkersFromMessage)
+		this.assertHistoryPrefix(newHistory)
+		this.apiConversationHistory = structuredClone(newHistory.map(removeUserInputMarkersFromMessage))
 		this.apiHistoryOffset = lastOffset
 		this.pendingApiConversationOperations = []
 		this.pendingApiConversationBytes = 0
@@ -384,11 +419,57 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	}
 
 	getApiConversationProviderState(): ApiConversationProviderState {
-		return this.apiConversationProviderState
+		return structuredClone(this.apiConversationProviderState)
 	}
 
 	setApiConversationProviderState(state: ApiConversationProviderState): void {
-		this.apiConversationProviderState = state
+		this.apiConversationProviderState = structuredClone(state)
+	}
+
+	/** Checkpoint restore may retain an exact prefix, never rewrite messages within it. */
+	validateApiConversationHistoryBranch(retainedHistory: DiracStorageMessage[]): void {
+		this.assertHistoryPrefix(this.apiConversationHistory)
+		if (retainedHistory.length > this.apiConversationHistory.length) {
+			throw new TranscriptIntegrityError("checkpoint retained prefix length")
+		}
+		const retainedPrefix = extendTranscriptPrefix(undefined, {}, this.apiConversationHistory.slice(0, retainedHistory.length))
+		extendTranscriptPrefix(retainedPrefix, {}, retainedHistory)
+	}
+
+	/** One framed operation commits both the retained history and its new provider generation. */
+	async branchApiConversationHistory(retainedHistory: DiracStorageMessage[]): Promise<void> {
+		await this.flushPendingWrites()
+		await this.persistenceMutex.withLock(async () => {
+			if (this.persistenceRetired) throw new Error("Task persistence retired")
+			await this.withStateLock(async () => {
+				this.validateApiConversationHistoryBranch(retainedHistory)
+				const history = structuredClone(retainedHistory)
+				const previous = this.apiConversationProviderState
+				const historyPrefix = extendTranscriptPrefix(undefined, {}, history, previous.historyPrefix?.id)
+				const providerState: ApiConversationProviderState = {
+					historyBranchId: historyPrefix.id,
+					historyPrefix,
+					submittedHistoryLength: history.length,
+					previousTranscriptId: previous.transcript?.id ?? previous.previousTranscriptId ?? previous.condensedFromTranscriptId,
+				}
+				const offset = this.apiHistoryOffset + 1
+				let appendError: unknown
+				try {
+					await appendApiConversationOperations(this.storageAddress, [{ offset, type: "branch", messages: history, providerState }], history)
+				} catch (error) {
+					// A completed frame can survive an append/sync error. Adopt only a
+					// confirmed commit, so this instance agrees with a subsequent reload.
+					const saved = await getSavedApiConversationState(this.storageAddress)
+					if (saved.branchProviderState?.historyBranchId !== providerState.historyBranchId) throw error
+					appendError = error
+				}
+				this.apiConversationHistory = history
+				this.apiConversationProviderState = providerState
+				this.apiHistoryOffset = offset
+				this.lastModelInfo = findLastModelInfo(history)
+				if (appendError) throw appendError
+			})
+		})
 	}
 
 	async overwriteApiConversationProviderState(state: ApiConversationProviderState): Promise<void> {
@@ -397,8 +478,11 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 		await this.persistenceMutex.withLock(async () => {
 			if (this.persistenceRetired) return
 			await this.withStateLock(async () => {
-				this.apiConversationProviderState = state
-				await saveApiConversationProviderState(this.taskId, state)
+				if (state.historyBranchId !== this.apiConversationProviderState.historyBranchId) {
+					throw new TranscriptIntegrityError("stale provider state after checkpoint branch")
+				}
+				await saveApiConversationProviderState(this.storageAddress, state)
+				this.apiConversationProviderState = structuredClone(state)
 			})
 		})
 	}
@@ -524,6 +608,28 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 		}
 	}
 
+	/** Execution-local accounting; does not include session-only Utility counters. */
+	getApiUsage(): ReturnType<typeof getApiMetrics> {
+		return { ...this.apiMetrics }
+	}
+
+	/** One replaceable root projection per stable child; never an API/context-window record. */
+	async upsertTaskletUsage(taskletId: string, usage: import("@shared/taskletUsage").TaskletUsage): Promise<void> {
+		if (this.persistenceRetired) throw new Error("Cannot record tasklet usage after root persistence retirement")
+		const id = `tasklet-usage:${taskletId}`
+		const card: Card = {
+			id, header: "Tasklet usage", status: CardStatus.SUCCESS, renderType: "text",
+			rawOutput: { source: "tasklet", taskletId, ...usage },
+		}
+		if (this.findMessageIndexById(id) === -1) {
+			await this.addToDiracMessages({ id, ts: Date.now(), content: { type: DiracMessageType.CARD, card } })
+		} else {
+			await this.patchCardById(id, card)
+		}
+		await this.saveDiracMessagesAndUpdateHistory()
+	}
+
+
 	/**
 	 * Update task history with current state.
 	 * This can be slow due to folder size calculation, so it should be called
@@ -531,13 +637,15 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	 */
 	private async updateTaskHistoryInternal(): Promise<void> {
 		if (this.persistenceRetired) return
+		// Contained conversations must not publish entries in the ordinary Task inventory.
+		if (this.storageAddress.kind === "tasklet") return
 		try {
 			const taskMessage = this.diracMessages[0]
 			if (!taskMessage) return
 			const lastRelevantMessage =
 				(this.lastRelevantMessageId ? this.getMessageById(this.lastRelevantMessageId) : undefined) ?? taskMessage
 			const apiMetrics = this.apiMetrics
-			const taskDirectory = await ensureTaskDirectoryExists(this.taskId)
+			const taskDirectory = await ensureTaskDirectoryExists(this.storageAddress)
 			const taskDirectorySize = await getFolderSize.loose(taskDirectory)
 
 			const cwd = await getCwd(getDesktopDir())
@@ -587,7 +695,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 
 	async addToApiConversationHistory(message: DiracStorageMessage) {
 		await this.withStateLock(async () => {
-			const storedMessage = removeUserInputMarkersFromMessage(message)
+			const storedMessage = structuredClone(removeUserInputMarkersFromMessage(message))
 			this.apiConversationHistory.push(storedMessage)
 			if (storedMessage.modelInfo) this.lastModelInfo = storedMessage.modelInfo
 			this.recordApiConversationOperation({
@@ -601,8 +709,11 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	}
 
 	async appendToLastApiConversationUserMessage(contentBlock: DiracUserContent): Promise<DiracStorageMessage> {
-		const sanitizedContentBlock = removeUserInputMarkersFromContent(contentBlock) as DiracUserContent
+		const sanitizedContentBlock = structuredClone(removeUserInputMarkersFromContent(contentBlock)) as DiracUserContent
 		const message = await this.withStateLock(() => {
+			if (this.apiConversationHistory.length <= (this.apiConversationProviderState.submittedHistoryLength ?? 0)) {
+				throw new TranscriptIntegrityError("submitted user message")
+			}
 			const lastMessage = this.apiConversationHistory.at(-1)
 			if (!lastMessage || lastMessage.role !== "user") {
 				throw new Error("Cannot append content without a final user API conversation message")
@@ -617,7 +728,7 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 				type: "append_user_content",
 				content: structuredClone(sanitizedContentBlock),
 			})
-			return lastMessage
+			return structuredClone(lastMessage)
 		})
 		await this.flushIfPersistenceBatchIsFull()
 		this.scheduleApiHistoryFlush()
@@ -627,7 +738,8 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 	async overwriteApiConversationHistory(newHistory: DiracStorageMessage[]): Promise<void> {
 		await this.flushPendingWrites()
 		await this.withStateLock(() => {
-			this.apiConversationHistory = newHistory.map(removeUserInputMarkersFromMessage)
+			this.assertHistoryPrefix(newHistory)
+			this.apiConversationHistory = structuredClone(newHistory.map(removeUserInputMarkersFromMessage))
 			this.lastModelInfo = findLastModelInfo(this.apiConversationHistory)
 			this.recordApiConversationOperation({
 				offset: ++this.apiHistoryOffset,
@@ -650,44 +762,133 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 					...this.apiConversationProviderState,
 					deliveredSteeringMessageIds: [...deliveredIds],
 				}
-				await saveApiConversationProviderState(this.taskId, this.apiConversationProviderState)
+				await saveApiConversationProviderState(this.storageAddress, this.apiConversationProviderState)
 			})
 		})
 	}
 
-	/**
-	 * Add a new message to diracMessages array with proper index tracking
-	 * CRITICAL: This entire operation must be atomic to prevent race conditions (RC-4)
-	 * The conversationHistoryIndex must be set correctly based on the current state,
-	 * and the message must be added and saved without any interleaving operations
+	/** Reserve transcript ordering, but never hold the message-state lock during disk I/O.
+	 * An uncertain append is reconciled before any later persistence can use its offsets.
 	 */
-	async addToDiracMessages(message: DiracMessage) {
-		await this.withStateLock(async () => {
-			if (this.messageIndexById.has(message.id)) throw new Error(`Message with id ${message.id} already exists`)
-			if (message.content.type === DiracMessageType.CARD && this.cardMessageIndexById.has(message.content.card.id)) {
-				throw new Error(`Card with id ${message.content.card.id} already exists`)
-			}
-			message.conversationHistoryIndex = this.apiConversationHistory.length - 1
-			message.conversationHistoryDeletedRange = this.taskState.conversationHistoryDeletedRange
-			const index = this.diracMessages.length
-			this.diracMessages.push(message)
-			this.messageIndexById.set(message.id, index)
-			if (message.content.type === DiracMessageType.CARD) {
-				this.cardMessageIndexById.set(message.content.card.id, index)
-			}
-			if (message.content.type === DiracMessageType.API_STATUS) this.lastApiStatusMessageId = message.id
-			this.updateHistoryProjection(message)
-			this.emitDiracMessagesChanged({
-				type: "add",
-				messages: this.diracMessages,
-				index,
-				message,
+	async appendDurableUserMessage(message: DiracMessage, assertCurrent: () => void): Promise<void> {
+		if (message.content.type !== DiracMessageType.MARKDOWN || message.content.role !== "user")
+			throw new Error("Durable input must be a user transcript message")
+		await this.persistenceMutex.withLock(async () => {
+			// Compaction is unrelated to accepting input and must not delay its short state transition.
+			await this.persistPendingOperations(false)
+			const taskDirectory = await ensureTaskDirectoryExists(this.storageAddress)
+			const reserved = await this.withStateLock(() => {
+				if (this.persistenceRetired) throw new Error("Conversation persistence was retired")
+				assertCurrent()
+				if (this.messageIndexById.has(message.id)) throw new Error(`Duplicate input ${message.id}`)
+				message.conversationHistoryIndex = this.apiConversationHistory.length - 1
+				message.conversationHistoryDeletedRange = this.taskState.conversationHistoryDeletedRange
+				const input: PendingDurableInput = {
+					message: structuredClone(message),
+					messages: this.diracMessages,
+					generation: this.presentationStateGeneration + 1,
+					predecessorIds: new Set(this.messageIndexById.keys()),
+					taskDirectory,
+				}
+				const operations = this.pendingPresentationOperations.splice(0)
+				this.pendingPresentationPersistenceBytes = 0
+				operations.push({ offset: ++this.presentationOffset, type: "create", message: input.message })
+				this.pendingDurableInput = input
+				// A snapshot may temporarily omit the reserved message. Settlement increments the
+				// generation again so a client that acknowledged that snapshot cannot miss it.
+				this.invalidatePresentationPublication()
+				return { input, operations }
 			})
-			this.recordPresentationOperation({
+			try {
+				await appendPresentationOperations(this.storageAddress, reserved.operations)
+			} catch (error) {
+				if (!(await this.reconcileDurableInput(reserved.input))) throw error
+				return
+			}
+			await this.withStateLock(() => this.commitDurableInput(reserved.input))
+		})
+	}
+
+	private invalidatePresentationPublication(): void {
+		this.pendingPresentationPublications = []
+		this.pendingPresentationPublicationBytes = 0
+		this.presentationPublicationGapThroughOffset = this.presentationOffset
+		this.presentationStateGeneration++
+	}
+
+	/** Called under the state lock, only after durable acceptance is known. */
+	private commitDurableInput(input: PendingDurableInput): void {
+		if (this.pendingDurableInput === input) this.pendingDurableInput = undefined
+		if (
+			this.persistenceRetired ||
+			this.diracMessages !== input.messages ||
+			this.presentationStateGeneration !== input.generation
+		)
+			throw new Error("Conversation changed while input was persisted; resume to recover it")
+		const firstConcurrentIndex = this.diracMessages.findIndex((message) => !input.predecessorIds.has(message.id))
+		const index = firstConcurrentIndex === -1 ? this.diracMessages.length : firstConcurrentIndex
+		this.diracMessages.splice(index, 0, input.message)
+		this.rebuildMessageIndexes()
+		this.rebuildHistoryProjection()
+		this.invalidatePresentationPublication()
+		this.emitDiracMessagesChanged({ type: "add", messages: this.diracMessages, index, message: input.message })
+	}
+
+	/** The persistence mutex remains held across reconciliation. A failed read leaves the
+	 * reservation intact, blocking later disk writes (not ordinary in-memory mutations).
+	 */
+	private async reconcileDurableInput(input: PendingDurableInput): Promise<boolean> {
+		const saved = await readPresentationHistory(input.taskDirectory)
+		const persisted = saved.messages.find((message) => message.id === input.message.id)
+		if (persisted && JSON.stringify(persisted) !== JSON.stringify(input.message))
+			throw new Error(`Persisted input identity conflicts with ${input.message.id}`)
+		return this.withStateLock(() => {
+			if (persisted) {
+				this.commitDurableInput(input)
+				return true
+			}
+			if (this.pendingDurableInput === input) this.pendingDurableInput = undefined
+			if (
+				this.persistenceRetired ||
+				this.diracMessages !== input.messages ||
+				this.presentationStateGeneration !== input.generation
+			)
+				throw new Error("Conversation changed during input persistence")
+			// Some predecessor records may have reached disk before rejection. A fresh reset
+			// bridges the reserved gap without replaying them or buffering rejected input.
+			this.materializeAllPresentationAppends()
+			this.presentationOffset = Math.max(this.presentationOffset, saved.lastOffset)
+			const reset: PresentationOperation = {
 				offset: ++this.presentationOffset,
-				type: "create",
-				message,
-			})
+				type: "reset",
+				messages: structuredClone(this.diracMessages),
+			}
+			this.pendingPresentationOperations = [reset]
+			this.pendingPresentationPersistenceBytes = Buffer.byteLength(JSON.stringify(reset), "utf8")
+			this.invalidatePresentationPublication()
+			return false
+		})
+	}
+
+	private appendDiracMessage(message: DiracMessage): void {
+		if (this.messageIndexById.has(message.id)) throw new Error(`Message with id ${message.id} already exists`)
+		if (message.content.type === DiracMessageType.CARD && this.cardMessageIndexById.has(message.content.card.id))
+			throw new Error(`Card with id ${message.content.card.id} already exists`)
+		message.conversationHistoryIndex = this.apiConversationHistory.length - 1
+		message.conversationHistoryDeletedRange = this.taskState.conversationHistoryDeletedRange
+		const index = this.diracMessages.length
+		this.diracMessages.push(message)
+		this.messageIndexById.set(message.id, index)
+		if (message.content.type === DiracMessageType.CARD) this.cardMessageIndexById.set(message.content.card.id, index)
+		if (message.content.type === DiracMessageType.API_STATUS) this.lastApiStatusMessageId = message.id
+		this.updateHistoryProjection(message)
+		this.emitDiracMessagesChanged({ type: "add", messages: this.diracMessages, index, message })
+	}
+
+	async addToDiracMessages(message: DiracMessage) {
+		await this.withStateLock(() => {
+			this.appendDiracMessage(message)
+			this.recordPresentationOperation({ offset: ++this.presentationOffset, type: "create", message })
 		})
 		await this.flushIfPersistenceBatchIsFull()
 		this.scheduleUiFlush()
@@ -761,7 +962,11 @@ export class MessageStateHandler extends EventEmitter<MessageStateHandlerEvents>
 			this.materializePresentationAppends(message)
 			const before = this.historyProjectionBeforeMutation(message)
 			Object.assign(message.content.card, patch)
-			this.updateHistoryProjection(message, before, patch.header === undefined && patch.body === undefined && patch.rawOutput === undefined)
+			this.updateHistoryProjection(
+				message,
+				before,
+				patch.header === undefined && patch.body === undefined && patch.rawOutput === undefined,
+			)
 			this.recordPresentationOperation({
 				offset: ++this.presentationOffset,
 				type: "patch_card",

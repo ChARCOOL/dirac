@@ -10,7 +10,6 @@ interface RunningTasksSectionProps {
 type TaskSettingKey =
 	| "subagentsEnabled"
 	| "enableParallelToolCalling"
-	| "doubleCheckCompletionEnabled"
 	| "backgroundEditEnabled"
 	| "enableCheckpointsSetting"
 	| "worktreesEnabled"
@@ -27,7 +26,6 @@ interface TaskSetting {
 const RunningTasksSection = ({ renderSectionHeader }: RunningTasksSectionProps) => {
 	const {
 		backgroundEditEnabled,
-		doubleCheckCompletionEnabled,
 		enableCheckpointsSetting,
 		enableParallelToolCalling,
 		subagentsEnabled,
@@ -38,7 +36,7 @@ const RunningTasksSection = ({ renderSectionHeader }: RunningTasksSectionProps) 
 			id: "subagents",
 			label: "Subagents",
 			description:
-				"Run focused subagents in parallel for independent exploration or analysis. This may increase token usage.",
+				"Run focused subagents in parallel to research, edit files, run commands, and verify work. This may increase token usage.",
 			settingKey: "subagentsEnabled",
 			checked: subagentsEnabled,
 		},
@@ -49,14 +47,6 @@ const RunningTasksSection = ({ renderSectionHeader }: RunningTasksSectionProps) 
 				"Run independent tool calls concurrently. Execution order is not guaranteed and resource use may increase.",
 			settingKey: "enableParallelToolCalling",
 			checked: enableParallelToolCalling,
-		},
-		{
-			id: "double-check-completion",
-			label: "Double-check completion",
-			description:
-				"Require an additional verification pass before accepting completion. This adds latency and may use more tokens.",
-			settingKey: "doubleCheckCompletionEnabled",
-			checked: doubleCheckCompletionEnabled,
 		},
 		{
 			id: "background-edit",

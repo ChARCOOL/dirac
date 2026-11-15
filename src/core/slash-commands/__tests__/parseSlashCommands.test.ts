@@ -13,6 +13,7 @@ import * as sinon from "sinon"
 
 import * as telemetry from "@/services/telemetry"
 import { Logger } from "@/shared/services/Logger"
+import { BASE_SLASH_COMMANDS } from "@/shared/slashCommands"
 import * as skillsModule from "../../context/instructions/user-instructions/skills"
 import { StateManager } from "../../storage/StateManager"
 import { parseSlashCommands } from "../index"
@@ -55,7 +56,6 @@ describe("parseSlashCommands", () => {
 			extensionPath?: string
 			sourceDir?: string
 			conversationCondensationAvailable?: boolean
-			taskHandoffCondensationAvailable?: boolean
 		} = {},
 	) {
 		const result = await parseSlashCommands(
@@ -69,7 +69,6 @@ describe("parseSlashCommands", () => {
 			opts.extensionPath,
 			opts.sourceDir ?? "dist/source",
 			opts.conversationCondensationAvailable ?? false,
-			opts.taskHandoffCondensationAvailable ?? false,
 		)
 		// Flush microtasks so un-awaited telemetry proxy calls complete
 		await new Promise((resolve) => setImmediate(resolve))
@@ -97,13 +96,13 @@ describe("parseSlashCommands", () => {
 		})
 
 		it("ignores slash commands that appear outside any tag", async () => {
-			const text = "/newtask please help"
+			const text = "/compact please help"
 			const result = await parse(text)
 			expect(result.processedText).to.equal(text)
 		})
 
 		it("does not match slash commands embedded in URLs or file paths", async () => {
-			const text = "<task>see http://example.com/newtask and some/path/newtask</task>"
+			const text = "<task>see http://example.com/compact and some/path/compact</task>"
 			const result = await parse(text)
 			expect(result.processedText).to.equal(text)
 		})
@@ -118,10 +117,10 @@ describe("parseSlashCommands", () => {
 
 	describe("tag patterns", () => {
 		it("detects slash commands inside <task> tags", async () => {
-			const text = "<task>/newtask</task>"
+			const text = "<task>/compact</task>"
 			const result = await parse(text)
 			expect(result.processedText).to.not.equal(text)
-			expect(result.processedText).to.contain("new_task")
+			expect(result.processedText).to.contain("condense")
 		})
 
 		it("detects slash commands inside <feedback> tags", async () => {
@@ -137,36 +136,20 @@ describe("parseSlashCommands", () => {
 		})
 
 		it("is case-insensitive on the tag name but preserves command casing", async () => {
-			const text = "<TASK>/newtask</TASK>"
+			const text = "<TASK>/compact</TASK>"
 			const result = await parse(text)
-			expect(result.processedText).to.contain("new_task")
+			expect(result.processedText).to.contain("condense")
 		})
 	})
 
 	describe("builtin commands", () => {
-		it("handles /newtask and removes the slash command from text", async () => {
+		it("does not recognize the removed new-task command", async () => {
 			const text = "<task>/newtask extra context here</task>"
 			const result = await parse(text)
-			expect(result.processedText).to.contain("new_task")
-			expect(result.processedText).to.not.contain("/newtask")
-			expect(result.processedText).to.contain("extra context here")
-			expect(result.needsDiracrulesFileCheck).to.be.false
-			expect(captureStub.calledWith(ULID, "newtask", "builtin")).to.be.true
-		})
-
-		it("keeps the legacy handoff-generation prompt when Utility task handoff is unavailable", async () => {
-			const result = await parse("<task>/newtask</task>")
-			expect(result.processedText).to.contain("Context: (required)")
-			expect(result.processedText).to.contain("<context>1. Current Work:")
-		})
-
-		it("requests a concise intent when Utility task handoff is available", async () => {
-			const result = await parse("<task>/newtask</task>", { taskHandoffCondensationAvailable: true })
-			expect(result.processedText).to.contain("only the concise intent")
-			expect(result.processedText).to.contain("one or two short sentences")
-			expect(result.processedText).to.contain("no more than 40 words")
-			expect(result.processedText).to.contain("<intent>")
-			expect(result.processedText).to.not.contain("<context>1. Current Work:")
+			expect(result.processedText).to.equal(text)
+			expect(result.directAction).to.be.undefined
+			expect(captureStub.calledWith(ULID, "newtask", "builtin")).to.be.false
+			expect(BASE_SLASH_COMMANDS.some((command) => command.name === "newtask")).to.be.false
 		})
 
 		it("falls back to active-model condensation for /smol when Utility condensation is unavailable", async () => {
@@ -271,13 +254,13 @@ describe("parseSlashCommands", () => {
 		})
 
 		it("builtin command takes precedence over a same-named workflow", async () => {
-			// Builtin "newtask" is checked before workflows; the .md workflow never matches
-			const workflowPath = "/home/user/.diracrules/newtask.md"
+			// Builtin "compact" is checked before workflows; the .md workflow never matches
+			const workflowPath = "/home/user/.diracrules/compact.md"
 			sandbox.stub(fs.promises, "readFile").resolves("should not be used")
-			const result = await parse("<task>/newtask</task>", {
+			const result = await parse("<task>/compact</task>", {
 				localToggles: { [workflowPath]: true },
 			})
-			expect(result.processedText).to.contain("new_task")
+			expect(result.processedText).to.contain("condense")
 			expect(result.processedText).to.not.contain("should not be used")
 		})
 
@@ -364,10 +347,10 @@ describe("parseSlashCommands", () => {
 	describe("multiple tags / ordering", () => {
 		it("processes the first tag that contains a slash command (tag order: task, feedback, answer, user_message)", async () => {
 			// <feedback> appears later in text but <task> is checked first by the loop
-			const text = "<feedback>/smol</feedback> <task>/newtask</task>"
+			const text = "<feedback>/smol</feedback> <task>/compact</task>"
 			const result = await parse(text)
-			// task is checked first in tagPatterns order, so /newtask wins
-			expect(result.processedText).to.contain("new_task")
+			// task is checked first in tagPatterns order, so /compact wins
+			expect(result.processedText).to.contain("condense")
 		})
 
 		it("skips a tag with no slash command and processes a later tag that has one", async () => {

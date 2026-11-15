@@ -3,6 +3,7 @@
  * Captures current behavior — bugs and all.
  * Focus: context gathering (file context, mention parsing, workspace state), edge cases.
  */
+import { setHostCapabilities } from "@hosts/host-capabilities"
 import { afterEach, beforeEach, describe, it } from "mocha"
 import "should"
 import * as fs from "fs/promises"
@@ -55,6 +56,7 @@ describe("ContextLoader (characterization)", () => {
 	})
 
 	afterEach(async () => {
+		setHostCapabilities(undefined)
 		// Restore module proxies
 		mentionsModule.parseMentions = originalMentions
 		slashCommandsModule.parseSlashCommands = originalSlash
@@ -75,6 +77,7 @@ describe("ContextLoader (characterization)", () => {
 
 	function makeDependencies(overrides: Partial<ContextLoaderDependencies> = {}): ContextLoaderDependencies {
 		return {
+			executionProfile: "standalone",
 			ulid: "test-ulid",
 			stateManager: {
 				getGlobalSettingsKey: sandbox.stub().returns({}),
@@ -258,6 +261,26 @@ describe("ContextLoader (characterization)", () => {
 			result[3].should.have.length(1)
 			taskState.availableSkills.should.have.length(1)
 		})
+
+		it("removes viewer-only skills before headless slash-command processing even from cached metadata", async () => {
+			setHostCapabilities({})
+			stubParseMentions("p"), stubParseSlashCommands(), stubWorkflows()
+			stubSkills(skillsModule.BUILTIN_SKILLS)
+			const loader = new ContextLoader(makeDependencies())
+			const result = await loader.loadContext([{ type: "text", isUserInput: true, text: "<task>/architecture-board</task>" }])
+			result[3].some((skill) => skill.name === "architecture-board").should.equal(false)
+		})
+
+		for (const executionProfile of ["standalone", "goal_coordinator", "goal_followup", "tasklet"] as const) {
+			it(`filters foreground-only skills before slash-command activation for ${executionProfile}`, async () => {
+				setHostCapabilities({ architectureViewer: { prepare: async () => { }, createPanel: async () => { throw new Error("not used") } } })
+				stubParseMentions("p"), stubParseSlashCommands(), stubWorkflows()
+				stubSkills(skillsModule.BUILTIN_SKILLS)
+				const loader = new ContextLoader(makeDependencies({ executionProfile }))
+				const result = await loader.loadContext([{ type: "text", isUserInput: true, text: "<task>x</task>" }])
+				result[3].some((skill) => skill.name === "architecture-board").should.equal(executionProfile !== "tasklet")
+			})
+		}
 
 		it("filters out skills disabled by global toggles", async () => {
 			stubParseMentions("p"), stubParseSlashCommands(), stubWorkflows()
@@ -605,7 +628,7 @@ describe("ContextLoader (characterization)", () => {
 			ruleConditionalsModule.extractSymbolLikeStrings = () => []
 			stubOutline()
 			const loader = new ContextLoader(makeDependencies())
-			const result = await loader.loadContext([{ type: "text", isUserInput: true, text: `<task>/newtask here</task>` }], true, false)
+			const result = await loader.loadContext([{ type: "text", isUserInput: true, text: `<task>/compact here</task>` }], true, false)
 				; (result[0][0] as any).text.should.not.containEql("file_skeleton")
 		})
 

@@ -13,6 +13,7 @@ export const GlobalFileNames = {
 	toolContextOperations: "tool_context.jsonl",
 	diracRecommendedModels: "dirac_recommended_models.json",
 	openRouterModels: "openrouter_models.json",
+	unbiasedModels: "unbiased_models.json",
 	vercelAiGatewayModels: "vercel_ai_gateway_models.json",
 	groqModels: "groq_models.json",
 	basetenModels: "baseten_models.json",
@@ -29,5 +30,7 @@ export const GlobalFileNames = {
 	windsurfRules: ".windsurfrules",
 	agentsRulesFile: "AGENTS.md",
 	taskMetadata: "task_metadata.json",
+	taskletRecord: "tasklet.json",
+	taskletEvents: "tasklet_events.json",
 	remoteConfig: (orgId: string) => `remote_config_${orgId}.json`,
 } as const

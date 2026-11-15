@@ -7,6 +7,7 @@ import { DiracAskResponse } from "@shared/WebviewMessage"
 import { getErrorMessage } from "@/shared/errors"
 import type { ICardHandle, IToolEnvironment } from "../../interfaces/IToolEnvironment"
 import type { ToolPermissionDisposition } from "../../autoApprove"
+import { ToolSkippedByUserMessage } from "../../types/ToolSkippedByUserMessage"
 import type { AstEditFormatter } from "./AstEditFormatter"
 import type { EditAstArgs } from "./EditAstValidator"
 
@@ -34,19 +35,9 @@ export class AstEditApproval {
 			return { approved: true, autoApproved: true }
 		}
 
-		if (!utilityPermissionHandlingEnabled && env.config.isSubagentExecution) {
-			return {
-				approved: false,
-				autoApproved: false,
-				feedback: formatResponse.toolError(
-					"edit_ast cannot modify one or more requested paths in this non-interactive subagent. Run the edit in the parent agent where approval can be requested.",
-				),
-			}
-		}
-
 		const diffs = this.formatter.diffs(plan)
-		let reviewShown = false
 		await this.updateProgressCards(progressCards, "Plan validated. Waiting for approval...")
+		let reviewRequested = false
 
 		while (true) {
 			const approvalCard = await this.createApprovalCard(
@@ -57,8 +48,15 @@ export class AstEditApproval {
 				permissionDisposition,
 				utilityPermissionHandlingEnabled,
 			)
-			// Card creation resolves utility approval before any manual review opens.
-			if (!reviewShown && approvalCard.requiresUserInteraction !== false) {
+			// Approval remains required in background mode; editor focus requires an explicit request.
+			if (approvalCard.requiresUserInteraction !== false && env.config.backgroundEditEnabled && !reviewRequested) {
+				await approvalCard.update({ actions: [
+					{ label: "Approve", value: DiracAskResponse.APPROVE, primary: true },
+					{ label: "Reject", value: DiracAskResponse.REJECT, style: "danger" },
+					{ label: "View diff", value: DiracAskResponse.VIEW, style: "secondary" },
+				] })
+			}
+			if (approvalCard.requiresUserInteraction !== false && (!env.config.backgroundEditEnabled || reviewRequested)) {
 				await env.editor.showReview(
 					plan.files.map((file) => ({
 						absolutePath: file.absolutePath,
@@ -66,15 +64,16 @@ export class AstEditApproval {
 						content: file.content,
 						originalContent: file.originalContent,
 					})),
+					approvalCard,
 				)
 				await env.editor.scrollToFirstDiff()
-				reviewShown = true
 			}
 
 			let result: Awaited<ReturnType<ICardHandle["waitForInteraction"]>>
 			try {
 				result = await approvalCard.waitForInteraction()
 			} catch (error) {
+				if (error instanceof ToolSkippedByUserMessage) throw error
 				try {
 					await this.finalizeApprovalCard(
 						approvalCard,
@@ -95,16 +94,8 @@ export class AstEditApproval {
 					"Review reopened for inspection or editing.",
 					{ status: "cancelled", reason: "review_reopened" },
 				)
-				await env.editor.showReview(
-					plan.files.map((file) => ({
-						absolutePath: file.absolutePath,
-						displayPath: file.displayPath,
-						content: file.content,
-						originalContent: file.originalContent,
-					})),
-				)
-				await env.editor.scrollToFirstDiff()
-				reviewShown = true
+				await env.editor.hideReview()
+				reviewRequested = true
 				continue
 			}
 
@@ -198,6 +189,7 @@ export class AstEditApproval {
 			icon: args.operation === "rename" ? DiracIcon.SYMBOL_RENAME : DiracIcon.SYMBOL_REPLACE,
 			status: CardStatus.WAITING_FOR_INPUT,
 			requireApproval: true,
+			permissionOperation: { kind: "paths", paths: plan.files.map((file) => file.displayPath) },
 			permissionRequestKind:
 				utilityPermissionHandlingEnabled && permissionDisposition === "manual_only" ? "manual_tool" : "tool",
 			collapsed: false,

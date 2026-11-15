@@ -1,3 +1,5 @@
+import { validateSandboxSettings } from "@shared/SandboxSettings"
+import { convertProtoToSubagentRoles } from "@shared/proto-conversions/subagent-roles"
 import { isValidAutoCondenseContextLimit } from "@shared/context-management"
 import { UpdateSettingsRequest } from "@shared/proto/dirac/state"
 import { convertProtoToModelProviderSelection } from "@shared/proto-conversions/models/api-configuration-conversion"
@@ -12,6 +14,8 @@ import { Controller } from ".."
  */
 export function buildWebviewSettingsPatch(request: UpdateSettingsRequest): Partial<Settings> {
 	const settings: Partial<Settings> = {}
+	if (request.subagentRoles !== undefined) settings.subagentRoles = convertProtoToSubagentRoles(request.subagentRoles)
+	if (request.sandboxSettings !== undefined) settings.sandboxSettings = validateSandboxSettings(request.sandboxSettings)
 	if (request.planActSeparateModelsSetting !== undefined)
 		settings.planActSeparateModelsSetting = request.planActSeparateModelsSetting
 	if (request.enableCheckpointsSetting !== undefined) settings.enableCheckpointsSetting = request.enableCheckpointsSetting
@@ -19,7 +23,6 @@ export function buildWebviewSettingsPatch(request: UpdateSettingsRequest): Parti
 	if (request.utilityModelSelection !== undefined)
 		settings.utilityModelSelection = convertProtoToModelProviderSelection(request.utilityModelSelection)
 	if (request.utilityModelUseCondense !== undefined) settings.utilityModelUseCondense = request.utilityModelUseCondense
-	if (request.utilityModelUseNewTask !== undefined) settings.utilityModelUseNewTask = request.utilityModelUseNewTask
 	if (request.utilityModelUseGenerateCommitMessage !== undefined)
 		settings.utilityModelUseGenerateCommitMessage = request.utilityModelUseGenerateCommitMessage
 	if (request.utilityModelUsePermissionHandling !== undefined)
@@ -39,8 +42,6 @@ export function buildWebviewSettingsPatch(request: UpdateSettingsRequest): Parti
 		)
 	}
 	if (request.worktreesEnabled !== undefined) settings.worktreesEnabled = request.worktreesEnabled
-	if (request.doubleCheckCompletionEnabled !== undefined)
-		settings.doubleCheckCompletionEnabled = request.doubleCheckCompletionEnabled
 	if (request.lowVerbosityEnabled !== undefined) settings.lowVerbosityEnabled = request.lowVerbosityEnabled
 	if (request.writePromptMetadataEnabled !== undefined) settings.writePromptMetadataEnabled = request.writePromptMetadataEnabled
 	if (request.autoApproveAllToggled !== undefined) settings.autoApproveAllToggled = request.autoApproveAllToggled

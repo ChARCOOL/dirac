@@ -72,7 +72,7 @@ export function getWorkflowCommands(
 
 // Regex for detecting slash commands in text
 // Must be at start of string OR preceded by whitespace to avoid matching URLs/paths
-// e.g., matches "/newtask" or "text /newtask" but not "http://example.com/newtask"
+// e.g., matches "/compact" or "text /compact" but not "http://example.com/compact"
 export const slashCommandRegex = /(^|\s)(\/[a-zA-Z0-9_.:@-]+)(?=\s|$)/
 export const slashCommandRegexGlobal = new RegExp(slashCommandRegex.source, "g")
 // Regex for detecting a slash command at the end of text (for deletion)
@@ -91,7 +91,7 @@ export function removeSlashCommand(text: string, position: number): { newText: s
 
 	if (matchEnd) {
 		// matchEnd[1] is the whitespace or empty string before the slash
-		// matchEnd[2] is the slash command (e.g., "/newtask")
+		// matchEnd[2] is the slash command (e.g., "/compact")
 		const slashCommand = matchEnd[2]
 		const newText = text.slice(0, position - slashCommand.length) + afterCursor.replace(" ", "") // removes the first space after the command
 		const newPosition = position - slashCommand.length

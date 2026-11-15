@@ -4,7 +4,7 @@ import { normalizeInferenceSpeed, normalizeOpenaiReasoningEffort } from "@shared
 import { calculateApiCostOpenAI, getModelInfoForInferenceSpeed } from "@utils/cost"
 import OpenAI from "openai"
 import { ChatCompletionReasoningEffort, ChatCompletionTool } from "openai/resources/chat/completions"
-import { MessageEvent as UndiciMessageEvent, WebSocket as UndiciWebSocket } from "undici"
+import { type CloseEvent, type ErrorEvent, MessageEvent as UndiciMessageEvent, WebSocket as UndiciWebSocket } from "undici"
 import { buildExternalBasicHeaders } from "@/services/EnvUtils"
 import { getErrorMessage } from "@/shared/errors"
 
@@ -123,14 +123,11 @@ export function buildResponseCreateParams(args: {
 	serviceTier?: OpenAIServiceTier
 }): OpenAI.Responses.ResponseCreateParamsStreaming {
 	const requestedEffort = normalizeOpenaiReasoningEffort(args.reasoningEffort)
-	const reasoning: { effort?: ChatCompletionReasoningEffort; summary: "auto"; context?: "all_turns" } | undefined =
-		requestedEffort === "none" && !args.reasoningContext
-			? undefined
-			: {
-					summary: "auto",
-					...(requestedEffort !== "none" ? { effort: requestedEffort as ChatCompletionReasoningEffort } : {}),
-					...(args.reasoningContext ? { context: args.reasoningContext } : {}),
-				}
+	const reasoning = {
+		...(requestedEffort !== "none" ? { summary: "auto" as const } : {}),
+		effort: requestedEffort as ChatCompletionReasoningEffort,
+		...(args.reasoningContext ? { context: args.reasoningContext } : {}),
+	}
 
 	return {
 		model: args.modelId,
@@ -149,7 +146,7 @@ export function buildResponseCreateParams(args: {
 			? {}
 			: { include: ["reasoning.encrypted_content"] satisfies OpenAI.Responses.ResponseIncludable[] }),
 		...(args.previousResponseId ? { previous_response_id: args.previousResponseId } : {}),
-		...(reasoning ? { reasoning: reasoning as any } : {}),
+		reasoning,
 	} as OpenAI.Responses.ResponseCreateParamsStreaming
 }
 
@@ -400,13 +397,13 @@ export class ResponsesWebsocketManager {
 				cleanup()
 				resolve(ws)
 			}
-			const handleError = () => {
+			const handleError = (event: ErrorEvent) => {
 				cleanup()
-				reject(new Error("Failed to open Responses websocket"))
+				reject(responsesWebsocketError("Failed to open Responses websocket", event))
 			}
-			const handleClose = () => {
+			const handleClose = (event: CloseEvent) => {
 				cleanup()
-				reject(new Error("Responses websocket closed before opening"))
+				reject(responsesWebsocketCloseError("Responses websocket closed before opening", event))
 			}
 			ws.addEventListener("open", handleOpen)
 			ws.addEventListener("error", handleError)
@@ -508,19 +505,16 @@ export class ResponsesWebsocketManager {
 			}
 		}
 
-		const handleError = () => {
-			const error: Error & { code?: string } = new Error("Responses websocket emitted an error event")
-			error.code = "websocket_error"
-			failure = error
+		const handleError = (event: ErrorEvent) => {
+			if (completed) return
+			failure = responsesWebsocketError("Responses websocket emitted an error event", event)
 			completed = true
 			wake()
 		}
 
-		const handleClose = () => {
+		const handleClose = (event: CloseEvent) => {
 			if (!completed) {
-				const error: Error & { code?: string } = new Error("Responses websocket closed during response stream")
-				error.code = "websocket_closed"
-				failure = error
+				failure = responsesWebsocketCloseError("Responses websocket closed during response stream", event)
 				completed = true
 				wake()
 			}
@@ -562,6 +556,28 @@ export class ResponsesWebsocketManager {
 			this.requestInFlight = false
 		}
 	}
+}
+
+// Deliberately capture only transport diagnostics, not the event target (socket/auth headers).
+export function responsesWebsocketError(message: string, event: { error?: Error; message?: string }): Error & { code: string } {
+	const cause = event.error
+	const detail = cause instanceof Error ? cause.message : event.message
+	return Object.assign(new Error(detail ? `${message}: ${detail}` : message, { cause }), { code: "websocket_error" })
+}
+
+export function responsesWebsocketCloseError(
+	message: string,
+	event: Pick<CloseEvent, "code" | "reason" | "wasClean">,
+): Error & { code: string; closeCode: number; closeReason: string; wasClean: boolean } {
+	return Object.assign(
+		new Error(`${message} (code ${event.code}, clean=${event.wasClean}${event.reason ? `, reason: ${event.reason}` : ""})`),
+		{
+			code: "websocket_closed",
+			closeCode: event.code,
+			closeReason: event.reason,
+			wasClean: event.wasClean,
+		},
+	)
 }
 
 export function shouldRetryWithFullContext(error: unknown, hadPreviousResponseId: boolean): boolean {

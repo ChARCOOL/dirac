@@ -273,22 +273,6 @@
     }
   },
   {
-    "name": "new_task",
-    "description": "Creates a replacement task from a complete standalone implementation handoff that you generate. The replacement task will not have access to this conversation.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "context": {
-          "type": "string",
-          "description": "Complete standalone implementation handoff for the replacement task. Include the objective, user intent, settled decisions, constraints, current state, findings, exact relevant files and symbols, completed work, and ordered next steps. The replacement task cannot access this conversation."
-        }
-      },
-      "required": [
-        "context"
-      ]
-    }
-  },
-  {
     "name": "read_file",
     "description": "Reads complete files or selected line ranges, including extracted text from rich files such as PDF, DOCX, notebooks, and spreadsheets. Text ranges are streamed so late ranges do not require loading an oversized file into memory. Prefer inspect_ast when source structure or symbol identity matters. For editable text/source files, set include_anchors: true to read exact raw source lines as standalone coordinates required by edit_file. Files over 50,000 lines or 20 MiB remain readable by range but do not support anchors, edit_file, or duplicate-read caching. Extracted rich-file and image content is read-only and cannot provide edit_file coordinates.",
     "input_schema": {
@@ -497,44 +481,48 @@
     }
   },
   {
-    "name": "use_subagents",
-    "description": "Run subagents in parallel.",
+    "name": "subagents",
+    "description": "Start a batch of subagents asynchronously. Returns each accepted stable ID and task header or its startup error, not completed results. Supply complete instructions: children do not receive the parent conversation. Use tasklets with the returned IDs to supervise them.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "subagents": {
+        "assignments": {
           "type": "array",
-          "description": "Subagents to run in parallel.",
+          "description": "Assignments to start concurrently; one assignment still uses a one-element array. Acceptance is not completion.",
           "items": {
             "type": "object",
             "properties": {
-              "task_title": {
+              "type": {
                 "type": "string",
-                "description": "Task header for user observability. No more than 5 words or 80 characters."
+                "enum": [
+                  "default"
+                ],
+                "description": "default: Use the main agent's current model settings."
               },
-              "prompt": {
+              "task_header": {
                 "type": "string",
-                "description": "Task for this subagent."
+                "minLength": 1,
+                "maxLength": 80,
+                "description": "Short assignment header, at most 5 words."
               },
-              "timeout": {
-                "type": "integer",
-                "description": "Timeout in seconds. Default: 600."
-              },
-              "include_history": {
-                "type": "boolean",
-                "description": "Include the main task conversation history."
+              "task_description": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Complete assignment instructions and necessary context; no parent conversation is copied."
               }
             },
             "required": [
-              "task_title",
-              "prompt"
+              "type",
+              "task_header",
+              "task_description"
             ],
             "additionalProperties": false
-          }
+          },
+          "minItems": 1
         }
       },
       "required": [
-        "subagents"
+        "assignments"
       ]
     }
   },

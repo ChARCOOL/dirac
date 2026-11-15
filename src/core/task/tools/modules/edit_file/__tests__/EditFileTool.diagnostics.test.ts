@@ -109,10 +109,8 @@ function createConfig() {
 		mode: "act",
 		strictPlanModeEnabled: false,
 		yoloModeToggled: true,
-		doubleCheckCompletionEnabled: false,
 		vscodeTerminalExecutionMode: "backgroundExec",
 		enableParallelToolCalling: true,
-		isSubagentExecution: true,
 		taskState,
 		messageState: {
 			getApiConversationHistory: sinon.stub().returns([]),
@@ -172,6 +170,7 @@ describe("EditFileTool.diagnostics", () => {
 		})
 
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					getDiagnostics: getDiagnosticsStub,

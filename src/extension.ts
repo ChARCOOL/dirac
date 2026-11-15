@@ -11,12 +11,13 @@ import { sendSettingsButtonClickedEvent } from "./core/controller/ui/subscribeTo
 import { sendWorktreesButtonClickedEvent } from "./core/controller/ui/subscribeToWorktreesButtonClicked"
 import { DiracWebviewProvider } from "./core/webview"
 import { createDiracAPI } from "./exports"
-import { initializeTestMode } from "./services/test/TestMode"
+import { initializeTestMode } from "./hosts/vscode/test/TestMode"
 import { DiracAskResponse } from "./shared/WebviewMessage"
-import "./utils/path"; // necessary to have access to String.prototype.toPosix
+import "./utils/path" // necessary to have access to String.prototype.toPosix
 import { isDev } from "@shared/config/environment"
 import type { ExtensionContext } from "vscode"
 import { HostProvider } from "@/hosts/host-provider"
+import { vscodeHostCapabilities } from "@/hosts/vscode/host-capabilities"
 import { vscodeHostBridgeClient } from "@/hosts/vscode/hostbridge/client/host-grpc-client"
 import { getErrorMessage, toError } from "@/shared/errors"
 import { createStorageContext } from "@/shared/storage/storage-context"
@@ -45,6 +46,7 @@ import {
 } from "./hosts/vscode/review/VscodeCommentReviewController"
 import { VscodeTerminalManager } from "./hosts/vscode/terminal/VscodeTerminalManager"
 import { VscodeDiffViewProvider } from "./hosts/vscode/VscodeDiffViewProvider"
+import { ReviewContextManager } from "./hosts/vscode/ReviewContextManager"
 import { VscodeDiracWebviewProvider } from "./hosts/vscode/VscodeWebviewProvider"
 import { exportVSCodeStorageToSharedFiles } from "./hosts/vscode/vscode-to-file-migration"
 import { ExtensionRegistryInfo } from "./registry"
@@ -153,31 +155,24 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	})()
 	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider))
-	// Register commands for Accept/Reject from CodeLens
+	// Editor-title commands resolve the viewed preview, not the foreground waiter.
+	const submitEditorReview = async (response: DiracAskResponse, uri?: vscode.Uri) => {
+		const request = ReviewContextManager.getRequest(uri)
+		if (!request) throw new Error("This editor has no actionable Dirac review request")
+		const task = DiracWebviewProvider.getInstance().controller?.task
+		if (!task || task.taskId !== request.taskId) throw new Error("The conversation owning this review is not active")
+		await task.submitCardResponse(request.cardId, response)
+	}
 	context.subscriptions.push(
-		vscode.commands.registerCommand("dirac.acceptEdit", async () => {
-			const sidebarInstance = DiracWebviewProvider.getInstance()
-			if (sidebarInstance.controller?.task) {
-				await sidebarInstance.controller.task.submitCardResponse("", DiracAskResponse.APPROVE)
-			}
-		}),
-	)
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand("dirac.saveWithMyChanges", async () => {
-			const sidebarInstance = DiracWebviewProvider.getInstance()
-			if (sidebarInstance.controller?.task) {
-				await sidebarInstance.controller.task.submitCardResponse("", DiracAskResponse.APPROVE)
-			}
-		}),
-	)
-	context.subscriptions.push(
-		vscode.commands.registerCommand("dirac.rejectEdit", async () => {
-			const sidebarInstance = DiracWebviewProvider.getInstance()
-			if (sidebarInstance.controller?.task) {
-				await sidebarInstance.controller.task.submitCardResponse("", DiracAskResponse.REJECT)
-			}
-		}),
+		vscode.commands.registerCommand("dirac.acceptEdit", (uri?: vscode.Uri) =>
+			submitEditorReview(DiracAskResponse.APPROVE, uri),
+		),
+		vscode.commands.registerCommand("dirac.saveWithMyChanges", (uri?: vscode.Uri) =>
+			submitEditorReview(DiracAskResponse.APPROVE, uri),
+		),
+		vscode.commands.registerCommand("dirac.rejectEdit", (uri?: vscode.Uri) =>
+			submitEditorReview(DiracAskResponse.REJECT, uri),
+		),
 	)
 
 	const handleUri = async (uri: vscode.Uri) => {
@@ -626,7 +621,7 @@ async function setupHostProvider(context: ExtensionContext, globalStorageFsPath:
 	const createCommentReview = () => getVscodeCommentReviewController()
 	const createTerminalManager = () => new VscodeTerminalManager()
 	const getEnvironmentVariables = async (cwd: string) => {
-		const { getPythonEnvironmentVariables } = await import("@utils/python")
+		const { getPythonEnvironmentVariables } = await import("@/hosts/vscode/python")
 		return await getPythonEnvironmentVariables(vscode.Uri.file(cwd))
 	}
 
@@ -660,6 +655,7 @@ async function setupHostProvider(context: ExtensionContext, globalStorageFsPath:
 
 		getEnvironmentVariables,
 		() => vscode.workspace.isTrusted,
+		vscodeHostCapabilities,
 	)
 }
 

@@ -22,6 +22,7 @@ export abstract class ProtoBusClient {
 		request: TRequest,
 		encodeRequest: (_: TRequest) => unknown,
 		decodeResponse: (_: { [key: string]: any }) => TResponse,
+		requestTimeoutMs?: number,
 	): Promise<TResponse> {
 		return new Promise((resolve, reject) => {
 			const requestId = uuidv4()
@@ -30,6 +31,7 @@ export abstract class ProtoBusClient {
 			const handleResponse = (event: MessageEvent) => {
 				const message = event.data
 				if (message.type === "grpc_response" && message.grpc_response?.request_id === requestId) {
+					clearTimeout(timeout)
 					// Remove listener once we get our response
 					window.removeEventListener("message", handleResponse)
 					if (message.grpc_response.message) {
@@ -43,6 +45,13 @@ export abstract class ProtoBusClient {
 				}
 			}
 
+			const timeout =
+				requestTimeoutMs === undefined
+					? undefined
+					: setTimeout(() => {
+							window.removeEventListener("message", handleResponse)
+							reject(new Error(`${methodName} timed out; retry or continue in chat`))
+						}, requestTimeoutMs)
 			window.addEventListener("message", handleResponse)
 			PLATFORM_CONFIG.postMessage({
 				type: "grpc_request",

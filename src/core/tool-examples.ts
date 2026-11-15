@@ -12,11 +12,10 @@ export const TOOL_EXAMPLES: Partial<Record<DiracDefaultTool, string>> = {
 	[DiracDefaultTool.EXECUTE_COMMAND]: '{"commands": ["ls -R"]}',
 	[DiracDefaultTool.INSPECT_AST]: '{"operation": "implementation", "paths": ["src/main.ts"], "symbols": ["main"]}',
 	[DiracDefaultTool.LIST_FILES]: '{"paths": ["src"]}',
-	[DiracDefaultTool.NEW_TASK]: '{"context": "Detailed summary of the conversation..."}',
 	[DiracDefaultTool.FILE_READ]: '{"paths": ["src/main.ts"]}',
 	[DiracDefaultTool.SEARCH]: '{"paths": ["src"], "regex": "TODO"}',
-	[DiracDefaultTool.USE_SUBAGENTS]:
-		'{"subagents": [{"prompt": "..."}, {"prompt": "...", "timeout": 120, "include_history": true}]}',
+	[DiracDefaultTool.SUBAGENTS]:
+		'{"assignments": [{"type": "default", "task_header": "Inspect configuration", "task_description": "Inspect the configuration and report concrete issues without modifying files."}]}',
 	[DiracDefaultTool.USE_SKILL]: '{"skill_name": "skill-name"}',
 	[DiracDefaultTool.LIST_SKILLS]: "{}",
 	[DiracDefaultTool.FILE_NEW]: '{"path": "src/new-file.ts", "content": "export const x = 1"}',

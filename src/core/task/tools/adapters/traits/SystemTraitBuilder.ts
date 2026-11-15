@@ -5,15 +5,17 @@ import * as os from "os"
 import { HostProvider } from "@/hosts/host-provider"
 import { ExtensionRegistryInfo } from "@/registry"
 import { DiracDefaultTool } from "@/shared/tools"
-import type { ISystemTrait, SystemCommandResult } from "../../interfaces/IToolEnvironment"
+import { getTaskScopedStateKey } from "@shared/taskletId"
+import type { ISystemTrait } from "../../interfaces/IToolEnvironment"
 import type { TaskConfig } from "../../types/TaskConfig"
 
 // Builds the system trait — command execution, file search, system info, URL opening.
 export function buildSystemTrait(
 	config: TaskConfig,
-	executeCommandFn: (command: string, options?: { timeout?: number }) => Promise<SystemCommandResult>,
+	executeCommandFn: ISystemTrait["executeCommand"],
 ): ISystemTrait {
 	return {
+		captureCommandSandbox: config.callbacks.captureCommandSandbox,
 		executeCommand: async (command, options) => {
 			if (config.mode !== "act") return executeCommandFn(command, options)
 			return config.callbacks.withMutationAuthorization(DiracDefaultTool.EXECUTE_COMMAND, async () => {
@@ -30,7 +32,7 @@ export function buildSystemTrait(
 				regex,
 				options?.filePattern,
 				config.services.diracIgnoreController,
-				config.ulid,
+				getTaskScopedStateKey(config.ulid, config.storageAddress),
 				options?.contextLines,
 				options?.excludeFilePatterns,
 				options?.includeAnchors,
@@ -53,6 +55,8 @@ export function buildSystemTrait(
 			}
 		},
 		openUrl: async (url) => await openUrlInBrowser(url),
-		showNotification: (options) => void showSystemNotification(options),
+		showNotification: (options) => {
+			if (config.executionProfile !== "tasklet") void showSystemNotification(options)
+		},
 	}
 }

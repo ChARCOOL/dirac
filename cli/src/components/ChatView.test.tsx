@@ -5,13 +5,51 @@
  * the input field is properly hidden before the app terminates.
  */
 
+import { DiracMessageType, TaskStatus, UIActionButtonType } from "@shared/ExtensionMessage"
+import { DiracAskResponse } from "@shared/WebviewMessage"
 import { Text } from "ink"
 import { render } from "ink-testing-library"
 import React from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QUOTES } from "@/shared/quotes"
 import { version as CLI_VERSION } from "../../package.json"
+import { useTaskContext, useTaskState } from "../context/TaskContext"
+import { useIsSpinnerActive } from "../hooks/useStateSubscriber"
 import { ChatView } from "./ChatView"
+
+const capturedInput = vi.hoisted(() => ({ handler: null as ((input: string, key: import("ink").Key) => void) | null }))
+vi.mock("ink", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("ink")>()
+	return {
+		...actual,
+		useInput: (handler: (input: string, key: import("ink").Key) => void) => {
+			capturedInput.handler = handler
+		},
+	}
+})
+
+let forceRuntimeProcessing = false
+vi.mock("../hooks/useChatTask", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../hooks/useChatTask")>()
+	return {
+		useChatTask: (props: Parameters<typeof actual.useChatTask>[0]) => {
+			const state = actual.useChatTask(props)
+			return { ...state, isProcessing: forceRuntimeProcessing || state.isProcessing }
+		},
+	}
+})
+
+type ChatInputProps = Parameters<typeof import("../hooks/useChatInputHandler").useChatInputHandler>[0]
+let latestChatInputProps: ChatInputProps
+vi.mock("../hooks/useChatInputHandler", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../hooks/useChatInputHandler")>()
+	return {
+		useChatInputHandler: (props: ChatInputProps) => {
+			latestChatInputProps = props
+			return actual.useChatInputHandler(props)
+		},
+	}
+})
 
 // Helper to wait for async state updates
 const delay = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -34,8 +72,8 @@ vi.mock("ink-picture", () => ({
 	TerminalInfoProvider: ({ children }: any) => children,
 }))
 
-// Mock vscode-shim shutdownEvent
-vi.mock("../vscode-shim", () => ({
+// Mock the CLI shutdownEvent
+vi.mock("../utils/shutdown", () => ({
 	shutdownEvent: {
 		event: (listener: () => void) => {
 			shutdownMockState.listeners.push(listener)
@@ -57,7 +95,11 @@ vi.mock("../context/TaskContext", () => ({
 		mode: "act",
 	})),
 	useTaskContext: vi.fn(() => ({
+		displayMessages: [],
+		observationEpoch: 0,
+		appendLocalObservation: vi.fn(),
 		controller: null,
+		setLastError: vi.fn(),
 	})),
 }))
 
@@ -73,6 +115,7 @@ vi.mock("../hooks/useStateSubscriber", () => ({
 vi.mock("@/core/storage/StateManager", () => ({
 	StateManager: {
 		get: vi.fn(() => ({
+			subscribe: vi.fn(() => () => { }),
 			getGlobalSettingsKey: vi.fn((key: string) => {
 				if (key === "mode") return "act"
 				if (key === "yoloModeToggled") return false
@@ -133,19 +176,23 @@ vi.mock("../utils/file-search", () => ({
 }))
 
 vi.mock("../utils/slash-commands", () => ({
+	executeStandaloneLocalSlashCommand: vi.fn(() => false),
 	extractSlashQuery: vi.fn(() => ({ inSlashMode: false, query: "", slashIndex: -1 })),
 	filterCommands: vi.fn(() => []),
 	insertSlashCommand: vi.fn((text: string) => text),
 	sortCommandsWorkflowsFirst: vi.fn((cmds: unknown[]) => cmds),
+	mergeCliSlashCommands: vi.fn((commands: unknown[]) => commands),
 }))
 
 vi.mock("../utils/input", () => ({
 	isMouseEscapeSequence: vi.fn(() => false),
+	isTerminalResponseSequence: vi.fn(() => false),
 }))
 
 vi.mock("../utils/parser", () => ({
 	jsonParseSafe: vi.fn((_text: string, defaultValue: unknown) => defaultValue),
 	parseImagesFromInput: vi.fn((text: string) => ({ prompt: text, imagePaths: [] })),
+	processImagePaths: vi.fn(async (images: string[]) => images),
 }))
 
 vi.mock("../utils/display", () => ({
@@ -180,6 +227,7 @@ vi.mock("@shared/getApiMetrics", () => ({
 vi.mock("child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof import("child_process")>()),
 	exec: vi.fn(),
+	execFile: vi.fn(),
 	execSync: vi.fn(() => "main"),
 }))
 
@@ -192,6 +240,59 @@ vi.mock("@/services/telemetry", () => ({
 
 // Helper to create a typed mock for onExit
 const createExitMock = (): ExitMockFn => vi.fn() as ExitMockFn
+
+describe("ChatView approve-all shortcut", () => {
+	beforeEach(() => vi.clearAllMocks())
+	afterEach(() => vi.restoreAllMocks())
+
+	it("commits disable and re-enable to the active task before persisting and publishing", async () => {
+		const { StateManager } = await import("@/core/storage/StateManager")
+		const stateManager = StateManager.get()
+		let enabled = true
+		const applyWorkingConfigurationUpdate = vi.fn(async (patch, persist) => {
+			expect(stateManager.setGlobalState).toHaveBeenCalledTimes(enabled ? 0 : 1)
+			await persist()
+			enabled = patch.settings.autoApproveAllToggled
+		})
+		const controller = {
+			task: { getWorkingConfiguration: () => ({ settings: { autoApproveAllToggled: enabled } }), applyWorkingConfigurationUpdate },
+			postStateToWebview: vi.fn(async () => { }),
+		}
+		vi.spyOn(StateManager, "get").mockReturnValue(stateManager)
+		const view = render(<ChatView controller={controller} />)
+		await delay()
+		await Promise.all([latestChatInputProps.toggleAutoApproveAll(), latestChatInputProps.toggleAutoApproveAll()])
+		expect(enabled).toBe(true)
+		expect(applyWorkingConfigurationUpdate.mock.calls.map(([patch]) => patch.settings.autoApproveAllToggled)).toEqual([false, true])
+		expect(stateManager.setGlobalState).toHaveBeenNthCalledWith(1, "autoApproveAllToggled", false)
+		expect(stateManager.setGlobalState).toHaveBeenNthCalledWith(2, "autoApproveAllToggled", true)
+		expect(controller.postStateToWebview).toHaveBeenCalledTimes(2)
+		view.unmount()
+	})
+
+	it("does not persist or publish a rejected active-task update", async () => {
+		const { StateManager } = await import("@/core/storage/StateManager")
+		const stateManager = StateManager.get()
+		vi.spyOn(StateManager, "get").mockReturnValue(stateManager)
+		const controller = {
+			task: {
+				getWorkingConfiguration: () => ({ settings: { autoApproveAllToggled: false } }),
+				applyWorkingConfigurationUpdate: vi.fn().mockRejectedValue(new Error("configuration rejected")),
+			},
+			postStateToWebview: vi.fn(),
+		}
+		const view = render(<ChatView controller={controller} />)
+		await delay()
+		const setLastError = vi.mocked(useTaskContext).mock.results.at(-1)!.value.setLastError
+		const frameBefore = view.lastFrame()
+		await latestChatInputProps.toggleAutoApproveAll()
+		expect(stateManager.setGlobalState).not.toHaveBeenCalled()
+		expect(controller.postStateToWebview).not.toHaveBeenCalled()
+		expect(setLastError).toHaveBeenCalledWith("configuration rejected")
+		expect(view.lastFrame()).toEqual(frameBefore)
+		view.unmount()
+	})
+})
 
 describe("ChatView Exit and Cleanup", () => {
 	let mockOnExit: ExitMockFn
@@ -321,4 +422,420 @@ describe("ChatView UI State During Exit", () => {
 		// Input should be hidden
 		expect(frameAfter).not.toContain("Input:")
 	})
+})
+describe("ChatView conversation follow-ups", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		shutdownMockState.reset()
+	})
+
+	it.each([
+		TaskStatus.COMPLETED,
+		TaskStatus.CANCELLED,
+		TaskStatus.IDLE,
+	])("submits input to the existing %s conversation rather than starting a new task", async (taskStatus) => {
+		const task = {
+			taskId: "original-task",
+			canAcceptSteeringMessage: () => false,
+			submitCardResponse: vi.fn(async () => undefined),
+		}
+		const controller = {
+			task,
+			getPromptHistory: vi.fn(async () => []),
+			initTask: vi.fn(),
+			prepareTaskForFollowUp: vi.fn(async () => task),
+		}
+		vi.mocked(useTaskState).mockReturnValue({ diracMessages: [], mode: "act", taskStatus } as any)
+		vi.mocked(useTaskContext).mockReturnValue({
+			displayMessages: vi.mocked(useTaskState)().diracMessages ?? [],
+			observationEpoch: 0,
+			appendLocalObservation: vi.fn(),
+			controller,
+			setLastError: vi.fn(),
+		} as any)
+		const { unmount } = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleSubmit("follow up using prior context", [])
+		expect(controller.prepareTaskForFollowUp).toHaveBeenCalledOnce()
+		expect(task.submitCardResponse).toHaveBeenCalledWith(
+			"",
+			DiracAskResponse.MESSAGE,
+			"follow up using prior context",
+			undefined,
+		)
+		expect(controller.initTask).not.toHaveBeenCalled()
+		unmount()
+	})
+
+	it.each([
+		UIActionButtonType.APPROVE,
+		UIActionButtonType.PROCEED,
+		UIActionButtonType.RETRY,
+	])("routes the cancelled task's %s action as lifecycle input to the restored task", async (action) => {
+		const oldTask = { taskId: "saved-task", canAcceptSteeringMessage: () => false, submitCardResponse: vi.fn() }
+		const restored = { taskId: "saved-task", submitCardResponse: vi.fn(async () => undefined) }
+		const controller = {
+			task: oldTask,
+			getPromptHistory: vi.fn(async () => []),
+			initTask: vi.fn(),
+			prepareTaskForFollowUp: vi.fn(async () => restored),
+		}
+		vi.mocked(useTaskState).mockReturnValue({
+			diracMessages: [],
+			mode: "act",
+			taskStatus: TaskStatus.CANCELLED,
+			uiActionState: {
+				globalButtons: [{ label: "Resume", action, primary: true }],
+				cardButtons: [],
+				sendingDisabled: false,
+			},
+		} as any)
+		vi.mocked(useTaskContext).mockReturnValue({
+			displayMessages: vi.mocked(useTaskState)().diracMessages ?? [],
+			observationEpoch: 0,
+			appendLocalObservation: vi.fn(),
+			controller,
+			setLastError: vi.fn(),
+		} as any)
+		const { unmount } = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleButtonAction(action, true)
+		expect(controller.prepareTaskForFollowUp).toHaveBeenCalledOnce()
+		expect(restored.submitCardResponse).toHaveBeenCalledExactlyOnceWith("", DiracAskResponse.MESSAGE, undefined, undefined)
+		expect(oldTask.submitCardResponse).not.toHaveBeenCalled()
+		expect(controller.initTask).not.toHaveBeenCalled()
+		unmount()
+	})
+
+	it("submits a reopened completed chat to the restored backing task", async () => {
+		const oldTask = { taskId: "saved-task", canAcceptSteeringMessage: () => false, submitCardResponse: vi.fn() }
+		const restored = { taskId: "saved-task", submitCardResponse: vi.fn(async () => undefined) }
+		const controller = {
+			task: oldTask,
+			getPromptHistory: vi.fn(async () => []),
+			initTask: vi.fn(),
+			prepareTaskForFollowUp: vi.fn(async () => restored),
+		}
+		vi.mocked(useTaskState).mockReturnValue({ diracMessages: [], mode: "act", taskStatus: TaskStatus.COMPLETED } as any)
+		vi.mocked(useTaskContext).mockReturnValue({
+			displayMessages: vi.mocked(useTaskState)().diracMessages ?? [],
+			observationEpoch: 0,
+			appendLocalObservation: vi.fn(),
+			controller,
+			setLastError: vi.fn(),
+		} as any)
+		const { unmount } = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleSubmit("continue tomorrow", ["image.png"])
+		expect(restored.submitCardResponse).toHaveBeenCalledWith("", DiracAskResponse.MESSAGE, "continue tomorrow", ["image.png"])
+		expect(oldTask.submitCardResponse).not.toHaveBeenCalled()
+		expect(controller.initTask).not.toHaveBeenCalled()
+		unmount()
+	})
+
+	it("starts a task only when there is no active conversation", async () => {
+		const controller = { getPromptHistory: vi.fn(async () => []), initTask: vi.fn(async () => undefined) }
+		vi.mocked(useTaskState).mockReturnValue({ diracMessages: [], mode: "act", taskStatus: TaskStatus.IDLE } as any)
+		vi.mocked(useTaskContext).mockReturnValue({
+			displayMessages: vi.mocked(useTaskState)().diracMessages ?? [],
+			observationEpoch: 0,
+			appendLocalObservation: vi.fn(),
+			controller,
+			setLastError: vi.fn(),
+		} as any)
+		const { unmount } = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleSubmit("new conversation", [])
+		expect(controller.initTask).toHaveBeenCalledWith("new conversation", undefined)
+		unmount()
+	})
+})
+
+describe("ChatView active input", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		shutdownMockState.reset()
+		forceRuntimeProcessing = false
+		vi.mocked(useIsSpinnerActive).mockReturnValue({ isActive: false, startTime: undefined })
+	})
+
+	function activeChat(overrides: Record<string, unknown> = {}) {
+		const task = {
+			taskId: "sleeping-root",
+			canAcceptSteeringMessage: vi.fn(() => true),
+			enqueueSteeringMessage: vi.fn(async (_text: string): Promise<void> => undefined),
+			submitCardResponse: vi.fn(async (): Promise<void> => undefined),
+		}
+		const controller = {
+			task,
+			getPromptHistory: vi.fn(async () => []),
+			prepareTaskForFollowUp: vi.fn(),
+			initTask: vi.fn(),
+			sendGoalMessage: vi.fn(async () => undefined),
+		}
+		const setLastError = vi.fn()
+		vi.mocked(useTaskState).mockReturnValue({
+			diracMessages: [],
+			mode: "act",
+			taskStatus: TaskStatus.EXECUTING_TOOL,
+			...overrides,
+		} as any)
+		vi.mocked(useTaskContext).mockReturnValue({
+			displayMessages: vi.mocked(useTaskState)().diracMessages ?? [],
+			observationEpoch: 0,
+			appendLocalObservation: vi.fn(),
+			controller,
+			setLastError,
+		} as any)
+		return { task, controller, setLastError }
+	}
+
+	it.each([
+		["/agent", false],
+		["/agents", false],
+		["/agent", true],
+		["/agents", true],
+	] as const)("rejects attachments for local %s without answering an interaction (%s)", async (command, pendingApproval) => {
+		const card = {
+			id: "approval",
+			ts: 1,
+			content: {
+				type: DiracMessageType.CARD,
+				card: { status: "pending", toolName: "execute_command", content: "command", requireApproval: true },
+			},
+		}
+		const { task, controller, setLastError } = activeChat({
+			diracMessages: pendingApproval ? [card] : [],
+			uiActionState: { activeCardId: pendingApproval ? card.id : undefined, globalButtons: [], cardButtons: [] },
+		})
+		const app = render(<ChatView controller={controller} />)
+		try {
+			const draft = `"image.png" ${command}`
+			latestChatInputProps.setTextInput(draft)
+			await delay()
+			await latestChatInputProps.handleSubmit(command, ["image.png"])
+			expect(task.submitCardResponse).not.toHaveBeenCalled()
+			expect(controller.initTask).not.toHaveBeenCalled()
+			expect(controller.prepareTaskForFollowUp).not.toHaveBeenCalled()
+			expect(latestChatInputProps.textInputRef.current).toBe(draft)
+			expect(setLastError).toHaveBeenLastCalledWith(expect.stringContaining(`${command} is a local command`))
+		} finally {
+			app.unmount()
+		}
+	})
+
+	it("routes Enter through the input handler while the ordinary root is sleeping and processing", async () => {
+		forceRuntimeProcessing = true
+		vi.mocked(useIsSpinnerActive).mockReturnValue({ isActive: true, startTime: undefined })
+		const { task, controller } = activeChat()
+		const app = render(<ChatView controller={controller} />)
+		latestChatInputProps.setTextInput("wake up with this user text")
+		latestChatInputProps.setCursorPos(27)
+		await delay()
+		capturedInput.handler!("\r", { return: true } as import("ink").Key)
+		await delay()
+		expect(task.submitCardResponse).toHaveBeenCalledWith(
+			"",
+			DiracAskResponse.MESSAGE,
+			"wake up with this user text",
+			undefined,
+		)
+		expect(controller.prepareTaskForFollowUp).not.toHaveBeenCalled()
+		expect(controller.initTask).not.toHaveBeenCalled()
+		app.unmount()
+	})
+
+	it("expands pasted input and forwards images on the active root", async () => {
+		const { task, controller } = activeChat()
+		const app = render(<ChatView controller={controller} />)
+		latestChatInputProps.setPastedTexts(new Map([[1, "actual pasted guidance"]]))
+		await delay()
+		await latestChatInputProps.handleSubmit("[Pasted text #1 +2 lines]", ["image.png"])
+		expect(task.submitCardResponse).toHaveBeenCalledWith("", DiracAskResponse.MESSAGE, "actual pasted guidance", [
+			"image.png",
+		])
+		expect(controller.prepareTaskForFollowUp).not.toHaveBeenCalled()
+		app.unmount()
+	})
+
+	it("blocks duplicate in-flight input and accepts another message after settlement", async () => {
+		const { task, controller } = activeChat()
+		let release!: () => void
+		task.submitCardResponse.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+		)
+		const app = render(<ChatView controller={controller} />)
+		const first = latestChatInputProps.handleSubmit("first", [])
+		await delay()
+		await latestChatInputProps.handleSubmit("duplicate", [])
+		expect(task.submitCardResponse).toHaveBeenCalledTimes(1)
+		release()
+		await first
+		await latestChatInputProps.handleSubmit("second", [])
+		expect(task.submitCardResponse).toHaveBeenCalledTimes(2)
+		app.unmount()
+	})
+
+	it("releases the submission latch after failure without clearing input", async () => {
+		const { task, controller, setLastError } = activeChat()
+		task.submitCardResponse.mockRejectedValueOnce(new Error("queue failed"))
+		const app = render(<ChatView controller={controller} />)
+		latestChatInputProps.setTextInput("keep my input")
+		await delay()
+		await latestChatInputProps.handleSubmit("keep my input", [])
+		expect(latestChatInputProps.textInputRef.current).toBe("keep my input")
+		expect(setLastError).toHaveBeenLastCalledWith(expect.stringContaining("queue failed"))
+		await latestChatInputProps.handleSubmit("retry", [])
+		expect(task.submitCardResponse).toHaveBeenCalledTimes(2)
+		app.unmount()
+	})
+
+	it("does not bypass runtime guards when the task cannot accept steering", async () => {
+		forceRuntimeProcessing = true
+		const { task, controller } = activeChat()
+		task.canAcceptSteeringMessage.mockReturnValue(false)
+		const app = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleSubmit("not accepted", [])
+		expect(task.submitCardResponse).not.toHaveBeenCalled()
+		expect(controller.prepareTaskForFollowUp).not.toHaveBeenCalled()
+		app.unmount()
+	})
+
+	it.each([false, true])("routes Goal guidance or an actual shared root interaction (interaction: %s)", async (interaction) => {
+		const card = {
+			id: "goal-interaction",
+			ts: 1,
+			content: {
+				type: DiracMessageType.CARD,
+				card: {
+					status: "pending",
+					toolName: "execute_command",
+					content: "question",
+					requireFeedback: true,
+				},
+			},
+		}
+		const { task, controller } = activeChat({
+			goal: { id: "goal", status: "waiting" },
+			diracMessages: interaction ? [card] : [],
+			uiActionState: { activeCardId: interaction ? card.id : undefined, globalButtons: [], cardButtons: [] },
+		})
+		const app = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleSubmit("goal guidance", [])
+		if (interaction) {
+			expect(task.submitCardResponse).toHaveBeenCalledWith(
+				card.id,
+				DiracAskResponse.MESSAGE,
+				"goal guidance",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+			)
+			expect(controller.sendGoalMessage).not.toHaveBeenCalled()
+		} else {
+			expect(controller.sendGoalMessage).toHaveBeenCalledWith("goal", "goal guidance")
+			expect(task.submitCardResponse).not.toHaveBeenCalled()
+		}
+		app.unmount()
+	})
+
+	it.each([
+		["1", DiracAskResponse.APPROVE, "approve"],
+		["2", DiracAskResponse.APPROVE, "allow-network"],
+		["3", DiracAskResponse.APPROVE, "allow-files"],
+		["4", DiracAskResponse.REJECT, "reject"],
+	])("routes command shortcut %s with its exact typed choice", async (shortcut, responseType, choiceId) => {
+		const card = {
+			id: "command-approval",
+			ts: 1,
+			content: {
+				type: DiracMessageType.CARD,
+				card: {
+					id: "command-approval",
+					status: "waiting_for_input",
+					requireApproval: true,
+					commandApprovalChoices: [
+						{ id: "approve", label: "Approve this command" },
+						{ id: "allow-network", label: "Approve + allow network access for this task" },
+						{ id: "allow-files", label: "Approve + allow file writes for this task" },
+						{ id: "reject", label: "Reject" },
+					],
+				},
+			},
+		}
+		const { task, controller } = activeChat({
+			diracMessages: [card],
+			uiActionState: { activeCardId: card.id, globalButtons: [], cardButtons: [] },
+		})
+		const app = render(<ChatView controller={controller} />)
+		expect(latestChatInputProps.handleAskShortcuts("5", {}, "")).toBe(false)
+		latestChatInputProps.setTextInput("Unrelated composer draft")
+		await delay()
+		expect(latestChatInputProps.handleAskShortcuts(shortcut, {}, "draft")).toBe(false)
+		expect(latestChatInputProps.handleAskShortcuts(shortcut, {}, "")).toBe(true)
+		await delay()
+		expect(task.submitCardResponse).toHaveBeenCalledExactlyOnceWith(
+			card.id, responseType, undefined, undefined, undefined, undefined, choiceId,
+		)
+		expect(latestChatInputProps.textInputRef.current).toBe("Unrelated composer draft")
+		await latestChatInputProps.handleSubmit("Unrelated composer draft", [])
+		expect(task.enqueueSteeringMessage).toHaveBeenCalledExactlyOnceWith("Unrelated composer draft")
+		expect(task.submitCardResponse).toHaveBeenCalledTimes(1)
+		app.unmount()
+	})
+
+	it.each([
+		[false, "yes"], [false, "no"], [false, "guidance"], [true, "yes"], [true, "no"], [true, "guidance"],
+	] as const)("sends permission-wait guidance without approving or rejecting (Goal: %s, text: %s)", async (withGoal, text) => {
+		const card = {
+			id: "approval",
+			ts: 1,
+			content: {
+				type: DiracMessageType.CARD,
+				card: {
+					status: "pending",
+					toolName: "execute_command",
+					content: "command",
+					requireApproval: true,
+				},
+			},
+		}
+		const { task, controller } = activeChat({
+			diracMessages: [card],
+			goal: withGoal ? { id: "goal", status: "waiting" } : undefined,
+			uiActionState: { activeCardId: card.id, globalButtons: [], cardButtons: [] },
+		})
+		const app = render(<ChatView controller={controller} />)
+		await latestChatInputProps.handleSubmit(text, [])
+		expect(task.submitCardResponse).not.toHaveBeenCalled()
+		if (withGoal) expect(controller.sendGoalMessage).toHaveBeenCalledWith("goal", text)
+		else expect(task.enqueueSteeringMessage).toHaveBeenCalledWith(text)
+		expect(controller.prepareTaskForFollowUp).not.toHaveBeenCalled()
+		app.unmount()
+	})
+	it("preserves edits made during permission guidance and retains failed drafts for retry", async () => {
+		const card = { id: "approval", ts: 1, content: { type: DiracMessageType.CARD, card: { status: "pending", requireApproval: true } } }
+		const { task, controller, setLastError } = activeChat({ diracMessages: [card], uiActionState: { activeCardId: card.id, globalButtons: [], cardButtons: [] } })
+		let release!: () => void
+		task.enqueueSteeringMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve }))
+		const app = render(<ChatView controller={controller} />)
+		try {
+			latestChatInputProps.setTextInput("First guidance")
+			await delay()
+			const sending = latestChatInputProps.handleSubmit("First guidance", [])
+			latestChatInputProps.setTextInput("Edited guidance")
+			await delay()
+			release()
+			await sending
+			expect(latestChatInputProps.textInputRef.current).toBe("Edited guidance")
+			task.enqueueSteeringMessage.mockRejectedValueOnce(new Error("Guidance rejected"))
+			await latestChatInputProps.handleSubmit("Edited guidance", [])
+			expect(latestChatInputProps.textInputRef.current).toBe("Edited guidance")
+			expect(setLastError).toHaveBeenLastCalledWith(expect.stringContaining("Guidance rejected"))
+			await latestChatInputProps.handleSubmit("Edited guidance", [])
+			expect(task.enqueueSteeringMessage).toHaveBeenCalledTimes(3)
+			expect(task.submitCardResponse).not.toHaveBeenCalled()
+		} finally { app.unmount() }
+	})
+
 })

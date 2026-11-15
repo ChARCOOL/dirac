@@ -1,0 +1,248 @@
+{
+	"title": "How the architecture board works",
+	"summary": "Reported compound-board wrapping and route-backtracking case, with source references and review state removed.",
+	"nodes": [
+		{
+			"id": "conversation",
+			"kind": "group",
+			"label": "Foreground conversation"
+		},
+		{
+			"id": "task",
+			"kind": "component",
+			"label": "Owning Task / Goal",
+			"parentId": "conversation"
+		},
+		{
+			"id": "tool",
+			"kind": "component",
+			"label": "architecture_diagram",
+			"parentId": "conversation"
+		},
+		{
+			"id": "navigation",
+			"kind": "component",
+			"label": "Open diagram card",
+			"parentId": "conversation"
+		},
+		{
+			"id": "host",
+			"kind": "group",
+			"label": "Extension host & persistence"
+		},
+		{
+			"id": "controller",
+			"kind": "class",
+			"label": "Board controller",
+			"parentId": "host"
+		},
+		{
+			"id": "panel",
+			"kind": "component",
+			"label": "VS Code panel",
+			"parentId": "host"
+		},
+		{
+			"id": "storage",
+			"kind": "database",
+			"label": "Task-local version store",
+			"parentId": "host"
+		},
+		{
+			"id": "delivery",
+			"kind": "class",
+			"label": "Feedback delivery",
+			"parentId": "host"
+		},
+		{
+			"id": "webview",
+			"kind": "group",
+			"label": "Standalone board webview"
+		},
+		{
+			"id": "board",
+			"kind": "component",
+			"label": "Board & version panes",
+			"parentId": "webview"
+		},
+		{
+			"id": "canvas",
+			"kind": "component",
+			"label": "DiagramCanvas / React Flow",
+			"parentId": "webview"
+		},
+		{
+			"id": "layout",
+			"kind": "component",
+			"label": "ELK layout worker",
+			"parentId": "webview"
+		},
+		{
+			"id": "presentation",
+			"kind": "class",
+			"label": "PresentationSaves",
+			"parentId": "webview"
+		},
+		{
+			"id": "reviews",
+			"kind": "class",
+			"label": "CommentReviews / SendFeedback",
+			"parentId": "webview"
+		},
+		{
+			"id": "client",
+			"kind": "api_endpoint",
+			"label": "BoardClient RPC",
+			"parentId": "webview"
+		}
+	],
+	"edges": [
+		{
+			"id": "task-tool",
+			"kind": "api_call",
+			"source": "task",
+			"target": "tool",
+			"label": "Invoke diagram operation"
+		},
+		{
+			"id": "tool-storage",
+			"kind": "api_call",
+			"source": "tool",
+			"target": "storage",
+			"label": "Publish / fetch via environment"
+		},
+		{
+			"id": "tool-navigation",
+			"kind": "data_flow",
+			"source": "tool",
+			"target": "navigation",
+			"label": "Display creates Open action"
+		},
+		{
+			"id": "navigation-controller",
+			"kind": "api_call",
+			"source": "navigation",
+			"target": "controller",
+			"label": "User clicks Open"
+		},
+		{
+			"id": "publication-refresh",
+			"kind": "data_flow",
+			"source": "tool",
+			"target": "controller",
+			"label": "Publication event: latest only"
+		},
+		{
+			"id": "controller-panel",
+			"kind": "api_call",
+			"source": "controller",
+			"target": "panel",
+			"label": "Create / reveal / refresh"
+		},
+		{
+			"id": "panel-board",
+			"kind": "data_flow",
+			"source": "panel",
+			"target": "board",
+			"label": "Load bundle; notify changes"
+		},
+		{
+			"id": "board-canvas",
+			"kind": "aggregation",
+			"source": "board",
+			"target": "canvas",
+			"label": "DiagramPane ×1 or ×2"
+		},
+		{
+			"id": "board-client",
+			"kind": "api_call",
+			"source": "board",
+			"target": "client",
+			"label": "Read / refresh selection"
+		},
+		{
+			"id": "client-controller",
+			"kind": "api_call",
+			"source": "client",
+			"target": "controller",
+			"label": "Task-scoped ArchitectureService"
+		},
+		{
+			"id": "controller-storage",
+			"kind": "api_call",
+			"source": "controller",
+			"target": "storage",
+			"label": "Read versions / mutate sidecar"
+		},
+		{
+			"id": "canvas-layout",
+			"kind": "api_call",
+			"source": "canvas",
+			"target": "layout",
+			"label": "Measured graph → Arrange"
+		},
+		{
+			"id": "layout-canvas",
+			"kind": "data_flow",
+			"source": "layout",
+			"target": "canvas",
+			"label": "Positions, sizes & routes"
+		},
+		{
+			"id": "canvas-presentation",
+			"kind": "data_flow",
+			"source": "canvas",
+			"target": "presentation",
+			"label": "Drag / viewport snapshots"
+		},
+		{
+			"id": "presentation-client",
+			"kind": "api_call",
+			"source": "presentation",
+			"target": "client",
+			"label": "Save presentation"
+		},
+		{
+			"id": "canvas-reviews",
+			"kind": "api_call",
+			"source": "canvas",
+			"target": "reviews",
+			"label": "Compose / save local review"
+		},
+		{
+			"id": "reviews-client",
+			"kind": "api_call",
+			"source": "reviews",
+			"target": "client",
+			"label": "Save comment; explicit Send"
+		},
+		{
+			"id": "canvas-code",
+			"kind": "api_call",
+			"source": "canvas",
+			"target": "client",
+			"label": "Inspector: open code"
+		},
+		{
+			"id": "controller-delivery",
+			"kind": "api_call",
+			"source": "controller",
+			"target": "delivery",
+			"label": "Send displayed-version feedback"
+		},
+		{
+			"id": "delivery-storage",
+			"kind": "api_call",
+			"source": "delivery",
+			"target": "storage",
+			"label": "Snapshot pending / reconcile sent"
+		},
+		{
+			"id": "delivery-task",
+			"kind": "api_call",
+			"source": "delivery",
+			"target": "task",
+			"label": "Persist contextual user input"
+		}
+	]
+}

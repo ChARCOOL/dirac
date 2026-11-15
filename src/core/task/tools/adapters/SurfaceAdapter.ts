@@ -1,7 +1,11 @@
+import { getTaskDirectoryPath } from "@core/storage/taskDirectory"
+import { getTaskScopedStateKey } from "@shared/taskletId"
 import { IDiracContext } from "../interfaces/IDiracContext"
+import type { ToolExecutionScope } from "../interfaces/ToolExecutionScope"
 import {
 	CardParams,
 	IAnchorTrait,
+	IArchitectureTrait,
 	IBrowserTrait,
 	ICardHandle,
 	IDiagnosticsTrait,
@@ -39,6 +43,7 @@ import {
 import { buildTelemetryTrait } from "./traits/TelemetryTraitBuilder"
 import { buildWorkspaceTrait } from "./traits/WorkspaceTraitBuilder"
 import { buildConversationCondensationTrait } from "./traits/ConversationCondensationTraitBuilder"
+import { buildArchitectureTrait } from "./traits/ArchitectureTraitBuilder"
 
 import { AnchorStateManager } from "@utils/AnchorStateManager"
 /**
@@ -47,6 +52,7 @@ import { AnchorStateManager } from "@utils/AnchorStateManager"
  * Trait wiring is delegated to builder functions in ./traits/ for maintainability.
  */
 export class SurfaceAdapter implements ToolExecutionEnvironment {
+	public readonly execution?: ToolExecutionScope
 	public readonly ui: IUITrait
 	public readonly interaction: IInteractionTrait
 	public readonly system: ISystemTrait
@@ -57,10 +63,11 @@ export class SurfaceAdapter implements ToolExecutionEnvironment {
 	public readonly workspace: IWorkspaceTrait
 	public readonly sourceAst: ISourceAstTrait
 	public readonly anchors: IAnchorTrait
-	public readonly diagnostics: IDiagnosticsTrait
+	public readonly diagnostics?: IDiagnosticsTrait
 	public readonly editor: IEditorTrait
 	public readonly browser: IBrowserTrait
 	public readonly skills: ISkillsTrait
+	public readonly architecture?: IArchitectureTrait
 	public readonly logging: ILoggingTrait
 	public readonly context: IDiracContext
 
@@ -71,6 +78,7 @@ export class SurfaceAdapter implements ToolExecutionEnvironment {
 		public readonly config: TaskConfig,
 		public readonly toolName: string = "",
 	) {
+		this.execution = config.execution
 		this.logging = buildLoggingTrait()
 		this.ui = buildUiTrait(
 			config,
@@ -80,20 +88,27 @@ export class SurfaceAdapter implements ToolExecutionEnvironment {
 		this.interaction = buildInteractionTrait(config, this.createCard.bind(this))
 		this.browser = buildBrowserTrait(config)
 		this.skills = buildSkillsTrait(config)
+		this.architecture = buildArchitectureTrait({
+			taskId: config.taskId,
+			foreground: config.executionProfile !== "tasklet",
+			canWaitForInput: !config.yoloModeToggled,
+			resolveTaskDirectory: () => getTaskDirectoryPath(config.storageAddress ?? config.taskId),
+		})
 		this.system = buildSystemTrait(config, this.executeCommand.bind(this))
 		this.telemetry = buildTelemetryTrait(this, config)
 		this.workspace = buildWorkspaceTrait(config)
 		this.sourceAst = buildSourceAstTrait(config)
+		const anchorStateKey = getTaskScopedStateKey(config.ulid, config.storageAddress)
 		this.anchors = {
 			reconcile: (absolutePath, lines) => {
-				const result = AnchorStateManager.reconcileWithChanges(absolutePath, lines, config.ulid)
+				const result = AnchorStateManager.reconcileWithChanges(absolutePath, lines, anchorStateKey)
 				if (result.changed) config.context.markAnchorStateDirty(absolutePath)
 				return result.anchors
 			},
 			getDocumentFingerprint: (absolutePath) =>
-				AnchorStateManager.getDocumentFingerprint(absolutePath, config.ulid),
+				AnchorStateManager.getDocumentFingerprint(absolutePath, anchorStateKey),
 			clear: (absolutePath) => {
-				AnchorStateManager.clearState(absolutePath, config.ulid)
+				AnchorStateManager.clearState(absolutePath, anchorStateKey)
 				config.context.markAnchorStateDirty(absolutePath)
 			},
 		}
@@ -101,10 +116,8 @@ export class SurfaceAdapter implements ToolExecutionEnvironment {
 		this.editor = buildEditorTrait(config)
 		this.context = config.context
 		this.orchestration = buildOrchestrationTrait(config)
-		this.responseObserver = { recordResponse: async () => undefined }
-		this.conversationCondensation = config.isSubagentExecution
-			? undefined
-			: buildConversationCondensationTrait(config)
+		this.responseObserver = { recordResponse: (response) => config.taskMessenger.recordResponse(response) }
+		this.conversationCondensation = buildConversationCondensationTrait(config)
 	}
 
 	public getCustomMetadata(): Record<string, any> {
@@ -169,10 +182,13 @@ export class SurfaceAdapter implements ToolExecutionEnvironment {
 		return undefined
 	}
 
-	public async executeCommand(command: string, options?: { timeout?: number }): Promise<SystemCommandResult> {
+	public async executeCommand(command: string, options?: Parameters<ISystemTrait["executeCommand"]>[1]): Promise<SystemCommandResult> {
 		const [userRejected, output, metadata] = await this.config.callbacks.executeCommandTool(command, options?.timeout, {
 			suppressUserInteraction: true,
 			useBackgroundExecution: true,
+			cwd: options?.cwd,
+			assertAuthorized: options?.assertAuthorized,
+			sandboxContext: options?.sandboxContext,
 		})
 		return {
 			userRejected,
@@ -182,6 +198,7 @@ export class SurfaceAdapter implements ToolExecutionEnvironment {
 			signal: metadata?.signal,
 			logFilePath: metadata?.logFilePath,
 			backgroundCompletion: metadata?.backgroundCompletion,
+			...(metadata?.sandbox ? { sandbox: metadata.sandbox } : {}),
 		}
 	}
 

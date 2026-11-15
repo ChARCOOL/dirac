@@ -7,6 +7,7 @@ import { getErrorMessage } from "@/shared/errors"
 import type { IDiracTool } from "../../interfaces/IDiracTool"
 import type { ICardHandle, IToolEnvironment } from "../../interfaces/IToolEnvironment"
 import type { SurfaceType } from "../../interfaces/SurfaceType"
+import { ToolSkippedByUserMessage } from "../../types/ToolSkippedByUserMessage"
 import { AstEditApplier, type AstEditApplyResult } from "./AstEditApplier"
 import { AstEditApproval } from "./AstEditApproval"
 import { AstEditFormatter } from "./AstEditFormatter"
@@ -95,7 +96,7 @@ export class EditAstTool implements IDiracTool<EditAstArgs, string> {
 				return this.formatter.invalidPlan(plan)
 			}
 
-			if (!env.config.isSubagentExecution) await this.createProgressCards(args, plan, env, progressCards)
+			await this.createProgressCards(args, plan, env, progressCards)
 
 			const approvalResult = await this.approval.request(env, args, plan, progressCards)
 			autoApproved = approvalResult.autoApproved
@@ -108,6 +109,10 @@ export class EditAstTool implements IDiracTool<EditAstArgs, string> {
 			env.config.callbacks.assertMutationAuthorized(DiracDefaultTool.EDIT_AST)
 			applied = await this.applier.apply(env, plan, approvalResult.userEdits)
 		} catch (error) {
+			if (error instanceof ToolSkippedByUserMessage) {
+				await env.editor.hideReview()
+				throw error
+			}
 			if (applied && plan) {
 				return this.completeAfterWrites(
 					args,

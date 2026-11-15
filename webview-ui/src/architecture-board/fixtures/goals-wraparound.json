@@ -1,0 +1,235 @@
+{
+	"title": "Goals vs synchronous subagents",
+	"summary": "Reported wraparound routing regression.",
+	"nodes": [
+		{
+			"id": "goal",
+			"kind": "group",
+			"label": "Goal: asynchronous Task orchestration"
+		},
+		{
+			"id": "goal-coordinator",
+			"kind": "component",
+			"label": "Foreground Goal coordinator",
+			"parentId": "goal"
+		},
+		{
+			"id": "goal-tools",
+			"kind": "api_endpoint",
+			"label": "Goal tools → IGoalTrait",
+			"parentId": "goal"
+		},
+		{
+			"id": "goal-host",
+			"kind": "class",
+			"label": "GoalTaskHost + Task factory",
+			"parentId": "goal"
+		},
+		{
+			"id": "goal-children",
+			"kind": "component",
+			"label": "Parallel full Tasks: A, B, …",
+			"parentId": "goal"
+		},
+		{
+			"id": "goal-events",
+			"kind": "component",
+			"label": "Ordered events / wait_for_goal_events",
+			"parentId": "goal"
+		},
+		{
+			"id": "goal-lifecycle",
+			"kind": "database",
+			"label": "Durable objective + Goal lifecycle",
+			"parentId": "goal"
+		},
+		{
+			"id": "subagents",
+			"kind": "group",
+			"label": "Subagents: synchronous batch, parallel workers"
+		},
+		{
+			"id": "sub-parent",
+			"kind": "component",
+			"label": "Calling Task waits here",
+			"parentId": "subagents"
+		},
+		{
+			"id": "sub-tool",
+			"kind": "component",
+			"label": "use_subagents: fan out assignments",
+			"parentId": "subagents"
+		},
+		{
+			"id": "sub-env",
+			"kind": "api_endpoint",
+			"label": "IOrchestrationTrait.runSubagent",
+			"parentId": "subagents"
+		},
+		{
+			"id": "sub-runners",
+			"kind": "component",
+			"label": "Parallel SubagentRunners: A, B, …",
+			"parentId": "subagents"
+		},
+		{
+			"id": "sub-join",
+			"kind": "function",
+			"label": "Join ALL → one tool result",
+			"parentId": "subagents"
+		},
+		{
+			"id": "sub-observability",
+			"kind": "database",
+			"label": "Live cards + run audit files",
+			"parentId": "subagents"
+		},
+		{
+			"id": "workspace",
+			"kind": "component",
+			"label": "Shared workspace — not a sandbox"
+		}
+	],
+	"edges": [
+		{
+			"id": "g-request",
+			"kind": "api_call",
+			"source": "goal-coordinator",
+			"target": "goal-tools",
+			"label": "1. start / inspect / steer / cancel"
+		},
+		{
+			"id": "g-dispatch",
+			"kind": "api_call",
+			"source": "goal-tools",
+			"target": "goal-host",
+			"label": "via GoalLoop's environment implementation"
+		},
+		{
+			"id": "g-launch",
+			"kind": "api_call",
+			"source": "goal-host",
+			"target": "goal-children",
+			"label": "2. launch; do NOT await completion"
+		},
+		{
+			"id": "g-start-return",
+			"kind": "data_flow",
+			"source": "goal-host",
+			"target": "goal-coordinator",
+			"label": "3. start_task returns child record"
+		},
+		{
+			"id": "g-publish",
+			"kind": "data_flow",
+			"source": "goal-children",
+			"target": "goal-events",
+			"label": "4. progress / questions / terminal outcome"
+		},
+		{
+			"id": "g-wait",
+			"kind": "api_call",
+			"source": "goal-coordinator",
+			"target": "goal-events",
+			"label": "5. wait_for_goal_events"
+		},
+		{
+			"id": "g-wake",
+			"kind": "data_flow",
+			"source": "goal-events",
+			"target": "goal-coordinator",
+			"label": "6. ordered batch; decide next action"
+		},
+		{
+			"id": "g-persist-host",
+			"kind": "dependency",
+			"source": "goal-host",
+			"target": "goal-lifecycle",
+			"label": "persist child registry / enforce terminal guard"
+		},
+		{
+			"id": "g-persist-events",
+			"kind": "data_flow",
+			"source": "goal-events",
+			"target": "goal-lifecycle",
+			"label": "durable queue + delivered cursors"
+		},
+		{
+			"id": "g-context",
+			"kind": "data_flow",
+			"source": "goal-lifecycle",
+			"target": "goal-coordinator",
+			"label": "objective + active Tasks pinned to context"
+		},
+		{
+			"id": "s-call",
+			"kind": "api_call",
+			"source": "sub-parent",
+			"target": "sub-tool",
+			"label": "1. await use_subagents(batch)"
+		},
+		{
+			"id": "s-fanout",
+			"kind": "api_call",
+			"source": "sub-tool",
+			"target": "sub-env",
+			"label": "2. invoke once per assignment, concurrently"
+		},
+		{
+			"id": "s-run",
+			"kind": "api_call",
+			"source": "sub-env",
+			"target": "sub-runners",
+			"label": "3. construct runner; await run()"
+		},
+		{
+			"id": "s-result",
+			"kind": "data_flow",
+			"source": "sub-runners",
+			"target": "sub-join",
+			"label": "4. complete / fail / cancel"
+		},
+		{
+			"id": "s-join",
+			"kind": "dependency",
+			"source": "sub-tool",
+			"target": "sub-join",
+			"label": "Promise.allSettled(batch)"
+		},
+		{
+			"id": "s-return",
+			"kind": "data_flow",
+			"source": "sub-join",
+			"target": "sub-parent",
+			"label": "5. aggregate result; parent continues"
+		},
+		{
+			"id": "s-observe",
+			"kind": "data_flow",
+			"source": "sub-runners",
+			"target": "sub-observability",
+			"label": "progress + usage + transcript events"
+		},
+		{
+			"id": "composition",
+			"kind": "dependency",
+			"source": "goal-children",
+			"target": "sub-parent",
+			"label": "A Goal child can be this caller"
+		},
+		{
+			"id": "g-workspace",
+			"kind": "dependency",
+			"source": "goal-children",
+			"target": "workspace",
+			"label": "same cwd / workspace roots"
+		},
+		{
+			"id": "s-workspace",
+			"kind": "dependency",
+			"source": "sub-runners",
+			"target": "workspace",
+			"label": "inherits parent's workspace"
+		}
+	]
+}

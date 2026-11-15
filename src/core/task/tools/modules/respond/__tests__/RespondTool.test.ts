@@ -12,7 +12,6 @@ function environment(mode: "plan" | "act") {
 	return {
 		config: {
 			mode,
-			isSubagentExecution: false,
 			yoloModeToggled: true,
 			autoApprovalSettings: { enableNotifications: false },
 		},
@@ -83,6 +82,17 @@ describe("respond tool dispatch", () => {
 				mode: "act",
 			}),
 		)
+	})
+
+	it("does not publish a completion attempt rejected by queued-input or lifecycle guards", async () => {
+		const act = environment("act")
+		const completion = sinon
+			.stub(CompletionResponseOperation.prototype, "execute")
+			.resolves("New guidance must be read before completing")
+		const tool = new RespondTool()
+		assert.match(await tool.processCall({ operation: ResponseOperation.COMPLETE, text: "Obsolete result" }, act), /guidance/)
+		sinon.assert.calledOnce(completion)
+		sinon.assert.notCalled(act.responseObserver.recordResponse)
 	})
 
 	it("propagates invalid arguments so the coordinator records a failed invocation", async () => {

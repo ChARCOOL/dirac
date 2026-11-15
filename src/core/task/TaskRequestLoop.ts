@@ -1,41 +1,31 @@
+import type { ModelContextTracker } from "@core/context/context-tracking/ModelContextTracker"
+import type { DiffViewProvider } from "@integrations/editor/DiffViewProvider"
 import { ErrorService } from "@services/error"
 import { telemetryService } from "@services/telemetry"
-
 import type { DiracApiReqCancelReason } from "@shared/ExtensionMessage"
 import { CardStatus, DiracMessageType, TaskStatus } from "@shared/ExtensionMessage"
-import { Session } from "@shared/services/Session"
-import { isLocalModel } from "@utils/model-utils"
-import type { DiffViewProvider } from "@integrations/editor/DiffViewProvider"
-import type { LocalConversationCompaction } from "./LocalConversationCompaction"
-
-import type { ModelContextTracker } from "@core/context/context-tracking/ModelContextTracker"
-import type { ResponseProcessor } from "./ResponseProcessor"
-import { StreamChunkCoordinator } from "./StreamChunkCoordinator"
-import { StreamingMetricsManager } from "./StreamingMetricsManager"
-import type { StreamResponseHandler } from "./StreamResponseHandler"
-
 import type { DiracContent } from "@shared/messages/content"
 import type { DiracMessageModelInfo } from "@shared/messages/metrics"
 import { Logger } from "@shared/services/Logger"
-import { type TaskRequestBuilderContext } from "./TaskRequestBuilder"
-import {
-	persistApiStopReason,
-	processStreamResult,
-	type TaskRequestOutcomeContext,
-} from "./TaskRequestOutcome"
+import { Session } from "@shared/services/Session"
+import { isLocalModel } from "@utils/model-utils"
+import type { ApiConversationManager } from "./ApiConversationManager"
+import type { LocalConversationCompaction } from "./LocalConversationCompaction"
+import type { ResponseProcessor } from "./ResponseProcessor"
+import type { TaskRequestRuntime } from "./runtime/TaskRequestRuntime"
+import { StreamChunkCoordinator } from "./StreamChunkCoordinator"
+import { StreamingMetricsManager } from "./StreamingMetricsManager"
+import type { StreamResponseHandler } from "./StreamResponseHandler"
 import { attemptApiRequest } from "./TaskApiRequestAttempt"
+import { TaskConversationPersistence, type TaskConversationPersistenceHooks } from "./TaskConversationPersistence"
+import { type TaskRequestBuilderContext } from "./TaskRequestBuilder"
+import { persistApiStopReason, processStreamResult, type TaskRequestOutcomeContext } from "./TaskRequestOutcome"
 import {
 	appendQueuedSteeringToUserContent,
 	rollbackSteeringClaim,
 	settleConsumedSteeringClaim,
 	type TaskSteeringContext,
 } from "./TaskSteering"
-import type { ApiConversationManager } from "./ApiConversationManager"
-import type { TaskRequestRuntime } from "./runtime/TaskRequestRuntime"
-import {
-	TaskConversationPersistence,
-	type TaskConversationPersistenceHooks,
-} from "./TaskConversationPersistence"
 
 export interface TaskRequestLoopContext extends TaskRequestBuilderContext, TaskRequestOutcomeContext {
 	requestRuntime: TaskRequestRuntime
@@ -52,12 +42,15 @@ export interface TaskRequestLoopContext extends TaskRequestBuilderContext, TaskR
 	diffViewProvider: DiffViewProvider
 	ulid: string
 	conversationPersistenceHooks?: TaskConversationPersistenceHooks
+	deliverTaskletEvents?: (outboundHistory: import("@shared/messages/content").DiracStorageMessage[]) => Promise<void>
+	deliverAgentMessages?: (outboundHistory: import("@shared/messages/content").DiracStorageMessage[]) => Promise<void>
 }
 
 export async function recursivelyMakeDiracRequests(
 	ctx: TaskRequestLoopContext,
 	userContent: DiracContent[],
 	includeFileDetails = false,
+	onUserContentPersisted?: () => void,
 ): Promise<boolean> {
 	ctx.taskState.status = TaskStatus.PREPARING
 
@@ -92,30 +85,39 @@ export async function recursivelyMakeDiracRequests(
 	userContent = mistakeResult.userContent
 
 	const previousApiStatus = ctx.messageStateHandler.getLatestApiStatusMessage()
-	const previousApiReqIndex = previousApiStatus
-		? ctx.messageStateHandler.findMessageIndexById(previousApiStatus.id)
-		: -1
+	const previousApiReqIndex = previousApiStatus ? ctx.messageStateHandler.findMessageIndexById(previousApiStatus.id) : -1
 	const isFirstRequest = previousApiStatus === undefined
 
 	await ctx.initializeCheckpoints(isFirstRequest)
 
 	const useCompactPrompt =
-		customPrompt === "compact" &&
-		isLocalModel({ model, providerId, customPrompt, mode, supportsNativeWebSearch: false })
+		customPrompt === "compact" && isLocalModel({ model, providerId, customPrompt, mode, supportsNativeWebSearch: false })
 	let shouldCompact = await ctx.determineContextCompaction(previousApiReqIndex)
 	if (shouldCompact && ctx.localConversationCompaction.isAvailable()) {
 		const continuation = await ctx.localConversationCompaction.run({
 			source: "automatic",
 			triggerApiRequestIndex: previousApiReqIndex,
+			pendingUserContent: userContent,
 		})
-		if (!continuation) return true
-
-		const compactedContext: DiracContent[] = [{ type: "text", text: continuation }]
-		if (ctx.taskState.pinnedContext) {
-			compactedContext.push({ type: "text", text: ctx.taskState.pinnedContext })
+		if (ctx.taskState.abort) return true
+		if (continuation) {
+			const compactedContext: DiracContent[] = [{ type: "text", text: continuation }]
+			if (ctx.taskState.pinnedContext) {
+				compactedContext.push({ type: "text", text: ctx.taskState.pinnedContext })
+			}
+			userContent = [...compactedContext, ...userContent]
+			shouldCompact = false
+		} else {
+			// The original history is intact. Ask the active model to supply the summary
+			// rather than ending the task or retrying the unavailable Utility model forever.
+			userContent = [
+				...userContent,
+				{
+					type: "text",
+					text: "Utility condensation failed. Condense the conversation using your own summary: call condense with a non-empty context argument; do not delegate condensation to Utility again.",
+				},
+			]
 		}
-		userContent = [...compactedContext, ...userContent]
-		shouldCompact = false
 	}
 	const steeringClaim = await appendQueuedSteeringToUserContent(ctx.steeringContext, userContent)
 
@@ -138,6 +140,10 @@ export async function recursivelyMakeDiracRequests(
 			requestId: ctx.requestRuntime.requestId,
 			afterUserContentPersisted: async () => {
 				await conversationPersistence.persist(() => ctx.messageStateHandler.flushPendingWrites())
+				if (onUserContentPersisted) {
+					await ctx.messageStateHandler.flushPendingWrites()
+					onUserContentPersisted()
+				}
 				steeringClaimConsumed = true
 				if (!steeringClaim) return
 				await settleConsumedSteeringClaim(ctx.steeringContext, steeringClaim)
@@ -171,6 +177,41 @@ export async function recursivelyMakeDiracRequests(
 			await ctx.taskMessenger.upsertText(apiRequestData.directResponseText)
 		}
 		return true
+	}
+
+	// Retain this request's results until the next request acknowledges their
+	// durable inclusion. Early preparation failures must not lose this tail.
+	let pendingToolCalls: ReturnType<StreamResponseHandler["getOrderedBlocks"]> = []
+	let handedOffContent: DiracContent[] | undefined
+	let toolResultsPersistenceFailed = false
+	const persistFinalToolResults = async () => {
+		if (pendingToolCalls.length === 0 || (!handedOffContent && !ctx.taskState.didCompleteReadingStream)) return
+		const calls = pendingToolCalls
+		pendingToolCalls = [] // An append may succeed before its flush throws; never append it twice.
+		const content = handedOffContent ?? [...ctx.taskState.userMessageContent]
+		const completed = new Set(content.flatMap((block) => block.type === "tool_result" ? [block.tool_use_id] : []))
+		for (const call of calls) {
+			if (call.type !== "tool_use" || completed.has(call.id)) continue
+			content.push({
+				type: "tool_result", tool_use_id: call.id, call_id: call.call_id, is_error: true,
+				content: "Execution interrupted before a result was recorded. Effects may have occurred; inspect current state before retrying.",
+			})
+		}
+		try {
+			// Preparation may have staged this exact batch before its flush failed.
+			// In that case retry the existing write, not another native response.
+			const tail = handedOffContent ? ctx.messageStateHandler.getApiConversationHistory().at(-1) : undefined
+			const stagedResults = new Set(tail?.role === "user" && Array.isArray(tail.content)
+				? tail.content.flatMap((block) => block.type === "tool_result" ? [block.tool_use_id] : []) : [])
+			if (!calls.every((call) => call.type === "tool_use" && stagedResults.has(call.id))) {
+				await ctx.messageStateHandler.addToApiConversationHistory({ role: "user", content, ts: Date.now() })
+			}
+			await ctx.messageStateHandler.flushPendingWrites()
+			if (!handedOffContent) ctx.taskState.userMessageContent = []
+		} catch (error) {
+			toolResultsPersistenceFailed = true
+			throw error
+		}
 	}
 
 	try {
@@ -216,8 +257,7 @@ export async function recursivelyMakeDiracRequests(
 			if (cost !== undefined) ctx.taskState.totalCost += cost
 
 			if (ctx.messageStateHandler.getLatestApiStatusMessage()) {
-				ctx.taskState.isApiRequestActive = false
-				ctx.taskState.activeVoiceStreamId = undefined
+				ctx.taskState.endApiRequest()
 			}
 		}
 
@@ -225,26 +265,25 @@ export async function recursivelyMakeDiracRequests(
 			Session.get().finalizeRequest()
 
 			if (ctx.diffViewProvider.isEditing) {
-				await ctx.diffViewProvider.revertChanges()
+				await ctx.diffViewProvider.reset()
 			}
 
-			ctx.taskState.isApiRequestActive = false
-			ctx.taskState.activeVoiceStreamId = undefined
+			ctx.taskState.endApiRequest()
 			await finalizeApiReqMsg(cancelReason, streamingFailedMessage)
 			await ctx.messageStateHandler.saveDiracMessagesAndUpdateHistory()
 
 			const metrics = metricsManager.getMetrics()
+			const interruptedContent = ctx.streamHandler.getOrderedBlocks()
 			await ctx.messageStateHandler.addToApiConversationHistory({
 				role: "assistant",
 				content: [
+					...interruptedContent,
 					{
 						type: "text",
 						text:
-							assistantMessage +
-							`\n\n[${cancelReason === "streaming_failed"
-								? "Response interrupted by API Error"
-								: "Response interrupted by user"
-							}]`,
+							cancelReason === "streaming_failed"
+								? "[Response interrupted by API Error; pending tool calls were not executed]"
+								: "[Response interrupted by user; pending tool calls were not executed]",
 					},
 				],
 				modelInfo,
@@ -258,6 +297,21 @@ export async function recursivelyMakeDiracRequests(
 				},
 				ts: Date.now(),
 			})
+			const interruptedCalls = interruptedContent.filter((block) => block.type === "tool_use")
+			if (interruptedCalls.length) {
+				await ctx.messageStateHandler.addToApiConversationHistory({
+					role: "user",
+					content: interruptedCalls.map((call) => ({
+						type: "tool_result" as const,
+						tool_use_id: call.id,
+						call_id: call.call_id,
+						is_error: true,
+						content: "Not executed: the response stream was interrupted before tool execution.",
+					})),
+					ts: Date.now(),
+				})
+			}
+			await ctx.messageStateHandler.flushPendingWrites()
 
 			telemetryService.captureConversationTurnEvent(
 				ctx.ulid,
@@ -269,13 +323,13 @@ export async function recursivelyMakeDiracRequests(
 				ctx.taskState.useNativeToolCalls,
 			)
 
-			ctx.taskState.didFinishAbortingStream = true
+			ctx.taskState.markStreamAbortFinished()
 		}
 
 		await ctx.resetStreamingState()
 
 		const { toolUseHandler, reasonsHandler } = ctx.streamHandler.getHandlers()
-		const stream = attemptApiRequest(ctx, previousApiReqIndex, lastApiReqIndex, shouldCompact)
+		const stream = attemptApiRequest(ctx, previousApiReqIndex, lastApiReqIndex, shouldCompact, metricsManager, () => usageChunkSideEffectsQueue)
 
 		let assistantMessageId = ""
 		let assistantMessage = ""
@@ -317,12 +371,12 @@ export async function recursivelyMakeDiracRequests(
 				})
 			}
 			await ctx.postStateToWebview()
-			ctx.taskState.activeVoiceStreamId = undefined
+			ctx.taskState.detachVoiceStream()
 			return true
 		}
 
 		Session.get().startApiCall()
-		ctx.taskState.isApiRequestActive = true
+		ctx.taskState.beginApiRequest()
 		let streamCoordinator: StreamChunkCoordinator | undefined
 
 		try {
@@ -415,6 +469,7 @@ export async function recursivelyMakeDiracRequests(
 			throw new Error("Dirac instance aborted")
 		}
 
+		pendingToolCalls = ctx.streamHandler.getOrderedBlocks().filter((block) => block.type === "tool_use")
 		const assistantHasContent = await ctx.responseProcessor.routeAssistantResponse({
 			assistantMessage,
 			assistantTextOnly,
@@ -428,7 +483,16 @@ export async function recursivelyMakeDiracRequests(
 			toolUseHandler,
 		})
 
-		return await processStreamResult(ctx, {
+		// Completion may publish terminal task status without making another request.
+		if (ctx.taskState.didAttemptCompletion) await persistFinalToolResults()
+		const ended = await processStreamResult({
+			...ctx,
+			recursivelyMakeDiracRequests: (content, includeDetails) => {
+				if (pendingToolCalls.length === 0) return ctx.recursivelyMakeDiracRequests(content, includeDetails)
+				handedOffContent = structuredClone(content)
+				return ctx.recursivelyMakeDiracRequests(content, includeDetails, () => { pendingToolCalls = [] })
+			},
+		}, {
 			assistantHasContent,
 			stopReason,
 			userContent,
@@ -437,7 +501,15 @@ export async function recursivelyMakeDiracRequests(
 			providerId,
 			model,
 		})
+		await persistFinalToolResults()
+		return ended
 	} catch (error) {
+		try {
+			await persistFinalToolResults()
+		} catch (persistenceError) {
+			throw new AggregateError([error, persistenceError], "Tool execution stopped and its results could not be persisted")
+		}
+		if (toolResultsPersistenceFailed) throw error
 		if (ctx.taskState.abort) {
 			// User-initiated abort — not a fatal error, no card needed
 			return true

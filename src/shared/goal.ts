@@ -1,33 +1,6 @@
-import type { Card } from "./ExtensionMessage"
 
 export type GoalStatus = "working" | "waiting" | "paused" | "blocked" | "achieved" | "stopped"
 
-export type GoalChildRole = "task" | "verification"
-
-export type GoalChildStatus = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted"
-
-export type GoalInteractionKind = "approval" | "feedback" | "action"
-
-export interface GoalPendingInteraction {
-	id: string
-	kind: GoalInteractionKind
-	createdAt: number
-	card: Card
-}
-
-export interface GoalChildRecord {
-	id: string
-	title: string
-	role: GoalChildRole
-	status: GoalChildStatus
-	createdAt: number
-	startedAt?: number
-	lastActivityAt: number
-	endedAt?: number
-	terminalSummary?: string
-	pendingInteraction?: GoalPendingInteraction
-	deliveredResponseCursor: number
-}
 
 export interface GoalAccounting {
 	totalTokens?: number
@@ -45,27 +18,9 @@ export interface GoalObjectiveRevision {
 	updatedAt: number
 }
 
-export type GoalEvent =
-	| {
-		kind: "task_response"
-		sequence: number
-		taskId: string
-		responseCursor: number
-		occurredAt: number
-	}
-	| {
-		kind: "task_interaction"
-		sequence: number
-		taskId: string
-		interactionId: string
-		occurredAt: number
-	}
-	| { kind: "task_failed"; sequence: number; taskId: string; occurredAt: number }
-	| { kind: "task_finished"; sequence: number; taskId: string; occurredAt: number }
-	| { kind: "user_steering"; sequence: number; occurredAt: number }
-
+/** Goal lifecycle and replaceable accounting projections; tasklets own child state. */
 export interface GoalRecord {
-	version: 1
+	version: 2
 	id: string
 	conversationUlid: string
 	status: GoalStatus
@@ -73,14 +28,11 @@ export interface GoalRecord {
 	objective: GoalObjectiveRevision
 	createdAt: number
 	updatedAt: number
+	/** Terminal lifecycle time, independent of later follow-up accounting updates. */
+	settledAt?: number
 	lastActivatedAt?: number
 	lastPausedAt?: number
 	activeDurationMs: number
-	wakeSequence: number
-	lastWakeAt?: number
-	eventSequence: number
-	events: GoalEvent[]
-	children: GoalChildRecord[]
 	accountingSources: Record<string, GoalAccounting>
 	accounting: GoalAccounting
 }
@@ -90,24 +42,19 @@ export interface GoalStatusTransition {
 	statusReason?: string
 }
 
-export interface GoalTaskSummary extends GoalChildRecord {
-	runningDurationMs?: number
-	idleDurationMs: number
-}
 
 export interface GoalViewState {
 	id: string
 	status: GoalStatus
 	followUpActive: boolean
+	/** Local coordinator ownership, not a claim that no other process owns this Goal. */
+	hasLocalExecution?: boolean
 	statusReason?: string
 	objective: GoalObjectiveRevision
 	createdAt: number
 	updatedAt: number
 	wallDurationMs: number
 	activeDurationMs: number
-	children: GoalTaskSummary[]
-	pendingInteractionCount: number
-	latestVerification?: GoalTaskSummary
 	accounting: GoalAccounting
 	mode: "act"
 	modeSwitchingDisabled: true
@@ -126,8 +73,4 @@ export function isActiveGoalStatus(status: GoalStatus): boolean {
 
 export function isResumableGoalStatus(status: GoalStatus): boolean {
 	return status === "paused" || status === "blocked" || status === "stopped"
-}
-
-export function isTerminalGoalChildStatus(status: GoalChildStatus): boolean {
-	return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted"
 }

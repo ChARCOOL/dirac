@@ -1,0 +1,242 @@
+/* Earth: the approved warm whole-body treatment, independent of editor palette. */
+.architecture-board[data-board-style="earth"][data-board-style] {
+	color-scheme: dark;
+	--style-bg: #101211;
+	--style-fill: #212621;
+	--style-text: #edeedc;
+	--style-muted: #aaae9e;
+	--style-stroke: #858e70;
+	--style-group-fill: #151914;
+	--style-group-stroke: #56604d;
+	--style-grid: #2c3128;
+	--style-accent: #d4dc99;
+	--style-blue: #91b1d4;
+	--style-teal: #b2bb78;
+	--style-amber: #e7a276;
+	--style-violet: #c2afcc;
+	--style-rose: #ed97b4;
+	--style-message: #ced2d5;
+	--board-edge-idle-opacity: .72;
+	--board-action: #d4dc99;
+	--board-action-fg: #182011;
+	--board-action-hover: #e6edb6;
+	--board-success: #a8c482;
+	--board-warning: #e4b268;
+	--style-node-shadow: drop-shadow(0 4px 7px #0005);
+	--style-selected-shadow: drop-shadow(0 0 5px #ffffff33);
+	--object-selected-ink: #fff;
+	--group-fill: #171c1666;
+	--group-ink: #78846a;
+	--node-surface-top: #667244;
+	--node-surface-bottom: #353f2b;
+	--object-ink: #c6d194;
+	--object-text: #f8f5df;
+	--object-label: #e3e5ba;
+}
+
+.architecture-board[data-board-style="earth"] .kind-class {
+	--node-surface-top: #667244;
+	--node-surface-bottom: #353f2b;
+	--object-ink: #c6d194;
+	--object-text: #faf6e9;
+	--object-label: #c6d194;
+}
+
+/* Intentional composites have their own identity, not an unresolved/error treatment. */
+.architecture-board[data-board-style="earth"] .kind-component {
+	--node-surface-top: #626d72;
+	--node-surface-bottom: #363e43;
+	--object-ink: #b9c6cc;
+	--object-text: #f2f5f6;
+	--object-label: #d5dfe3;
+}
+
+.architecture-board[data-board-style="earth"] .kind-service {
+	--node-surface-top: #79647e;
+	--node-surface-bottom: #49394e;
+	--object-ink: #cdb5d3;
+	--object-text: #fbf3fc;
+	--object-label: #e7d3eb;
+}
+
+.architecture-board[data-board-style="earth"] .kind-database {
+	--node-surface-top: #c9936f;
+	--node-surface-bottom: #75503c;
+	--object-ink: #efb991;
+	--object-text: #fff6e9;
+	--object-label: #ffe7ce;
+}
+
+.architecture-board[data-board-style="earth"] .kind-api_endpoint {
+	--node-surface-top: #577c92;
+	--node-surface-bottom: #2c4659;
+	--object-ink: #9fc7df;
+	--object-text: #f4faff;
+	--object-label: #e1edf3;
+}
+
+.architecture-board[data-board-style="earth"] .kind-function {
+	--node-surface-top: #e0c983;
+	--node-surface-bottom: #a69056;
+	--object-ink: #f3dfa2;
+	--object-text: #242717;
+	--object-label: #37402a;
+}
+
+.architecture-board[data-board-style="earth"] .kind-state {
+	--node-surface-top: #287c78;
+	--node-surface-bottom: #164b50;
+	--object-ink: #82d8ce;
+	--object-text: #effffb;
+	--object-label: #b0ebe2;
+}
+
+.architecture-board[data-board-style="earth"] .kind-actor {
+	--node-surface-top: #954360;
+	--node-surface-bottom: #59253d;
+	--object-ink: #f1a3be;
+	--object-text: #fff3f7;
+	--object-label: #ffc6da;
+}
+
+.architecture-board[data-board-style="earth"] .node-outline {
+	stroke: var(--object-ink);
+	stroke-width: 1;
+}
+
+.architecture-board[data-board-style="earth"] .node-structure {
+	stroke: var(--object-ink);
+	stroke-width: 1;
+	opacity: .65;
+}
+
+.architecture-board[data-board-style="earth"] .board-node:not(.kind-group)>.node-silhouette {
+	filter: var(--style-node-shadow);
+}
+
+.architecture-board[data-board-style="earth"] .kind-group .node-outline {
+	fill: var(--group-fill);
+	stroke: var(--group-ink);
+	stroke-width: 1;
+	stroke-dasharray: 5 7;
+}
+
+.architecture-board[data-board-style="earth"] .board-node:not(.kind-group) {
+	min-height: 0;
+	padding: 0;
+}
+
+.architecture-board[data-board-style="earth"] .board-node .node-content {
+	padding: 14px 24px;
+	align-items: stretch;
+	justify-content: center;
+	gap: 8px;
+}
+
+.architecture-board[data-board-style="earth"] .kind-class .node-content {
+	padding: 52px 33px 30px;
+	align-items: center;
+	gap: 0;
+}
+
+.architecture-board[data-board-style="earth"] .kind-class .earth-kind {
+	position: absolute;
+	top: 22px;
+	left: 0;
+	right: 0;
+	justify-content: center;
+}
+
+.architecture-board[data-board-style="earth"] .earth-title .node-title {
+	font: 600 17px/1.24 system-ui, sans-serif;
+	letter-spacing: -.2px;
+	text-align: center;
+	white-space: normal;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 4;
+	color: var(--object-text);
+}
+
+.architecture-board[data-board-style="earth"] .earth-kind {
+	display: flex;
+	gap: 7px;
+	align-items: center;
+	font: 600 9px/14px system-ui, sans-serif;
+	letter-spacing: 1.1px;
+	text-transform: uppercase;
+	color: var(--object-label);
+}
+
+.architecture-board[data-board-style="earth"] .earth-glyph {
+	font: 600 14px/14px ui-monospace, monospace;
+	letter-spacing: -1px;
+}
+
+.architecture-board[data-board-style="earth"] .kind-database .node-content {
+	padding: 37px 18px 30px;
+	align-items: center;
+	gap: 8px;
+}
+
+.architecture-board[data-board-style="earth"] .kind-api_endpoint .node-content {
+	padding: 30px 20px 30px 53px;
+	align-items: center;
+	gap: 12px;
+}
+
+.architecture-board[data-board-style="earth"] .kind-function .node-content {
+	padding: 16px 36px;
+	align-items: center;
+	gap: 7px;
+}
+
+.architecture-board[data-board-style="earth"] .kind-group .node-content {
+	padding: 0 22px;
+	justify-content: flex-start;
+	align-items: flex-start;
+}
+
+.architecture-board[data-board-style="earth"] .kind-group .node-content .node-title {
+	margin-top: -13px;
+	background: var(--board-bg);
+	padding: 2px 12px;
+	font: 600 14px/22px system-ui, sans-serif;
+	letter-spacing: .25px;
+	color: var(--board-fg);
+}
+
+.architecture-board[data-board-style="earth"] .board-node.is-selected .node-outline,
+.architecture-board[data-board-style="earth"] .react-flow__node:focus-visible .node-outline {
+	stroke: var(--object-selected-ink);
+	stroke-width: 2.5;
+}
+
+.architecture-board[data-board-style="earth"] .board-node.is-selected .node-silhouette {
+	filter: var(--style-selected-shadow);
+}
+
+.architecture-board[data-board-style="earth"] .board-node.is-dimmed {
+	opacity: .36;
+}
+
+.architecture-board[data-board-style="earth"] .react-flow__handle {
+	background: var(--object-ink);
+}
+
+
+.architecture-board[data-board-style="earth"] .selection-popover {
+	border-color: var(--board-border);
+	box-shadow: 0 16px 40px #0009;
+}
+
+.architecture-board[data-board-style="earth"] .board-edge-label {
+	border-radius: 5px;
+	font-size: 11px;
+}
+
+.architecture-board[data-board-style="earth"] .canvas-hint {
+	font-size: 10px;
+}
+
+/* Legend silhouettes inherit their kind's palette from the enclosing kind-* element. */

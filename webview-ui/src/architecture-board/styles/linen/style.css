@@ -1,0 +1,230 @@
+/* Linen: warm chalk surfaces and restrained mineral colors, not an inverted dark palette. */
+.architecture-board[data-board-style="linen"][data-board-style] {
+	color-scheme: light;
+	--style-bg: #f6f3eb;
+	--style-fill: #fffdf7;
+	--style-text: #30342f;
+	--style-muted: #62675c;
+	--style-stroke: #737d62;
+	--style-group-fill: #e8ecdf;
+	--style-group-stroke: #a5af98;
+	--style-grid: #dedfd3;
+	--style-accent: #4f6543;
+	--style-blue: #3e6480;
+	--style-teal: #466d60;
+	--style-amber: #86632e;
+	--style-violet: #785a7e;
+	--style-rose: #a23c62;
+	--style-message: #4c5055;
+	--board-edge-idle-opacity: .78;
+	--board-action: #4f6543;
+	--board-action-fg: #fffdf7;
+	--board-action-hover: #3d5034;
+	--board-success: #46663c;
+	--board-warning: #806025;
+	--style-node-shadow: drop-shadow(0 2px 3px #30342f12);
+	--style-selected-shadow: drop-shadow(0 0 3px #4f654340);
+	--object-selected-ink: #354a2b;
+	--group-fill: #e8ecdf55;
+	--group-ink: #909e83;
+	--object-text: #30342f;
+}
+
+.architecture-board[data-board-style="linen"] .kind-class {
+	--node-surface-top: #f0f2e5;
+	--node-surface-bottom: #e1e6d0;
+	--object-ink: #737d52;
+	--object-label: #505b37;
+}
+
+/* Deliberate composites retain their own slate identity. */
+.architecture-board[data-board-style="linen"] .kind-component {
+	--node-surface-top: #edf0f0;
+	--node-surface-bottom: #dde3e5;
+	--object-ink: #6b7b83;
+	--object-label: #4b5d65;
+}
+
+.architecture-board[data-board-style="linen"] .kind-service {
+	--node-surface-top: #f2edf2;
+	--node-surface-bottom: #e8dce9;
+	--object-ink: #8b6e90;
+	--object-label: #6b4e70;
+}
+
+.architecture-board[data-board-style="linen"] .kind-database {
+	--node-surface-top: #f6ece3;
+	--node-surface-bottom: #edd8c8;
+	--object-ink: #a16d4e;
+	--object-label: #7b5039;
+}
+
+.architecture-board[data-board-style="linen"] .kind-api_endpoint {
+	--node-surface-top: #eaf1f4;
+	--node-surface-bottom: #d6e5ed;
+	--object-ink: #5b8198;
+	--object-label: #3e6178;
+}
+
+.architecture-board[data-board-style="linen"] .kind-function {
+	--node-surface-top: #f8f1dc;
+	--node-surface-bottom: #eee1b8;
+	--object-ink: #9a813f;
+	--object-label: #75602e;
+}
+
+.architecture-board[data-board-style="linen"] .kind-state {
+	--node-surface-top: #dcf3ef;
+	--node-surface-bottom: #b9e4de;
+	--object-ink: #287c78;
+	--object-label: #205e5b;
+}
+
+.architecture-board[data-board-style="linen"] .kind-actor {
+	--node-surface-top: #fbe4ed;
+	--node-surface-bottom: #efbfd1;
+	--object-ink: #a23c62;
+	--object-label: #802e4d;
+}
+
+.architecture-board[data-board-style="linen"] .node-outline {
+	stroke: var(--object-ink);
+	stroke-width: 1;
+}
+
+.architecture-board[data-board-style="linen"] .node-structure {
+	stroke: var(--object-ink);
+	stroke-width: 1;
+	opacity: .65;
+}
+
+.architecture-board[data-board-style="linen"] .board-node:not(.kind-group)>.node-silhouette {
+	filter: var(--style-node-shadow);
+}
+
+.architecture-board[data-board-style="linen"] .kind-group .node-outline {
+	fill: var(--group-fill);
+	stroke: var(--group-ink);
+	stroke-width: 1;
+	stroke-dasharray: 5 7;
+}
+
+.architecture-board[data-board-style="linen"] .board-node:not(.kind-group) {
+	min-height: 0;
+	padding: 0;
+}
+
+.architecture-board[data-board-style="linen"] .board-node .node-content {
+	padding: 14px 24px;
+	align-items: stretch;
+	justify-content: center;
+	gap: 8px;
+}
+
+.architecture-board[data-board-style="linen"] .kind-class .node-content {
+	padding: 52px 33px 30px;
+	align-items: center;
+	gap: 0;
+}
+
+.architecture-board[data-board-style="linen"] .kind-class .linen-kind {
+	position: absolute;
+	top: 22px;
+	left: 0;
+	right: 0;
+	justify-content: center;
+}
+
+.architecture-board[data-board-style="linen"] .linen-title .node-title {
+	font: 600 17px/1.24 system-ui, sans-serif;
+	letter-spacing: -.2px;
+	text-align: center;
+	white-space: normal;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 4;
+	color: var(--object-text);
+}
+
+.architecture-board[data-board-style="linen"] .linen-kind {
+	display: flex;
+	gap: 7px;
+	align-items: center;
+	font: 600 9px/14px system-ui, sans-serif;
+	letter-spacing: 1.1px;
+	text-transform: uppercase;
+	color: var(--object-label);
+}
+
+.architecture-board[data-board-style="linen"] .linen-glyph {
+	font: 600 14px/14px ui-monospace, monospace;
+	letter-spacing: -1px;
+}
+
+.architecture-board[data-board-style="linen"] .kind-database .node-content {
+	padding: 37px 18px 30px;
+	align-items: center;
+	gap: 8px;
+}
+
+.architecture-board[data-board-style="linen"] .kind-api_endpoint .node-content {
+	padding: 30px 20px 30px 53px;
+	align-items: center;
+	gap: 12px;
+}
+
+.architecture-board[data-board-style="linen"] .kind-function .node-content {
+	padding: 16px 36px;
+	align-items: center;
+	gap: 7px;
+}
+
+.architecture-board[data-board-style="linen"] .kind-group .node-content {
+	padding: 0 22px;
+	justify-content: flex-start;
+	align-items: flex-start;
+}
+
+.architecture-board[data-board-style="linen"] .kind-group .node-content .node-title {
+	margin-top: -13px;
+	background: var(--board-bg);
+	padding: 2px 12px;
+	font: 600 14px/22px system-ui, sans-serif;
+	letter-spacing: .25px;
+	color: var(--board-fg);
+}
+
+.architecture-board[data-board-style="linen"] .board-node.is-selected .node-outline,
+.architecture-board[data-board-style="linen"] .react-flow__node:focus-visible .node-outline {
+	stroke: var(--object-selected-ink);
+	stroke-width: 2.5;
+}
+
+.architecture-board[data-board-style="linen"] .board-node.is-selected .node-silhouette {
+	filter: var(--style-selected-shadow);
+}
+
+.architecture-board[data-board-style="linen"] .board-node.is-dimmed {
+	opacity: .36;
+}
+
+.architecture-board[data-board-style="linen"] .react-flow__handle {
+	background: var(--object-ink);
+}
+
+
+.architecture-board[data-board-style="linen"] .selection-popover {
+	border-color: var(--board-border);
+	box-shadow: 0 12px 32px #30342f24;
+}
+
+.architecture-board[data-board-style="linen"] .board-edge-label {
+	border-radius: 5px;
+	font-size: 11px;
+}
+
+.architecture-board[data-board-style="linen"] .canvas-hint {
+	font-size: 10px;
+}
+
+/* Legend silhouettes inherit their kind's palette from the enclosing kind-* element. */

@@ -1,18 +1,9 @@
 import type { DiracToolSpec } from "@/shared/tools";
-import type { TaskExecutionProfile } from "../../TaskExecutionProfile";
+import type { ToolExposure } from "./ToolExposure"
+export { CONFIGURABLE_TOOL_EXPOSURE, GOAL_COORDINATOR_TOOL_EXPOSURE } from "./ToolExposure"
+export type { ToolExposure } from "./ToolExposure"
 import type { IDiracTool } from "../interfaces/IDiracTool";
-import type { TaskConfig } from "../types/TaskConfig";
-
-export type ToolExposure =
-	| { kind: "configurable" }
-	| { kind: "skill_only"; authorizedSkillIds: readonly string[] }
-	| { kind: "profile_only"; profiles: readonly TaskExecutionProfile[] }
-
-export const CONFIGURABLE_TOOL_EXPOSURE: ToolExposure = { kind: "configurable" }
-export const GOAL_COORDINATOR_TOOL_EXPOSURE: ToolExposure = {
-	kind: "profile_only",
-	profiles: ["goal_coordinator"],
-}
+import type { ToolConfig } from "../types/ToolConfig";
 
 export type ToolSource = "builtin" | "global" | "workspace" | "task"
 
@@ -23,14 +14,14 @@ export interface DiscoveredTool {
 	name: string
 	/** Where this tool was discovered */
 	source: ToolSource
-	/** Owning Task for task-scoped tools. Required when source is "task". */
+	/** Process-local owner key for task tools; tasklets include their root namespace. */
 	ownerTaskId?: string
-	/** Controls whether this tool is user-configurable, skill-only, or restricted to execution profiles. */
+	/** Controls whether this tool is user-configurable, context-only, skill-only, or restricted to execution profiles. */
 	exposure: ToolExposure
 	/** For LLM API schema generation */
 	spec: DiracToolSpec
 	/** For runtime instantiation */
-	factory: (config?: TaskConfig) => IDiracTool
+	factory: (config?: ToolConfig) => IDiracTool
 	/** Filesystem path to the tool.ts manifest */
 	modulePath: string
 	/** Content fingerprint for a user tool's manifest entrypoint. */

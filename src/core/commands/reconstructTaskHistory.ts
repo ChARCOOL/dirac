@@ -17,6 +17,7 @@ import * as path from "path"
 import { ulid } from "ulid"
 import { getErrorMessage } from "@/shared/errors"
 import { Logger } from "@/shared/services/Logger"
+import { TASKLET_ID_PREFIX } from "@/shared/taskletId"
 import { withTaskHistoryInventoryLock } from "@core/storage/taskHistory"
 
 export interface TaskReconstructionResult {
@@ -108,12 +109,14 @@ async function performTaskHistoryReconstruction(): Promise<TaskReconstructionRes
 
 	// Scan for task directories
 	const taskIds = await scanTaskDirectories(tasksDir)
-	const goals = await new GoalStore().list()
-	const goalOwnedDirectoryIds = new Set(goals.flatMap((goal) => [goal.id, ...goal.children.map((child) => child.id)]))
+	const inventory = await new GoalStore().scanRecords()
+	const goals = inventory.records
+	result.errors.push(...inventory.failures.map(({ goalId, error }) => `Goal ${goalId}: ${getErrorMessage(error)}`))
+	const goalOwnedDirectoryIds = new Set(inventory.ownedDirectoryIds)
 	const ordinaryTaskIds = taskIds.filter((taskId) => !goalOwnedDirectoryIds.has(taskId))
 	result.totalTasks = ordinaryTaskIds.length + goals.length
 
-	if (result.totalTasks === 0) {
+	if (taskIds.length === 0) {
 		throw new Error("No task directories found. Nothing to reconstruct.")
 	}
 
@@ -127,7 +130,7 @@ async function performTaskHistoryReconstruction(): Promise<TaskReconstructionRes
 
 	for (const taskId of ordinaryTaskIds) {
 		try {
-			const historyItem = await reconstructTaskHistoryItem(taskId)
+			const historyItem = await reconstructTaskHistoryItem(taskId, goalOwnedDirectoryIds)
 			if (historyItem) {
 				reconstructedItems.push(historyItem)
 				result.reconstructedTasks++
@@ -182,14 +185,21 @@ async function scanTaskDirectories(tasksDir: string): Promise<string[]> {
 
 	try {
 		const entries = await fs.readdir(tasksDir, { withFileTypes: true })
-		return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+		return entries
+			.filter((entry) => entry.isDirectory() && !entry.name.startsWith(TASKLET_ID_PREFIX))
+			.map((entry) => entry.name)
 	} catch (error) {
 		throw new Error(`Failed to scan tasks directory: ${error}`)
 	}
 }
 
-export async function reconstructTaskHistoryItem(taskId: string): Promise<HistoryItem | null> {
+export async function reconstructTaskHistoryItem(
+	taskId: string,
+	goalOwnedDirectoryIds?: ReadonlySet<string>,
+): Promise<HistoryItem | null> {
 	try {
+		const ownedIds = goalOwnedDirectoryIds ?? new Set((await new GoalStore().scanRecords()).ownedDirectoryIds)
+		if (ownedIds.has(taskId)) return null
 		// Load UI messages to extract task info
 		const diracMessages = await getSavedDiracMessages(taskId)
 		if (diracMessages.length === 0) {

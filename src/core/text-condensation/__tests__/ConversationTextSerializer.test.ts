@@ -147,9 +147,9 @@ describe("ConversationTextSerializer", () => {
 				content: [
 					{
 						type: "tool_use",
-						id: "new-task-call",
-						name: "new_task",
-						input: { intent: "latest new-task tool intent" },
+						id: "condense-call",
+						name: "condense",
+						input: { context: "latest condensation request" },
 					},
 				],
 			},
@@ -159,19 +159,19 @@ describe("ConversationTextSerializer", () => {
 			condense(input: TextStream): TextStream {
 				return (async function* () {
 					receivedSource = await collectText(input)
-					yield "handoff"
+					yield "summary"
 				})()
 			},
 		}
 		const service = createService(history, condenser, [1, 4])
 
 		assert.equal(
-			await service.condenseConversation("task_handoff", {
+			await service.condenseConversation("conversation_continuation", {
 				historyScope: "complete",
 				additionalSourceText:
-					'=== REQUESTED NEW TASK INTENT ===\n{"intent":"Implement the schema switch."}',
+					'=== CONTINUATION OBJECTIVE ===\n{"intent":"Implement the schema switch."}',
 			}),
-			"handoff",
+			"summary",
 		)
 		for (const marker of [
 			"original task request",
@@ -179,11 +179,11 @@ describe("ConversationTextSerializer", () => {
 			"first continuation summary",
 			"work between compactions",
 			"second continuation summary",
-			"latest new-task tool intent",
+			"latest condensation request",
 		]) {
 			assert.ok(receivedSource.includes(marker), `Missing complete-history marker: ${marker}`)
 		}
-		assert.ok(receivedSource.indexOf("REQUESTED NEW TASK INTENT") > receivedSource.indexOf("latest new-task tool intent"))
+		assert.ok(receivedSource.indexOf("CONTINUATION OBJECTIVE") > receivedSource.indexOf("latest condensation request"))
 		assert.ok(receivedSource.includes("Implement the schema switch."))
 	})
 

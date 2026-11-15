@@ -10,16 +10,24 @@ import {
 } from "@shared/ExtensionMessage"
 import { isBusyTaskStatus } from "@shared/taskStatusProjection"
 import { DiracAskResponse } from "@shared/WebviewMessage"
-import { TaskState } from "../TaskState"
+import { ReadonlyTaskState } from "../TaskState"
 
 export function projectUIActionState(
-	state: TaskState | undefined,
+	state: ReadonlyTaskState | undefined,
 	messages: readonly DiracMessage[] | ((id: string) => DiracMessage | undefined),
 	maxConsecutiveMistakes: number,
 ): UIActionState {
+	const pendingApprovalCardIds = state?.abort || state?.status === TaskStatus.CANCELLING ? [] :
+		[...(state?.pendingCardInteractions ?? [])].flatMap(([id, interaction]) => {
+			if (interaction.signal.aborted || interaction.response) return []
+			const message = typeof messages === "function" ? messages(id) : messages.find((entry) => entry.id === id)
+			return message?.content.type === DiracMessageType.CARD &&
+				message.content.card.requireApproval && !isFinalStatus(message.content.card.status) ? [id] : []
+		})
 	const uiState: UIActionState = {
 		globalButtons: [],
 		cardButtons: [],
+		pendingApprovalCardIds,
 		sendingDisabled: state?.status === TaskStatus.CANCELLING,
 	}
 

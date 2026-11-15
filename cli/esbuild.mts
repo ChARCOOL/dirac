@@ -3,8 +3,12 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import dotenv from "dotenv"
 import * as esbuild from "esbuild"
-// @ts-ignore
+// @ts-expect-error JavaScript packaging helper is intentionally shared with extension builds.
+import { braketAssetsPlugin } from "../scripts/braket-assets.mjs"
+// @ts-expect-error
 import { copySourceCode } from "../scripts/copy-source.mjs"
+// @ts-expect-error JavaScript packaging helper is intentionally shared with extension builds.
+import { copyWindowsMxcArtifacts } from "../scripts/windows-mxc-artifacts.mjs"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -87,19 +91,6 @@ const aliasResolverPlugin: esbuild.Plugin = {
 	},
 }
 
-/**
- * Plugin to redirect vscode imports to our shim
- */
-const vscodeStubPlugin: esbuild.Plugin = {
-	name: "vscode-stub",
-	setup(build) {
-		// Redirect 'vscode' imports to our shim
-		build.onResolve({ filter: /^vscode$/ }, () => {
-			return { path: path.join(__dirname, "src", "vscode-shim.ts") }
-		})
-	},
-}
-
 const esbuildProblemMatcherPlugin: esbuild.Plugin = {
 	name: "esbuild-problem-matcher",
 	setup(build) {
@@ -133,6 +124,7 @@ const copyWasmFiles: esbuild.Plugin = {
 	setup(build) {
 		build.onEnd(() => {
 			const destDir = path.join(__dirname, "dist")
+			copyWindowsMxcArtifacts(destDir)
 
 			// Ensure dist directory exists
 			if (!fs.existsSync(destDir)) {
@@ -257,7 +249,7 @@ const sharedOptions: Partial<esbuild.BuildOptions> = {
 	logLevel: "silent",
 	define: buildEnvVars,
 	tsconfig: path.join(__dirname, "tsconfig.json"),
-	plugins: [copyWasmFiles, aliasResolverPlugin, vscodeStubPlugin, stubOptionalModulesPlugin, esbuildProblemMatcherPlugin],
+	plugins: [copyWasmFiles, braketAssetsPlugin(), aliasResolverPlugin, stubOptionalModulesPlugin, esbuildProblemMatcherPlugin],
 	format: "esm",
 	sourcesContent: false,
 	platform: "node",

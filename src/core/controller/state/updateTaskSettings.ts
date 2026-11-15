@@ -75,6 +75,8 @@ function prepareTaskSettings(
 	settings: any,
 	activeSettings?: DeepReadonly<Settings>,
 ): PreparedTaskSettings {
+	if (settings.subagentRoles !== undefined) throw new Error("Subagent roles are user-global settings")
+	if (settings.sandboxSettings !== undefined) throw new Error("Sandbox settings are user-global settings")
 	const {
 		autoApprovalSettings: incomingAutoApprovalSettings,
 		planModeReasoningEffort,
@@ -87,7 +89,6 @@ function prepareTaskSettings(
 		utilityModelEnabled: _utilityModelEnabled,
 		utilityModelSelection: _utilityModelSelection,
 		utilityModelUseCondense: _utilityModelUseCondense,
-		utilityModelUseNewTask: _utilityModelUseNewTask,
 		utilityModelUseGenerateCommitMessage: _utilityModelUseGenerateCommitMessage,
 		...simpleValues
 	} = settings
@@ -125,7 +126,7 @@ function persistTaskSettings(controller: Controller, taskId: string, prepared: P
 	const previouslyOwned = new Set<keyof Settings>()
 	for (const key of keys) {
 		if (stateManager.hasTaskSetting(key)) previouslyOwned.add(key)
-		;(previousValues as Record<string, unknown>)[key] = structuredClone(stateManager.getTaskSetting(key))
+			; (previousValues as Record<string, unknown>)[key] = structuredClone(stateManager.getTaskSetting(key))
 	}
 
 	try {

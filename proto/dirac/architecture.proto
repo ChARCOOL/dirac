@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package dirac;
+
+import "dirac/common.proto";
+
+option go_package = "github.com/dirac/grpc-go/dirac";
+option java_multiple_files = true;
+option java_package = "bot.dirac.proto";
+
+message ArchitectureReference {
+  string task_id = 1;
+  string name = 2;
+  string mode = 3;
+  optional int32 version = 4;
+  optional int32 start_version = 5;
+  optional int32 end_version = 6;
+}
+
+message ArchitectureBoardRequest {
+  string task_id = 1;
+  bool view_latest = 2;
+  optional ArchitectureReference selection = 3;
+}
+
+message ArchitectureBoardPane {
+  string name = 1;
+  int32 version = 2;
+  string title = 3;
+  string summary = 4;
+  string diagram_json = 5;
+  optional string presentation_json = 6;
+  optional string review_error = 7;
+  optional string comments_json = 8;
+  optional string pending_reviews_json = 9;
+  optional string history_error = 10;
+  optional string feedback_warning = 11;
+}
+
+message ArchitectureBoardView {
+  ArchitectureReference selection = 1;
+  repeated ArchitectureBoardPane panes = 2;
+  // Latest readable version at resolution time; absent when availability is unknown.
+  optional int32 latest_version = 3;
+  // Advisory availability failure; requested exact snapshots remain usable.
+  optional string latest_version_error = 4;
+}
+
+message ArchitecturePresentationRequest {
+  string task_id = 1;
+  string name = 2;
+  int32 version = 3;
+  string presentation_json = 4;
+}
+
+message ArchitectureCommentRequest {
+  string task_id = 1;
+  string name = 2;
+  int32 version = 3;
+  string mutation_json = 4;
+}
+
+message ArchitectureComments {
+  string comments_json = 1;
+}
+
+message ArchitectureCodeRequest {
+  string task_id = 1;
+  string name = 2;
+  int32 version = 3;
+  string target_kind = 4;
+  string target_id = 5;
+  int32 reference_index = 6;
+}
+
+message ArchitectureFeedbackRequest {
+  string task_id = 1;
+  string name = 2;
+  repeated int32 versions = 3;
+}
+
+message ArchitectureFeedbackResult {
+  int32 submitted_count = 1;
+  optional string warning = 2;
+}
+
+service ArchitectureService {
+  rpc openArchitectureBoard(ArchitectureReference) returns (Empty);
+  rpc readArchitectureBoard(ArchitectureBoardRequest) returns (ArchitectureBoardView);
+  rpc saveArchitecturePresentation(ArchitecturePresentationRequest) returns (Empty);
+  rpc mutateArchitectureComment(ArchitectureCommentRequest) returns (ArchitectureComments);
+  rpc submitArchitectureFeedback(ArchitectureFeedbackRequest) returns (ArchitectureFeedbackResult);
+  rpc openArchitectureCode(ArchitectureCodeRequest) returns (Empty);
+}

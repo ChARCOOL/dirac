@@ -59,15 +59,15 @@ describe("emitTaskStartedMessage", () => {
 
 
 describe("approveCardForPlainTextYolo", () => {
-	it("forwards the primary action value when approving a new-task card", async () => {
+	it("forwards the primary action value when approving a card", async () => {
 		const submitCardResponse = vi.fn().mockResolvedValue(undefined)
 		const controller = { task: { submitCardResponse } }
 		const card: Card = {
-			id: "new-task-card",
-			header: "New Task",
+			id: "approval-card",
+			header: "Run Command",
 			status: CardStatus.WAITING_FOR_INPUT,
 			renderType: "markdown",
-			actions: [{ label: "Approve New Task", value: "new_task", primary: true }],
+			actions: [{ label: "Run Command", value: "run_command", primary: true }],
 		}
 
 		await approveCardForPlainTextYolo(controller, card)
@@ -78,7 +78,7 @@ describe("approveCardForPlainTextYolo", () => {
 			undefined,
 			undefined,
 			undefined,
-			"new_task",
+			"run_command",
 		)
 	})
 

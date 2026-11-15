@@ -45,8 +45,8 @@ describe("Goal summary allocation", () => {
 	})
 
 	it("bounds expanded details to leave transcript and composer space", () => {
-		expect(calculateGoalSummaryRows(24, true)).toBe(15)
-		expect(calculateGoalSummaryRows(40, true)).toBe(16)
+		expect(calculateGoalSummaryRows(24, true)).toBe(9)
+		expect(calculateGoalSummaryRows(40, true)).toBe(9)
 	})
 })
 
@@ -69,6 +69,23 @@ describe("stable live viewport", () => {
 })
 
 describe("calculatePermissionModalLayout", () => {
+	it("reserves one footer row per command choice without changing the modal size", () => {
+		const ordinary = calculatePermissionModalLayout(100, 30)
+		const command = calculatePermissionModalLayout(100, 30, ["Approve this command", "Allow network", "Allow files", "Reject"])
+		expect(command).toEqual({ ...ordinary, bodyLines: ordinary.bodyLines - 3 })
+	})
+
+	it("reserves wrapped command-choice rows on narrow terminals", () => {
+		const ordinary = calculatePermissionModalLayout(60, 24)
+		const command = calculatePermissionModalLayout(60, 24, [
+			"Approve this command",
+			"Approve + allow remote_resources/mutate for this task",
+			"Approve + allow local_files/mutate for this task",
+			"Reject",
+		])
+		expect(command.bodyLines).toBe(ordinary.bodyLines - 5)
+	})
+
 	it.each([
 		[1, 1],
 		[8, 5],

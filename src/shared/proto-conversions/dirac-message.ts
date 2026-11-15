@@ -1,7 +1,12 @@
+import { parseArchitectureSelection } from "@shared/architecture/selection"
+import { Logger } from "@shared/services/Logger"
 import {
 	Card as AppCard,
 	CardKind as AppCardKind,
 	CardStatus as AppCardStatus,
+	CommandApprovalAccess as AppCommandApprovalAccess,
+	CommandApprovalCategory as AppCommandApprovalCategory,
+	CommandApprovalChoice as AppCommandApprovalChoice,
 	DiracMessage as AppDiracMessage,
 	DiracMessageType as AppDiracMessageType,
 	SteeringTranscriptStatus as AppSteeringTranscriptStatus,
@@ -11,9 +16,23 @@ import {
 	Card,
 	CardKind as ProtoCardKind,
 	CardStatus as ProtoCardStatus,
+	CommandApprovalAccess as ProtoCommandApprovalAccess,
+	CommandApprovalCategory as ProtoCommandApprovalCategory,
+	CommandApprovalChoice as ProtoCommandApprovalChoice,
 	DiracMessage as ProtoDiracMessage,
 	SteeringTranscriptStatus as ProtoSteeringTranscriptStatus,
 } from "@shared/proto/dirac/ui"
+
+// Corrupt optional navigation must not prevent the rest of a resumed transcript from loading.
+function readArchitectureReference(input: unknown): AppCard["architectureReference"] {
+	if (input === undefined) return undefined
+	try {
+		return parseArchitectureSelection(input)
+	} catch (error) {
+		Logger.warn("Invalid architecture card reference; navigation unavailable", error)
+		return undefined
+	}
+}
 
 function convertCardStatusToProtoEnum(status: AppCardStatus): ProtoCardStatus {
 	const mapping: Record<AppCardStatus, ProtoCardStatus> = {
@@ -104,7 +123,6 @@ function convertProtoEnumToSteeringStatus(
 	return parseLegacySteeringStatus(legacyStatus)
 }
 
-
 function serializeCardRecord(value: Record<string, unknown> | undefined): string | undefined {
 	if (value === undefined) return undefined
 	try {
@@ -126,6 +144,37 @@ function parseCardRecord(value: string | undefined): Record<string, unknown> | u
 	}
 }
 
+const commandApprovalCategories: Record<AppCommandApprovalCategory, ProtoCommandApprovalCategory> = {
+	filesystem: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_FILESYSTEM,
+	network: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_NETWORK,
+	processes: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_PROCESSES,
+	execution: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_EXECUTION,
+	credentials: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_CREDENTIALS,
+	software: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_SOFTWARE,
+	configuration: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_CONFIGURATION,
+	devices: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_DEVICES,
+	remote_resources: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_REMOTE_RESOURCES,
+	system: ProtoCommandApprovalCategory.COMMAND_APPROVAL_CATEGORY_SYSTEM,
+}
+
+const commandApprovalAccessLevels: Record<AppCommandApprovalAccess, ProtoCommandApprovalAccess> = {
+	use: ProtoCommandApprovalAccess.COMMAND_APPROVAL_ACCESS_USE,
+	read: ProtoCommandApprovalAccess.COMMAND_APPROVAL_ACCESS_READ,
+	mutate: ProtoCommandApprovalAccess.COMMAND_APPROVAL_ACCESS_MUTATE,
+}
+
+function convertProtoCommandApprovalChoice(choice: ProtoCommandApprovalChoice): AppCommandApprovalChoice {
+	const category = (Object.keys(commandApprovalCategories) as AppCommandApprovalCategory[])
+		.find((key) => commandApprovalCategories[key] === choice.category)
+	const access = (Object.keys(commandApprovalAccessLevels) as AppCommandApprovalAccess[])
+		.find((key) => commandApprovalAccessLevels[key] === choice.access)
+	return {
+		id: choice.id,
+		label: choice.label,
+		...(category === undefined ? {} : { category }),
+		...(access === undefined ? {} : { access }),
+	}
+}
 
 function convertCardToProto(card: AppCard): Card {
 	return {
@@ -149,6 +198,9 @@ function convertCardToProto(card: AppCard): Card {
 		toolName: card.toolName ?? undefined,
 		rawInputJson: serializeCardRecord(card.rawInput),
 		rawOutputJson: serializeCardRecord(card.rawOutput),
+		communication: card.communication,
+		taskletReceiptJson: card.taskletReceipt === undefined ? undefined : JSON.stringify(card.taskletReceipt),
+		architectureReference: card.architectureReference,
 		diffs:
 			card.diffs?.map((diff) => ({
 				path: diff.path,
@@ -160,6 +212,12 @@ function convertCardToProto(card: AppCard): Card {
 				path: location.path,
 				line: location.line,
 			})) ?? [],
+		commandApprovalChoices: card.commandApprovalChoices?.map((choice) => ({
+			id: choice.id,
+			label: choice.label,
+			category: choice.category === undefined ? undefined : commandApprovalCategories[choice.category],
+			access: choice.access === undefined ? undefined : commandApprovalAccessLevels[choice.access],
+		})) ?? [],
 		actions:
 			card.actions?.map((action) => ({
 				label: action.label,
@@ -194,6 +252,9 @@ function convertProtoToCard(protoCard: Card): AppCard {
 		toolName: protoCard.toolName ?? undefined,
 		rawInput: parseCardRecord(protoCard.rawInputJson),
 		rawOutput: parseCardRecord(protoCard.rawOutputJson),
+		communication: protoCard.communication,
+		taskletReceipt: protoCard.taskletReceiptJson === undefined ? undefined : JSON.parse(protoCard.taskletReceiptJson),
+		architectureReference: readArchitectureReference(protoCard.architectureReference),
 		diffs:
 			protoCard.diffs.length > 0
 				? protoCard.diffs.map((diff) => ({ path: diff.path, oldText: diff.oldText, newText: diff.newText }))
@@ -202,6 +263,9 @@ function convertProtoToCard(protoCard: Card): AppCard {
 			protoCard.locations.length > 0
 				? protoCard.locations.map((location) => ({ path: location.path, line: location.line ?? undefined }))
 				: undefined,
+		commandApprovalChoices: protoCard.commandApprovalChoices?.length
+			? protoCard.commandApprovalChoices.map(convertProtoCommandApprovalChoice)
+			: undefined,
 		actions:
 			protoCard.actions?.map((action) => ({
 				label: action.label,
@@ -248,7 +312,6 @@ export function convertDiracMessageToProto(message: AppDiracMessage): ProtoDirac
 		browserActionResult: undefined,
 		planModeResponse: undefined,
 		askQuestion: undefined,
-		askNewTask: undefined,
 	}
 
 	// Map content union to proto fields

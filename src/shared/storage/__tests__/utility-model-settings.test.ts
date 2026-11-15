@@ -14,7 +14,6 @@ import { getDefaultValue } from "../state-keys"
 describe("Utility model settings", () => {
 	it("defaults each Utility use case to enabled without a persisted selection", () => {
 		expect(getDefaultValue("utilityModelUseCondense")).to.equal(true)
-		expect(getDefaultValue("utilityModelUseNewTask")).to.equal(true)
 		expect(getDefaultValue("utilityModelUseGenerateCommitMessage")).to.equal(true)
 		expect(getDefaultValue("utilityModelUsePermissionHandling")).to.equal(false)
 		expect(getDefaultValue("utilityModelPermissionPolicy")).to.equal("")
@@ -40,7 +39,6 @@ describe("Utility model settings", () => {
 			Settings.create({
 				utilityModelEnabled: true,
 				utilityModelUseCondense: true,
-				utilityModelUseNewTask: false,
 				utilityModelUseGenerateCommitMessage: true,
 				utilityModelUsePermissionHandling: false,
 				utilityModelPermissionPolicy: "Allow edits in this repository.",
@@ -52,7 +50,6 @@ describe("Utility model settings", () => {
 
 		expect(decoded.utilityModelEnabled).to.equal(true)
 		expect(decoded.utilityModelUseCondense).to.equal(true)
-		expect(decoded.utilityModelUseNewTask).to.equal(false)
 		expect(decoded.utilityModelUseGenerateCommitMessage).to.equal(true)
 		expect(decoded.utilityModelUsePermissionHandling).to.equal(false)
 		expect(decoded.utilityModelPermissionPolicy).to.equal("Allow edits in this repository.")

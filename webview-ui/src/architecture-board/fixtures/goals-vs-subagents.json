@@ -1,0 +1,261 @@
+{
+  "title": "Goals vs. subagents: independent Tasks vs. a blocking parallel batch",
+  "summary": "Current implementation, traced from source; not a proposed redesign. A Goal owns a foreground coordinator Task and private full child Tasks. start_task returns after launch, so the coordinator can continue working and later consume ordered events. use_subagents starts parallel SubagentRunner instances but awaits every result before returning to the caller. These mechanisms compose: a Goal child can itself call use_subagents when enabled. Both share the workspace; private conversation state is not filesystem isolation. Goal execution is always Act; subagents inherit the caller's mode. Inspect nodes and edges for context, lifecycle details, constraints, and code links.",
+  "nodes": [
+    {
+      "id": "goal-lane",
+      "kind": "group",
+      "label": "GOAL — durable orchestration across Tasks"
+    },
+    {
+      "id": "goal-owner",
+      "kind": "component",
+      "label": "GoalLoop — lifecycle owner",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "goal-coordinator",
+      "kind": "component",
+      "label": "Coordinator Task — keeps working",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "goal-api",
+      "kind": "api_endpoint",
+      "label": "Goal tools → IToolEnvironment.goal",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "goal-host",
+      "kind": "component",
+      "label": "GoalTaskHost — launch / supervise",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "goal-children",
+      "kind": "component",
+      "label": "Task A ∥ Task B ∥ … — full workers",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "goal-state",
+      "kind": "database",
+      "label": "GoalStore — objective, children, events",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "goal-wake",
+      "kind": "function",
+      "label": "wait_for_goal_events → ordered wake",
+      "parentId": "goal-lane"
+    },
+    {
+      "id": "subagent-lane",
+      "kind": "group",
+      "label": "SUBAGENTS — parallel work within one tool call"
+    },
+    {
+      "id": "parent-task",
+      "kind": "component",
+      "label": "Calling Task — waits for batch",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "subagent-tool",
+      "kind": "function",
+      "label": "use_subagents — fan out requests",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "subagent-api",
+      "kind": "api_endpoint",
+      "label": "env.orchestration.runSubagent",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "subagent-runners",
+      "kind": "component",
+      "label": "Runner A ∥ Runner B ∥ …",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "subagent-executor",
+      "kind": "component",
+      "label": "Scoped tool execution + respond",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "subagent-join",
+      "kind": "function",
+      "label": "Promise.allSettled → one tool result",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "subagent-observability",
+      "kind": "database",
+      "label": "Parent-owned cards, logs and usage",
+      "parentId": "subagent-lane"
+    },
+    {
+      "id": "shared-workspace",
+      "kind": "database",
+      "label": "Same workspace — no per-worker worktree"
+    }
+  ],
+  "edges": [
+    {
+      "id": "goal-owner-coordinator",
+      "kind": "aggregation",
+      "source": "goal-owner",
+      "target": "goal-coordinator",
+      "label": "owns foreground conversation"
+    },
+    {
+      "id": "goal-owner-host",
+      "kind": "aggregation",
+      "source": "goal-owner",
+      "target": "goal-host",
+      "label": "owns child lifecycle"
+    },
+    {
+      "id": "goal-coordinator-api",
+      "kind": "api_call",
+      "source": "goal-coordinator",
+      "target": "goal-api",
+      "label": "1. start_task / inspect / steer"
+    },
+    {
+      "id": "goal-api-host",
+      "kind": "api_call",
+      "source": "goal-api",
+      "target": "goal-host",
+      "label": "environment delegates to host"
+    },
+    {
+      "id": "goal-host-children",
+      "kind": "aggregation",
+      "source": "goal-host",
+      "target": "goal-children",
+      "label": "2. launch; do NOT await completion"
+    },
+    {
+      "id": "goal-host-api",
+      "kind": "data_flow",
+      "source": "goal-host",
+      "target": "goal-api",
+      "label": "3. return child record immediately"
+    },
+    {
+      "id": "goal-children-state",
+      "kind": "data_flow",
+      "source": "goal-children",
+      "target": "goal-state",
+      "label": "4. private responses / interactions / outcomes"
+    },
+    {
+      "id": "goal-host-state",
+      "kind": "dependency",
+      "source": "goal-host",
+      "target": "goal-state",
+      "label": "registry + durable state updates"
+    },
+    {
+      "id": "goal-coordinator-wake",
+      "kind": "api_call",
+      "source": "goal-coordinator",
+      "target": "goal-wake",
+      "label": "5. explicitly wait when idle"
+    },
+    {
+      "id": "goal-state-wake",
+      "kind": "data_flow",
+      "source": "goal-state",
+      "target": "goal-wake",
+      "label": "ordered pending events"
+    },
+    {
+      "id": "goal-wake-coordinator",
+      "kind": "data_flow",
+      "source": "goal-wake",
+      "target": "goal-coordinator",
+      "label": "6. wake → decide / steer / finish"
+    },
+    {
+      "id": "parent-subagent-tool",
+      "kind": "api_call",
+      "source": "parent-task",
+      "target": "subagent-tool",
+      "label": "1. delegate batch; caller waits"
+    },
+    {
+      "id": "subagent-tool-api",
+      "kind": "api_call",
+      "source": "subagent-tool",
+      "target": "subagent-api",
+      "label": "2. one call per request, concurrently"
+    },
+    {
+      "id": "subagent-api-runners",
+      "kind": "aggregation",
+      "source": "subagent-api",
+      "target": "subagent-runners",
+      "label": "3. create separate runners"
+    },
+    {
+      "id": "subagent-runners-executor",
+      "kind": "api_call",
+      "source": "subagent-runners",
+      "target": "subagent-executor",
+      "label": "4. repeated model → tool turns"
+    },
+    {
+      "id": "subagent-executor-runners",
+      "kind": "data_flow",
+      "source": "subagent-executor",
+      "target": "subagent-runners",
+      "label": "tool results / progress / completion"
+    },
+    {
+      "id": "subagent-runners-join",
+      "kind": "data_flow",
+      "source": "subagent-runners",
+      "target": "subagent-join",
+      "label": "5. result or failure from every run"
+    },
+    {
+      "id": "subagent-join-parent",
+      "kind": "data_flow",
+      "source": "subagent-join",
+      "target": "parent-task",
+      "label": "6. aggregate result; caller resumes"
+    },
+    {
+      "id": "subagent-runners-observability",
+      "kind": "data_flow",
+      "source": "subagent-runners",
+      "target": "subagent-observability",
+      "label": "live progress, recording, usage"
+    },
+    {
+      "id": "goal-children-subagents",
+      "kind": "dependency",
+      "source": "goal-children",
+      "target": "parent-task",
+      "label": "can itself be the calling Task"
+    },
+    {
+      "id": "goal-children-workspace",
+      "kind": "dependency",
+      "source": "goal-children",
+      "target": "shared-workspace",
+      "label": "read / edit / execute via tools"
+    },
+    {
+      "id": "subagent-executor-workspace",
+      "kind": "dependency",
+      "source": "subagent-executor",
+      "target": "shared-workspace",
+      "label": "read / edit / execute via tools"
+    }
+  ]
+}

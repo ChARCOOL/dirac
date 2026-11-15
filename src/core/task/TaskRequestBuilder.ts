@@ -1,3 +1,4 @@
+import { meetsHostCapabilityRequirement } from "@hosts/host-capabilities"
 import type { ApiProviderInfo } from "@core/api"
 import {
 	getGlobalDiracRules,
@@ -12,9 +13,7 @@ import {
 } from "@core/context/instructions/user-instructions/external-rules"
 import { formatResponse } from "@core/formatResponse"
 import { ensureRulesDirectoryExists, ensureTaskDirectoryExists } from "@core/storage/disk"
-import { createDefaultTextCondensationTemplateRegistry, TASK_HANDOFF_TEMPLATE_ID } from "@core/text-condensation/templates"
-import { isUtilityTextCondensationAvailable } from "@core/text-condensation/UtilityTextCondensationAvailability"
-import { getConfiguredUtilityModelSelection } from "@core/utility-model/UtilityModelSelection"
+import type { TaskStorageAddress } from "@core/storage/taskDirectory"
 import { HostProvider } from "@hosts/host-provider"
 import { featureFlagsService } from "@services/feature-flags"
 import { DiracClient } from "@shared/dirac"
@@ -39,10 +38,11 @@ import type { ToolExecutor } from "./ToolExecutor"
 import type { TaskRequestRuntime } from "./runtime/TaskRequestRuntime"
 import { bindToolSnapshotToRequestRuntime } from "./runtime/TaskRequestRuntime"
 import type { TaskExecutionProfile } from "./TaskExecutionProfile"
-import { taskProfileSystemInstructions } from "./TaskExecutionProfile"
+import { isSkillAvailableToTaskProfile, taskProfileSystemInstructions } from "./TaskExecutionProfile"
 
 export interface TaskRequestBuilderContext {
 	taskId: string
+	storageAddress?: TaskStorageAddress
 	cwd: string
 	terminalExecutionMode: "vscodeTerminal" | "backgroundExec"
 	stateManager: StateManager
@@ -56,6 +56,8 @@ export interface TaskRequestBuilderContext {
 	taskState: TaskState
 	executionProfile: TaskExecutionProfile
 	getPinnedContext: () => Promise<string | undefined>
+	taskletConfiguration?: import("./TaskletConfiguration").TaskletConfiguration
+	getTaskletSupervisionContext?: () => string | undefined
 	writePromptMetadataArtifacts: (params: {
 		systemPrompt: string
 		providerInfo: ApiProviderInfo
@@ -156,7 +158,8 @@ export async function buildApiRequestParams(
 	})
 	const globalSkillsToggles = settings.globalSkillsToggles ?? {}
 	const localSkillsToggles = workspaceConfiguration.localSkillsToggles ?? {}
-	const availableSkills = providerSkills.filter((skill) => {
+	const availableSkills = providerSkills.filter(meetsHostCapabilityRequirement).filter((skill) => {
+		if (!isSkillAvailableToTaskProfile(ctx.executionProfile, skill)) return false
 		if (settings.yoloModeToggled && skill.interactiveOnly) return false
 		if (skill.source === "builtin") return true
 		const toggles = skill.source === "global" ? globalSkillsToggles : localSkillsToggles
@@ -172,27 +175,19 @@ export async function buildApiRequestParams(
 		visible: visibleTabPaths.slice(0, cap),
 	}
 	const shellInfo = detectBestShell()
-	const taskHandoffCondensationAvailable = isUtilityTextCondensationAvailable(
-		{
-			utilityModelEnabled: settings.utilityModelEnabled,
-			utilityModelUseCondense: settings.utilityModelUseCondense,
-			utilityModelUseNewTask: settings.utilityModelUseNewTask,
-			utilityModelSelection: settings.utilityModelSelection,
-		},
-		TASK_HANDOFF_TEMPLATE_ID,
-		createDefaultTextCondensationTemplateRegistry(),
-	)
 
 	const promptContext: SystemPromptContext = {
 		executionProfile: ctx.executionProfile,
-		profileInstructions: taskProfileSystemInstructions(ctx.executionProfile),
+		taskId: ctx.taskId,
+		profileInstructions: taskProfileSystemInstructions(ctx.executionProfile, settings.subagentsEnabled),
 		cwd: ctx.cwd,
 		ide,
 		providerInfo,
 		editorTabs,
 		supportsBrowserUse,
-		taskHandoffCondensationAvailable,
-		utilityModelConfigured: getConfiguredUtilityModelSelection(settings.utilityModelSelection) !== undefined,
+		subagentRoles: ctx.stateManager.getSystemDefaultSettingsKey("subagentRoles")
+			.filter((role) => role.enabled && role.modelSelection)
+			.map(({ name, description }) => ({ name, description })),
 		skills: availableSkills,
 		globalDiracRulesFileInstructions,
 		localDiracRulesFileInstructions,
@@ -209,7 +204,6 @@ export async function buildApiRequestParams(
 		diracWebToolsEnabled: settings.diracWebToolsEnabled && featureFlagsService.getWebtoolsEnabled(),
 		isMultiRootEnabled: multiRootEnabled,
 		workspaceRoots,
-		isSubagentRun: false,
 		isCliEnvironment,
 		terminalExecutionMode: ctx.terminalExecutionMode,
 		activeShellType: shellInfo.type,
@@ -232,10 +226,17 @@ export async function buildApiRequestParams(
 	const toolSnapshot = await ctx.toolExecutor.getSnapshotForRequest(promptContext, requestRuntime)
 	const { systemPrompt: baseSystemPrompt } = await getSystemPrompt(promptContext, toolSnapshot)
 	const pinnedContext = await ctx.getPinnedContext()
-	const systemPrompt =
-		ctx.executionProfile === "standalone" || !pinnedContext
-			? baseSystemPrompt
-			: `${baseSystemPrompt}\n\n${pinnedContext}`
+	const configuration = ctx.taskletConfiguration
+	const supervisionContext = ctx.getTaskletSupervisionContext?.()
+	const instructions = [
+		baseSystemPrompt,
+		configuration?.name && configuration.name !== "default" ? `# Subagent Role\n${configuration.name}` : undefined,
+	].filter(Boolean).join("\n\n")
+	const runtimeContext = [
+		ctx.executionProfile !== "standalone" ? pinnedContext : undefined,
+		supervisionContext ? `# Current Tasklet Supervision\n${supervisionContext}` : undefined,
+	].filter(Boolean).join("\n\n")
+	const systemPrompt = await ctx.apiConversationManager.prepareTranscriptInstructions(instructions, runtimeContext)
 	const boundRequestRuntime = bindToolSnapshotToRequestRuntime(requestRuntime, toolSnapshot)
 	ctx.toolExecutor.activateSnapshot(toolSnapshot, boundRequestRuntime)
 	ctx.taskState.useNativeToolCalls = toolSnapshot.nativeTools.length > 0
@@ -245,7 +246,7 @@ export async function buildApiRequestParams(
 		requestRuntime.api,
 		ctx.taskState.conversationHistoryDeletedRange,
 		params.previousApiReqIndex,
-		await ensureTaskDirectoryExists(ctx.taskId),
+		await ensureTaskDirectoryExists(ctx.storageAddress ?? ctx.taskId),
 		settings.useAutoCondense,
 	)
 
@@ -263,24 +264,6 @@ export async function buildApiRequestParams(
 		await ctx.messageStateHandler.saveDiracMessagesAndUpdateHistory()
 	}
 
-	const useAutoCondense = settings.useAutoCondense
-	if (!useAutoCondense) {
-		const lastMessage =
-			contextManagementMetadata.truncatedConversationHistory[
-			contextManagementMetadata.truncatedConversationHistory.length - 1
-			]
-		if (lastMessage && lastMessage.role === "user") {
-			const notice = formatResponse.contextTruncationNotice()
-			if (typeof lastMessage.content === "string") {
-				lastMessage.content += `\n\n${notice}`
-			} else if (Array.isArray(lastMessage.content)) {
-				lastMessage.content.push({
-					type: "text",
-					text: notice,
-				})
-			}
-		}
-	}
 
 	await ctx.writePromptMetadataArtifacts({
 		systemPrompt,

@@ -6,6 +6,9 @@ import { useBannerAction } from "@/features/banners/hooks/useBannerAction"
 import HistoryView from "@/features/history/components/HistoryView/HistoryView"
 import SettingsView from "@/features/settings/components/SettingsView/SettingsView"
 import { useSettingsStore } from "@/features/settings/store/settingsStore"
+import { UnbiasedWelcomeModal } from "@/features/onboarding/UnbiasedWelcomeModal"
+import { usePlatform } from "@/context/PlatformContext"
+import { PlatformType } from "@/config/platform.config"
 import WorktreesView from "@/features/worktrees/components/WorktreesView"
 import { StateServiceClient, UiServiceClient } from "@/shared/api/grpc-client"
 import ReleaseNotesModal from "@/shared/ui/ReleaseNotesModal"
@@ -15,6 +18,7 @@ const AppContent = () => {
 	const {
 		didHydrateState,
 		shouldShowAnnouncement,
+		shouldShowUnbiasedWelcome,
 		releaseNotes,
 		showSettings,
 		settingsTargetSection,
@@ -33,6 +37,8 @@ const AppContent = () => {
 	const remoteNotes = useSettingsStore((state) => state.welcomeBanners)
 	const handleBannerAction = useBannerAction()
 	const [showReleaseNotes, setShowReleaseNotes] = useState(false)
+	const platform = usePlatform()
+	const showUnbiasedWelcome = platform.type === PlatformType.VSCODE && shouldShowUnbiasedWelcome
 
 	useEffect(() => {
 		const cleanup = hydrate()
@@ -40,7 +46,7 @@ const AppContent = () => {
 	}, [hydrate])
 
 	useEffect(() => {
-		if (!shouldShowAnnouncement) return
+		if (!didHydrateState || showUnbiasedWelcome || !shouldShowAnnouncement) return
 		if (releaseNotes) {
 			setShowReleaseNotes(true)
 			return
@@ -54,7 +60,14 @@ const AppContent = () => {
 			.catch((error: any) => {
 				console.error("Failed to acknowledge announcement:", error)
 			})
-	}, [releaseNotes, shouldShowAnnouncement, setShouldShowAnnouncement, setShowAnnouncement])
+	}, [
+		didHydrateState,
+		showUnbiasedWelcome,
+		releaseNotes,
+		shouldShowAnnouncement,
+		setShouldShowAnnouncement,
+		setShowAnnouncement,
+	])
 
 	const closeReleaseNotes = useCallback(() => {
 		setShowReleaseNotes(false)
@@ -76,11 +89,12 @@ const AppContent = () => {
 
 	return (
 		<div className="flex h-screen w-full flex-col">
+			{showUnbiasedWelcome && !showSettings && !showHistory && !showWorktrees && <UnbiasedWelcomeModal />}
 			{releaseNotes && (
 				<ReleaseNotesModal
 					onClose={closeReleaseNotes}
 					onRemoteAction={handleBannerAction}
-					open={showReleaseNotes}
+					open={showReleaseNotes && !showUnbiasedWelcome}
 					releaseNotes={releaseNotes}
 					remoteNotes={remoteNotes}
 				/>
@@ -92,7 +106,7 @@ const AppContent = () => {
 			<ChatView
 				hideAnnouncement={hideAnnouncement}
 				isHidden={showSettings || showHistory || showWorktrees}
-				showAnnouncement={showAnnouncement}
+				showAnnouncement={showAnnouncement && !showUnbiasedWelcome}
 				showHistoryView={navigateToHistory}
 			/>
 		</div>

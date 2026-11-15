@@ -7,7 +7,10 @@ import type { Environment } from "./config-types"
 import type { OpenAiCodexUsageSnapshot } from "./openai-codex-usage"
 import { AutoApprovalSettings } from "./AutoApprovalSettings"
 import { ApiConfiguration, ModelProviderPreset, ModelProviderSelection } from "./api"
+import type { ApiProvider } from "./api/providerNames"
 import { SkillMetadata } from "./skills"
+import type { SubagentRole } from "./subagentRoles"
+import type { SandboxSettings } from "./SandboxSettings"
 import { BrowserSettings } from "./BrowserSettings"
 import { DiracFeatureSetting } from "./DiracFeatureSetting"
 import { BannerCardData } from "./dirac/banner"
@@ -78,17 +81,24 @@ export interface ExtensionState {
 	/** Selected presentation surface and the last operation included in a full hydration. */
 	presentationSurfaceId?: string
 	presentationOffset?: number
+	/** Cheap lifecycle aggregate; null clears the previous root's observation. */
+	taskletActivity?: import("./taskletObservation").TaskletActivitySummary | null
 	/** Explicit null clears a previously selected Goal in partial state consumers. */
 	goal?: GoalViewState | null
 	isNewUser: boolean
 	welcomeViewCompleted: boolean
+	shouldShowUnbiasedWelcome?: boolean
 	onboardingModels?: OnboardingModelGroup | undefined
 	apiConfiguration?: ApiConfiguration
+	/** Explicit keyless additions and the membership projected from global saved setup/auth. */
+	addedApiProviders?: ApiProvider[]
+	configuredApiProviders?: ApiProvider[]
 	modelProviderPresets: ModelProviderPreset[]
+	subagentRoles?: SubagentRole[]
+	sandboxSettings?: SandboxSettings
 	utilityModelEnabled: boolean
 	utilityModelSelection?: ModelProviderSelection
 	utilityModelUseCondense: boolean
-	utilityModelUseNewTask: boolean
 	utilityModelUseGenerateCommitMessage: boolean
 	utilityModelUsePermissionHandling: boolean
 	utilityModelPermissionPolicy: string
@@ -161,13 +171,14 @@ export interface ExtensionState {
 	writePromptMetadataEnabled?: boolean
 	writePromptMetadataDirectory?: string
 	optOutOfRemoteConfig?: boolean
-	doubleCheckCompletionEnabled?: boolean
 	lowVerbosityEnabled?: boolean
 	banners?: BannerCardData[]
 	availableSkills?: SkillMetadata[]
 	availableTools: ToolMetadata[]
 	toolToggles: Record<string, boolean>
 	welcomeBanners?: BannerCardData[]
+	/** Explicit null clears identity from an earlier Unbiased login. */
+	unbiasedWorkloadName?: string | null
 	openAiCodexIsAuthenticated?: boolean
 	openAiCodexEmail?: string
 	openAiCodexUsage?: OpenAiCodexUsageSnapshot
@@ -220,6 +231,8 @@ export type DiracMessageContent =
 		agentId?: number
 		agentName?: string
 		steering?: { status: SteeringTranscriptStatus }
+		/** Source identities for durable contextual input; transcript-only transport metadata. */
+		contextualInput?: { references: string[] }
 	}
 	/** Stateful tool-mediated unit of work */
 	| { type: DiracMessageType.CARD; card: Card }
@@ -371,12 +384,16 @@ export interface DiracApiReqInfo {
 	}
 	contextWindow?: number
 	contextUsagePercentage?: number
-	/** Aggregate metrics from messages deleted during checkpoint restore. Used for accurate total tracking without inflating per-request counts. */
+	/** Availability of cumulative archived usage; older archives without it retain unknown optional totals. */
+	deletedUsageAvailability?: DiracApiReqInfo["usageAvailability"]
+	/** Prior checkpoint/deleted or failed-attempt usage, excluded from current context-window counts. */
 	deletedMetrics?: {
 		tokensIn?: number
 		tokensOut?: number
 		cacheWrites?: number
 		cacheReads?: number
+		cost?: number
+		reasoningTokens?: number
 	}
 
 	cancelReason?: DiracApiReqCancelReason
@@ -442,6 +459,9 @@ export interface UIActionState {
 	/** Promoted buttons for the currently active tool card (if any) */
 	cardButtons: UIActionButton[]
 
+	/** Live, unanswered user-facing approval waiters, in registration order. */
+	pendingApprovalCardIds?: string[]
+
 	/** The ID of the card that currently has the "focus" */
 	activeCardId?: string
 
@@ -461,6 +481,12 @@ export type CardRawInput = Record<string, unknown>
 /** Machine-readable result produced by the tool represented by this card. */
 export type CardRawOutput = Record<string, unknown>
 
+/** Presentation metadata for outgoing agent communication; never grants interaction authority. */
+export interface CardCommunication {
+	actor: string
+	detail?: string
+}
+
 export enum CardKind {
 	GENERIC = "generic",
 	TASK_COMPLETION = "task_completion",
@@ -468,8 +494,33 @@ export enum CardKind {
 	RESUME_COMPLETED_TASK = "resume_completed_task",
 }
 
+/** Display-only capability metadata; never interpreted as approval authority. */
+export type CommandApprovalCategory =
+	| "filesystem"
+	| "network"
+	| "processes"
+	| "execution"
+	| "credentials"
+	| "software"
+	| "configuration"
+	| "devices"
+	| "remote_resources"
+	| "system"
+export type CommandApprovalAccess = "use" | "read" | "mutate"
+
+/** Ordered host-offered command decisions; clients return only the selected ID. */
+export interface CommandApprovalChoice {
+	id: string
+	label: string
+	/** Present only on reusable category grants; IDs remain opaque to clients. */
+	category?: CommandApprovalCategory
+	access?: CommandApprovalAccess
+}
+
 export interface Card {
 	id: string
+	/** Optional execution owner correlation; legacy cards may omit it. */
+	executionId?: string
 	kind?: CardKind
 	header: string
 	/** Programmatic name of the tool that created this card. */
@@ -478,12 +529,20 @@ export interface Card {
 	status: CardStatus
 	renderType: RenderType
 	body?: string
+	communication?: CardCommunication
 
 	rawInput?: CardRawInput
 	rawOutput?: CardRawOutput
+	/** Frozen operation result; not a live child execution projection. */
+	taskletReceipt?: import("./taskletReceipt").TaskletReceipt
+	/** Navigation only; never an interaction action or approval. */
+	architectureReference?: import("./architecture").ArchitectureSelection
 	diffs?: CardDiff[]
 	locations?: CardLocation[]
 	requireApproval?: boolean
+	commandApprovalChoices?: CommandApprovalChoice[]
+	/** Restricts approval to this operation; clients must not offer or persist broader permission rules. */
+	approvalScope?: "once"
 	requireFeedback?: boolean
 	feedbackPlaceholder?: string
 	actions?: ActionButton[]
@@ -527,6 +586,7 @@ export function isFinalStatus(status: CardStatus): boolean {
 }
 
 export interface CardParams {
+	executionId?: string
 	header: string
 	kind?: CardKind
 	toolName?: string
@@ -534,12 +594,17 @@ export interface CardParams {
 	status?: CardStatus
 	renderType?: RenderType
 	body?: string
+	communication?: CardCommunication
 
 	rawInput?: CardRawInput
 	rawOutput?: CardRawOutput
+	taskletReceipt?: import("./taskletReceipt").TaskletReceipt
+	architectureReference?: import("./architecture").ArchitectureSelection
 	diffs?: CardDiff[]
 	locations?: CardLocation[]
 	requireApproval?: boolean
+	commandApprovalChoices?: CommandApprovalChoice[]
+	approvalScope?: Card["approvalScope"]
 	requireFeedback?: boolean
 	feedbackPlaceholder?: string
 	actions?: ActionButton[]
@@ -564,5 +629,6 @@ export interface ICardHandleBase {
 		userEdits?: Record<string, string>
 		action: string
 		value?: string
+		commandApprovalChoiceId?: string
 	}>
 }

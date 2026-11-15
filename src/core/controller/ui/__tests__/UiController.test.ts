@@ -5,6 +5,7 @@
  */
 
 import * as skillsModule from "@core/context/instructions/user-instructions/skills"
+import { StateManager } from "@core/storage/StateManager"
 import * as registryRefresh from "@core/task/tools/registry/refreshToolRegistry"
 import * as ToolRegistryModule from "@core/task/tools/registry/ToolRegistry"
 // Modules stubbed via their exported namespace (ts-node/commonjs keeps live bindings)
@@ -21,7 +22,6 @@ import * as BannerServiceModule from "@/services/banner/BannerService"
 import * as featureFlagsIndex from "@/services/feature-flags"
 import * as distinctIdModule from "@/services/logging/distinctId"
 import * as announcementsModule from "@/utils/announcements"
-import { StateManager } from "@core/storage/StateManager"
 import { getStateToPostToWebview } from "../UiController"
 
 type StateManagerLike = any
@@ -71,7 +71,6 @@ function makeFakeStateManager(overrides?: {
 		customPrompt: undefined,
 		terminalOutputLineLimit: 500,
 		maxConsecutiveMistakes: 3,
-		doubleCheckCompletionEnabled: false,
 		lowVerbosityEnabled: true,
 		toolToggles: {},
 		hooksEnabled: true,
@@ -95,6 +94,8 @@ function makeFakeStateManager(overrides?: {
 		getApiConfiguration: sinon.stub().returns(overrides?.apiConfiguration ?? { apiProvider: "anthropic" }),
 		getGlobalStateKey: sinon.stub().callsFake((key: string) => globalState[key]),
 		getGlobalSettingsKey: sinon.stub().callsFake((key: string) => globalSettings[key]),
+		getSystemDefaultSettingsKey: sinon.stub().callsFake((key: string) => globalSettings[key]),
+		getSecretKey: sinon.stub().returns(undefined),
 		getWorkspaceStateKey: sinon.stub().callsFake((key: string) => workspaceState[key]),
 		getModelsCache: sinon.stub().returns(overrides?.modelsCache ?? null),
 	}
@@ -102,7 +103,7 @@ function makeFakeStateManager(overrides?: {
 
 /** A fake task object satisfying the subset of Task used by getStateToPostToWebview. */
 function makeFakeTask(overrides?: { taskId?: string; cwd?: string; diracMessages?: any[]; taskState?: any }): any {
-	return {
+	const fake = {
 		taskId: overrides?.taskId,
 		cwd: overrides?.cwd ?? "/test/workspace",
 		taskState: {
@@ -111,6 +112,10 @@ function makeFakeTask(overrides?: { taskId?: string; cwd?: string; diracMessages
 			activeVoiceStreamId: undefined,
 			checkpointManagerErrorMessage: undefined,
 			...overrides?.taskState,
+		},
+		// Mirrors Task.stateView: the read-only surface production code consumes.
+		get stateView() {
+			return this.taskState
 		},
 		messageStateHandler: {
 			capturePresentationSnapshot: async () => ({
@@ -121,6 +126,7 @@ function makeFakeTask(overrides?: { taskId?: string; cwd?: string; diracMessages
 			getMessageById: (id: string) => overrides?.diracMessages?.find((message) => message.id === id),
 		},
 	}
+	return fake
 }
 
 function makeFakeWorkspaceManager(roots: string[] = ["/test/workspace"]): any {
@@ -235,7 +241,7 @@ describe("getStateToPostToWebview", () => {
 				path: "/skills/ordinary/SKILL.md",
 				source: "project",
 			}
-			;(skillsModule.getOrDiscoverSkills as sinon.SinonStub).resolves([webSearchSkill, ordinarySkill])
+				; (skillsModule.getOrDiscoverSkills as sinon.SinonStub).resolves([webSearchSkill, ordinarySkill])
 
 			const unsupportedState = await getStateToPostToWebview({
 				stateManager: makeFakeStateManager({ apiConfiguration: { actModeApiProvider: "anthropic" } }),

@@ -87,6 +87,7 @@ async function createFollowUpHarness(status: "paused" | "achieved") {
 		resumeTaskFromHistory: sinon.stub().returns(run),
 		enqueueSteeringMessage: sinon.stub().resolves(),
 		abortTask: sinon.stub().resolves(),
+		retirePersistence: sinon.stub().resolves(),
 	} as unknown as Task & {
 		resumeTaskFromHistory: sinon.SinonStub
 		enqueueSteeringMessage: sinon.SinonStub
@@ -103,7 +104,7 @@ async function createFollowUpHarness(status: "paused" | "achieved") {
 		goalId,
 		initialDisplayText,
 		store,
-		taskFactory,
+		createTaskFactory: () => taskFactory,
 		stateManager,
 		updateHistory: async (item) => {
 			history[0] = item

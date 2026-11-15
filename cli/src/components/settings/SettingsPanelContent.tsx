@@ -1,6 +1,23 @@
+import { DEFAULT_SANDBOX_SETTINGS, getSandboxProfiles, validateSandboxSettings, type CustomSandboxProfile, type SandboxSettings } from "@shared/SandboxSettings"
+import { SandboxProfileEditor } from "./SandboxProfileEditor"
+import { SandboxTechnicalDetails } from "./SandboxTechnicalDetails"
+import { EmptyRequest } from "@shared/proto/dirac/common"
+import { UpdateSettingsRequest, type SandboxStatus } from "@shared/proto/dirac/state"
+import { getSandboxStatus } from "@/core/controller/state/getSandboxStatus"
+import { updateSettings } from "@/core/controller/state/updateSettings"
 import type { AutoApprovalSettings } from "@shared/AutoApprovalSettings"
 import { DEFAULT_AUTO_APPROVAL_SETTINGS } from "@shared/AutoApprovalSettings"
-import type { ModelProviderPreset, ModelProviderSelection } from "@shared/api"
+import type { ModelProviderSelection } from "@shared/api"
+import { ModelSelectionEditor } from "./ModelSelectionEditor"
+import type { SubagentRole } from "@shared/subagentRoles"
+import { RoleSettingsEditor } from "./RoleSettingsEditor"
+import { saveRoleSettings } from "./roleSettingsBinding"
+import { EndpointSetupForm } from "./EndpointSetupForm"
+import { ApiProvidersPage } from "./ApiProvidersPage"
+import { ProviderAccessForm } from "./ProviderAccessForm"
+import { ProviderToBaseUrlKeyMap } from "@shared/storage/provider-keys"
+import type { ApiProvider } from "@shared/api"
+import { readModeSelection, saveApplicationModelSelection } from "./modelSelectionBinding"
 import { getAutoCondenseContextLimit } from "@shared/context-management"
 import type { ToolMetadata } from "@shared/ExtensionMessage"
 import { getProviderModelIdKey, isSettingsKey, type UtilityModelUseCases } from "@shared/storage"
@@ -11,6 +28,7 @@ import { Box, Text, useInput } from "ink"
 import React, { useCallback, useMemo, useState } from "react"
 import { StateManager } from "@/core/storage/StateManager"
 import { signOutUnbiasedKey } from "@/core/controller/models/signOutUnbiased"
+import { getUnbiasedOAuthWorkloadName } from "@/integrations/unbiased/oauth-account"
 import type { TaskWorkingConfigurationPatch } from "@/core/task/runtime/TaskWorkingConfiguration"
 import { ToolRegistry } from "@/core/task/tools/registry/ToolRegistry"
 import { Logger } from "@/shared/services/Logger"
@@ -35,7 +53,7 @@ import { commitInteractiveSetting, persistInteractiveSettingWithRollback } from 
 import { GithubAuthPage } from "./subpages/AuthPages"
 import { ApiKeyInputPage, EditValuePage, ObjectEditorPage } from "./subpages/EditPages"
 import { OpenRouterRoutingPage } from "./subpages/OpenRouterRoutingPage"
-import { LanguagePickerPage, ModelPickerPage, ProviderPickerPage, UtilityModelPresetPickerPage } from "./subpages/PickerPages"
+import { LanguagePickerPage, ProviderPickerPage } from "./subpages/PickerPages"
 import { BedrockCustomFlowPage, BedrockSetupPage } from "./subpages/SetupPages"
 import {
 	SettingsNavigationDirection,
@@ -107,6 +125,31 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 			setIsApplyingSetting(false)
 		}
 	}, [])
+	const [sandboxSettings, setSandboxSettings] = useState<SandboxSettings>(() => {
+		try { return validateSandboxSettings(stateManager.getGlobalSettingsKey("sandboxSettings")) }
+		catch { return DEFAULT_SANDBOX_SETTINGS } // UI only; RPC reports corrupt settings until an explicit repair.
+	})
+	const [sandboxEditor, setSandboxEditor] = useState<{ profile?: CustomSandboxProfile; duplicate?: boolean }>()
+	const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus>()
+	const [sandboxAdvanced, setSandboxAdvanced] = useState(false)
+	const [sandboxStatusError, setSandboxStatusError] = useState<string>()
+	const sandboxStatusGeneration = React.useRef(0)
+	const refreshSandboxStatus = useCallback(async () => {
+		const request = ++sandboxStatusGeneration.current
+		setSandboxStatus(undefined)
+		setSandboxStatusError(undefined)
+		try {
+			if (!controller) throw new Error("Execution host controller unavailable")
+			const next = await getSandboxStatus(controller, EmptyRequest.create({}))
+			if (request === sandboxStatusGeneration.current) setSandboxStatus(next)
+		} catch (error) {
+			if (request === sandboxStatusGeneration.current) setSandboxStatusError(String(error))
+		}
+	}, [controller])
+	React.useEffect(() => {
+		if (!isAtHome && currentTab === SettingsTab.SANDBOX) void refreshSandboxStatus()
+		return () => { sandboxStatusGeneration.current++ }
+	}, [currentTab, isAtHome, refreshSandboxStatus])
 
 	// Tool toggle state
 	const [availableTools] = useState<ToolMetadata[]>(() => {
@@ -135,7 +178,6 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 	})
 	const [utilityModelUseCases, setUtilityModelUseCases] = useState<UtilityModelUseCases>(() => ({
 		condense: stateManager.getGlobalSettingsKey("utilityModelUseCondense"),
-		newTask: stateManager.getGlobalSettingsKey("utilityModelUseNewTask"),
 		generateCommitMessage: stateManager.getGlobalSettingsKey("utilityModelUseGenerateCommitMessage"),
 		permissionHandling: stateManager.getGlobalSettingsKey("utilityModelUsePermissionHandling"),
 	}))
@@ -145,10 +187,13 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 	const [utilityPermissionPolicy, setUtilityPermissionPolicy] = useState<string>(() =>
 		stateManager.getGlobalSettingsKey("utilityModelPermissionPolicy"),
 	)
-	const [modelProviderPresets] = useState<ModelProviderPreset[]>(
-		() => stateManager.getGlobalSettingsKey("modelProviderPresets") ?? [],
-	)
+	const [selectionTarget, setSelectionTarget] = useState<"plan" | "act" | "utility" | null>(initialMode === "model-picker" ? (initialModelKey === "planModelId" ? "plan" : "act") : null)
+	const [accessProvider, setAccessProvider] = useState<ApiProvider | null>(null)
+	const [endpointName, setEndpointName] = useState<string | null>(null)
+	const [subagentRoles, setSubagentRoles] = useState<SubagentRole[]>(() => stateManager.getSystemDefaultSettingsKey("subagentRoles"))
+	const [roleIndex, setRoleIndex] = useState<number | null>(null)
 
+	const [vimModeEnabled, setVimModeEnabled] = useState(() => stateManager.getGlobalSettingsKey("cliVimMode"))
 	const [lightTerminalTheme, setLightTerminalTheme] = useState<boolean>(() => {
 		const savedPreference = stateManager.getGlobalSettingsKey("cliTerminalColorMode")
 		return savedPreference ? savedPreference === "light" : terminalColorMode === TerminalColorMode.LIGHT
@@ -266,6 +311,11 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 
 	const settingsItemsProps: UseSettingsItemsProps = {
 		currentTab,
+		sandboxSettings,
+		sandboxStatus,
+		sandboxStatusError,
+		sandboxAdvanced,
+		planProvider: (controller?.task?.getWorkingConfiguration().apiConfiguration ?? stateManager.getApiConfiguration()).planModeApiProvider,
 		provider,
 		actModelId,
 		planModelId,
@@ -279,14 +329,21 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 		features,
 		utilityModelUseCases,
 		utilityModelSelection,
+		subagentRoles,
 		utilityPermissionPolicy,
 		lightTerminalTheme,
+		vimModeEnabled,
 		preferredLanguage,
 		telemetry,
 		openAiHeaders,
 		autoCondenseContextLimit,
 		openAiCodexIsAuthenticated,
-		unbiasedIsAuthenticated: !!stateManager.getSecretKey("unbiasedApiKey"),
+		unbiasedIsAuthenticated: !!stateManager.getApiConfiguration().unbiasedApiKey,
+		unbiasedWorkloadName: getUnbiasedOAuthWorkloadName(
+			stateManager.getApiConfiguration().unbiasedApiKey,
+			stateManager.getGlobalStateKey("unbiasedOAuthApiKeyHash"),
+			stateManager.getGlobalStateKey("unbiasedOAuthWorkloadName"),
+		),
 		openAiCodexEmail,
 		githubIsAuthenticated,
 		githubEmail,
@@ -313,12 +370,10 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 		handleAction,
 		handleSave,
 		handleProviderSelect,
-		handleModelSelect,
 		handleApiKeySubmit,
 		handleBedrockComplete,
 		handleBedrockCustomFlowComplete,
 		handleLanguageSelect,
-		handleUtilityModelPresetSelect,
 		completeCodexAuth,
 		cancelGithubAuth,
 		navigateItems,
@@ -354,6 +409,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 		setUtilityPermissionPolicy,
 		setFeatures,
 		setLightTerminalTheme,
+		setVimModeEnabled,
 		preferredLanguage,
 		setPreferredLanguage,
 		telemetry,
@@ -442,6 +498,44 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 	const activateSettingsItem = useCallback(() => {
 		const item = items[selectedIndex]
 		if (!item) return
+		if (item.key === "sandboxRefresh") {
+			void refreshSandboxStatus()
+			return
+		}
+		if (item.key === "sandboxAdvanced") {
+			setSandboxAdvanced((value) => !value)
+			return
+		}
+		if (item.key === "sandboxCreate" || item.key.startsWith("sandboxEdit:") || item.key.startsWith("sandboxDuplicate:") || item.key.startsWith("sandboxCustomize:")) {
+			const profile = getSandboxProfiles(sandboxSettings).find((profile) => profile.id === item.key.split(":")[1])
+			setSandboxEditor({ profile: profile && "kind" in profile ? profile : undefined, duplicate: item.key.startsWith("sandboxDuplicate:") || item.key.startsWith("sandboxCustomize:") })
+			return
+		}
+		if (["sandboxEnabled", "sandboxFallback", "sandboxReset"].includes(item.key) || item.key.startsWith("sandbox:")) {
+			void runSettingsAction("sandbox update", async () => {
+				if (!controller) throw new Error("Execution host controller unavailable")
+				const next = { ...(item.key === "sandboxReset" ? DEFAULT_SANDBOX_SETTINGS : sandboxSettings) }
+				if (item.key === "sandboxEnabled") next.enabled = !next.enabled
+				else if (item.key === "sandboxFallback") next.allowUnsandboxedFallback = !next.allowUnsandboxedFallback
+				else if (item.key === "sandbox:mainAgentProfileId" || item.key === "sandbox:subagentProfileId") {
+					const key = item.key === "sandbox:mainAgentProfileId" ? "mainAgentProfileId" : "subagentProfileId"
+					const profiles = getSandboxProfiles(sandboxSettings)
+					next[key] = profiles[(profiles.findIndex((profile) => profile.id === next[key]) + 1) % profiles.length]!.id
+				}
+				await updateSettings(controller, UpdateSettingsRequest.create({ sandboxSettings: next }))
+				setSandboxSettings(next)
+				await refreshSandboxStatus()
+			})
+			return
+		}
+		if (item.key === "addSubagentRole" || item.key.startsWith("subagentRole:")) {
+			setRoleIndex(item.key === "addSubagentRole" ? -1 : Number(item.key.slice("subagentRole:".length)))
+			return
+		}
+		if (["planSelection", "actSelection", "utilityModelSelection"].includes(item.key)) {
+			setSelectionTarget(item.key === "planSelection" ? "plan" : item.key === "actSelection" ? "act" : "utility")
+			return
+		}
 		if (item.key === "approvedCommandRules") {
 			setIsEditingApprovedCommands(true)
 			return
@@ -450,7 +544,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 			openDestination(SettingsTab.UTILITY_MODEL)
 			return
 		}
-		if (item.key === "advancedConfiguration") {
+		if (item.key === "advancedConfiguration" || item.key === "sandboxDetails") {
 			setHelpItem(item)
 			return
 		}
@@ -467,7 +561,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 			return
 		}
 		void runSettingsAction("update", handleAction)
-	}, [handleAction, items, openDestination, runSettingsAction, selectedIndex, stateManager, controller, refreshModelIds])
+	}, [handleAction, items, openDestination, runSettingsAction, selectedIndex, stateManager, controller, refreshModelIds, sandboxSettings, refreshSandboxStatus])
 
 	const selectSearchResult = useCallback(
 		(result: SettingsSearchResult) => {
@@ -482,9 +576,15 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 
 	useInput(
 		(input, key) => {
+			if (accessProvider) return
+			if (sandboxEditor) return
+			if (endpointName !== null) return
+			if (selectionTarget) return
+			if (roleIndex !== null) return
 			if (objectEditor || openRouterRoutingModelId || isEditingApprovedCommands || isSearching) return
 			if (shouldIgnoreTerminalInput(input, key)) return
 			if (helpItem) {
+				if (helpItem.key === "sandboxDetails") return
 				if (key.escape || input === "?") setHelpItem(null)
 				return
 			}
@@ -550,6 +650,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 				}
 				return
 			}
+			if (currentTab === SettingsTab.MODELS_API) return
 			if (key.upArrow) navigateItems(SettingsNavigationDirection.UP)
 			else if (key.downArrow) navigateItems(SettingsNavigationDirection.DOWN)
 			else if (input === "?") {
@@ -564,6 +665,42 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 	)
 
 	const renderContent = () => {
+		if (sandboxEditor) return <SandboxProfileEditor {...sandboxEditor} onCancel={() => setSandboxEditor(undefined)} onSave={async (profile) => {
+			if (!controller) throw new Error("Execution host controller unavailable")
+			const next = validateSandboxSettings({ ...sandboxSettings, profiles: [...(sandboxSettings.profiles ?? []).filter((entry) => entry.id !== profile.id), profile] })
+			await updateSettings(controller, UpdateSettingsRequest.create({ sandboxSettings: next }))
+			setSandboxSettings(stateManager.getGlobalSettingsKey("sandboxSettings"))
+			setSandboxEditor(undefined)
+			await refreshSandboxStatus()
+		}} />
+		if (roleIndex !== null) return <RoleSettingsEditor
+			role={subagentRoles[roleIndex]} controller={controller} onCancel={() => setRoleIndex(null)}
+			onSave={async (role) => {
+				const next = roleIndex < 0 ? [...subagentRoles, role] : subagentRoles.map((entry, index) => index === roleIndex ? role : entry)
+				setSubagentRoles(await saveRoleSettings(stateManager, next, controller))
+				setRoleIndex(null)
+			}}
+			onRemove={roleIndex < 0 ? undefined : async () => {
+				setSubagentRoles(await saveRoleSettings(stateManager, subagentRoles.filter((_, index) => index !== roleIndex), controller))
+				setRoleIndex(null)
+				setSelectedIndex(0)
+			}} />
+		if (accessProvider) return <ProviderAccessForm provider={accessProvider} controller={controller} onCancel={() => setAccessProvider(null)} onDone={() => { setAccessProvider(null); refreshModelIds() }} />
+		if (endpointName !== null) return <EndpointSetupForm
+			profile={stateManager.getSystemDefaultSettingsKey("openAiCompatibleProfiles").find((item) => item.name === endpointName)}
+			controller={controller} onCancel={() => setEndpointName(null)} onDone={() => { setEndpointName(null); refreshModelIds() }} />
+		if (selectionTarget) return <ModelSelectionEditor
+			value={selectionTarget === "utility" ? utilityModelSelection : readModeSelection(controller?.task?.getWorkingConfiguration().apiConfiguration ?? stateManager.getApiConfiguration(), selectionTarget)}
+			controller={controller}
+			onCancel={() => { setSelectionTarget(null); if (initialMode === "model-picker") onClose() }}
+			onSave={async (selection) => {
+				await saveApplicationModelSelection(selectionTarget, selection, separateModels, controller)
+				if (selectionTarget === "utility") setUtilityModelSelection(selection)
+				else setProvider(stateManager.getGlobalSettingsKey("actModeApiProvider"))
+				refreshModelIds(); setSelectionTarget(null)
+				if (initialMode === "model-picker") onClose()
+			}}
+		/>
 		if (isSearching) {
 			return (
 				<SettingsSearchView
@@ -582,6 +719,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 			)
 		}
 		if (helpItem) {
+			if (helpItem.key === "sandboxDetails") return <SandboxTechnicalDetails details={helpItem.expandedHelp!} onClose={() => setHelpItem(null)} />
 			return (
 				<Box flexDirection="column">
 					<Text bold color={theme.strongText}>
@@ -675,9 +813,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 			)
 		}
 		if (isWaitingForUnbiasedAuth) return (
-			<UnbiasedAuthView controller={controller} onCancel={() => setIsWaitingForUnbiasedAuth(false)} onComplete={() => {
-				setProvider("unbiased")
-				refreshModelIds()
+			<UnbiasedAuthView setupOnly controller={controller} onCancel={() => setIsWaitingForUnbiasedAuth(false)} onComplete={() => {
 				setIsWaitingForUnbiasedAuth(false)
 			}} />
 		)
@@ -686,31 +822,16 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 		)
 		if (isWaitingForGithubAuth && githubAuthData) return <GithubAuthPage githubAuthData={githubAuthData} />
 		if (isPickingModel && pickingModelKey) {
-			const apiConfiguration = controller?.task?.getWorkingConfiguration().apiConfiguration ?? stateManager.getApiConfiguration()
-			const selectedProvider = pickingModelKey === "actModelId"
-				? apiConfiguration.actModeApiProvider
-				: apiConfiguration.planModeApiProvider || apiConfiguration.actModeApiProvider
-			const label = pickingModelKey === "actModelId" ? "Model ID (Act)" : "Model ID (Plan)"
-			return (
-				<ModelPickerPage
-					controller={controller}
-					isActive={isPickingModel && !isApplyingSetting}
-					label={label}
-					onSelect={(modelId) => runSettingsAction("model update", () => handleModelSelect(modelId))}
-					provider={pendingProvider || selectedProvider || provider}
-				/>
-			)
-		}
-		if (isPickingUtilityModel) {
-			return (
-				<UtilityModelPresetPickerPage
-					isActive={isPickingUtilityModel && !isApplyingSetting}
-					onSelect={(preset) =>
-						runSettingsAction("utility model selection", () => handleUtilityModelPresetSelect(preset))
-					}
-					presets={modelProviderPresets}
-				/>
-			)
+			const mode = pickingModelKey === "actModelId" ? "act" : "plan"
+			const current = readModeSelection(controller?.task?.getWorkingConfiguration().apiConfiguration ?? stateManager.getApiConfiguration(), mode)
+			return <ModelSelectionEditor controller={controller}
+				value={pendingProvider ? { provider: pendingProvider as ApiProvider, modelId: "" } : current}
+				onCancel={() => { setIsPickingModel(false); if (initialMode) onClose() }}
+				onSave={async (selection) => {
+					await saveApplicationModelSelection(mode, selection, separateModels, controller)
+					setIsPickingModel(false); setPendingProvider(null); setPickingModelKey(null); refreshModelIds()
+					if (initialMode) onClose()
+				}} />
 		}
 		if (isPickingLanguage) {
 			return (
@@ -758,10 +879,27 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 			)
 		}
 
-		return <SettingsListView items={items} maxRows={settingsMaxRows} selectedIndex={selectedIndex} />
+		if (currentTab === SettingsTab.MODELS_API) return <ApiProvidersPage
+			isActive={!isApplyingSetting} onCancel={returnHome}
+			onEndpoint={setEndpointName}
+			onLegacyEndpoint={() => setAccessProvider("openai")}
+			onProvider={(id) => { if (id === "openai") setEndpointName(""); else if (id === "unbiased") setIsWaitingForUnbiasedAuth(true); else if (id !== "bedrock" && ProviderToBaseUrlKeyMap[id as ApiProvider]) setAccessProvider(id as ApiProvider); else void runSettingsAction("provider setup", () => handleProviderSelect(id)) }}
+			actions={items.filter((item) => item.key.endsWith("SignOut"))}
+			onAction={(item) => void runSettingsAction("sign out", async () => {
+				if (item.key === "unbiasedSignOut") await signOutUnbiasedKey(stateManager, controller?.task)
+				else await handleAction(item)
+				refreshModelIds()
+			})}
+		/>
+		return <SettingsListView items={items} maxRows={currentTab === SettingsTab.SANDBOX ? Math.max(3, settingsMaxRows - 4) : settingsMaxRows} selectedIndex={selectedIndex} />
 	}
 
 	const hasNestedPage =
+		!!sandboxEditor ||
+		roleIndex !== null ||
+		!!selectionTarget ||
+		endpointName !== null ||
+		!!accessProvider ||
 		isPickingProvider ||
 		isPickingModel ||
 		isPickingLanguage ||
@@ -793,7 +931,7 @@ export const SettingsPanelContent: React.FC<SettingsPanelContentProps> = ({
 					: "↑/↓ Navigate · Enter Edit · Space Toggle · / Search · ? Help · Esc Back"
 
 	return (
-		<Panel footer={footer} isSubpage={hasNestedPage || !isAtHome} label={panelLabel}>
+		<Panel footer={sandboxEditor || helpItem?.key === "sandboxDetails" ? undefined : footer} isSubpage={hasNestedPage || !isAtHome} label={panelLabel}>
 			{(settingsError || authStatusError) && (
 				<Text color={theme.error}>Settings error: {settingsError || authStatusError}</Text>
 			)}

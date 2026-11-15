@@ -11,9 +11,8 @@ function createPermissionEnvironment() {
 	return {
 		env: {
 			config: {
-				isSubagentExecution: true,
 				autoApprover: { isUnrestrictedAutoApprove, shouldAutoApproveTool },
-				services: { commandPermissionController: { validateTool } },
+				services: { commandPermissionController: { assertConfigurationValid: sinon.stub(), validateTool } },
 			},
 		},
 		validateTool,
@@ -23,6 +22,19 @@ function createPermissionEnvironment() {
 }
 
 describe("BrowserActionTool", () => {
+	it("intercepts browser permissions before unrestricted and matching-rule approvals", () => {
+		const tool = new BrowserActionTool()
+		const { env, validateTool, isUnrestrictedAutoApprove, shouldAutoApproveTool } = createPermissionEnvironment()
+			; (env.config.autoApprover as any).requiresCounterpartyApproval = true
+		isUnrestrictedAutoApprove.returns(true)
+		validateTool.returns({ allowed: true, reason: "allowed", matchedPattern: "**" })
+
+		assert.equal((tool as any).resolveLaunchPermission(env, "https://example.com"), "manual_only")
+		sinon.assert.notCalled(validateTool)
+		sinon.assert.notCalled(isUnrestrictedAutoApprove)
+		sinon.assert.notCalled(shouldAutoApproveTool)
+	})
+
 	it("strips the data URL prefix and preserves the screenshot media type", async () => {
 		const tool = new BrowserActionTool()
 		const blocks = await (tool as any).formatBrowserActionResult(
@@ -69,7 +81,7 @@ describe("BrowserActionTool", () => {
 		assert.equal((tool as any).resolveLaunchPermission(env, "https://example.com/page"), "auto_approve")
 	})
 
-	it("keeps residual subagent browser launches Utility-eligible", () => {
+	it("keeps unmatched browser launches Utility-eligible", () => {
 		const tool = new BrowserActionTool()
 		const { env } = createPermissionEnvironment()
 
@@ -87,13 +99,12 @@ describe("BrowserActionTool", () => {
 		const resolveLaunchPermission = sinon.stub(tool as any, "resolveLaunchPermission").returns("auto_approve")
 		const env = {
 			config: {
-				isSubagentExecution: true,
 				autoApprover: {
 					isUnrestrictedAutoApprove: sinon.stub().returns(true),
 					shouldAutoApproveTool: sinon.stub().returns(true),
 				},
 				services: {
-					commandPermissionController: { validateTool: sinon.stub().returns({ allowed: true, reason: "allowed" }) },
+					commandPermissionController: { assertConfigurationValid: sinon.stub(), validateTool: sinon.stub().returns({ allowed: true, reason: "allowed" }) },
 				},
 			},
 			ui: { createCard, upsertText: sinon.stub().resolves() },

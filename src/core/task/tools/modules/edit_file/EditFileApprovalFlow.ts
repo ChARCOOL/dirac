@@ -17,8 +17,7 @@ export class EditFileApprovalFlow {
 		const utilityPermissionHandlingEnabled = env.config.permissionDecisionBinding !== undefined
 		const permissionDisposition = await this.resolvePermissionDisposition(env, preparedBatches)
 		if (permissionDisposition === "auto_approve") return { approved: true }
-
-		let reviewShown = false
+		let reviewRequested = false
 
 		while (true) {
 			const totalRequestedEdits = preparedBatches.reduce((acc, batch) => acc + batch.prepared!.resolvedEdits.length, 0)
@@ -34,6 +33,7 @@ export class EditFileApprovalFlow {
 				icon: DiracIcon.FILE_EDIT,
 				status: CardStatus.WAITING_FOR_INPUT,
 				requireApproval: true,
+				permissionOperation: { kind: "paths", paths: preparedBatches.map((batch) => batch.displayPath) },
 				permissionRequestKind:
 					utilityPermissionHandlingEnabled && permissionDisposition === "manual_only" ? "manual_tool" : "tool",
 				collapsed: false,
@@ -42,20 +42,27 @@ export class EditFileApprovalFlow {
 				maxHeight: 10000,
 			})
 
-			// Card creation resolves utility approval before any manual review opens.
-			if (!reviewShown && card.requiresUserInteraction !== false) {
-				await this.showReview(env, preparedBatches)
+			// Approval remains required in background mode; editor focus requires an explicit request.
+			if (card.requiresUserInteraction !== false && env.config.backgroundEditEnabled && !reviewRequested) {
+				await card.update({
+					actions: [
+						{ label: "Approve", value: DiracAskResponse.APPROVE, primary: true },
+						{ label: "Reject", value: DiracAskResponse.REJECT, style: "danger" },
+						{ label: "View diff", value: DiracAskResponse.VIEW, style: "secondary" },
+					]
+				})
+			}
+			if (card.requiresUserInteraction !== false && (!env.config.backgroundEditEnabled || reviewRequested)) {
+				await this.showReview(env, preparedBatches, card)
 				await env.editor.scrollToFirstDiff()
-				reviewShown = true
 			}
 
 			const result = await card.waitForInteraction()
 
 			if (result.action === DiracAskResponse.EDIT || result.action === DiracAskResponse.VIEW) {
 				await card.finalize(CardStatus.CANCELLED)
-				await this.showReview(env, preparedBatches)
-				await env.editor.scrollToFirstDiff()
-				reviewShown = true
+				await env.editor.hideReview()
+				reviewRequested = true
 				continue
 			}
 			if (result.action === DiracAskResponse.UNDO) {
@@ -90,7 +97,6 @@ export class EditFileApprovalFlow {
 		batches: PreparedFileBatch[],
 	): Promise<ToolPermissionDisposition> {
 		if (env.config.permissionDecisionBinding === undefined) {
-			if (env.config.isSubagentExecution) return "auto_approve"
 			if (env.config.autoApprover.isUnrestrictedAutoApprove()) return "auto_approve"
 			for (const batch of batches) {
 				const autoApproved = await env.config.callbacks.shouldAutoApproveToolWithPath(
@@ -114,7 +120,11 @@ export class EditFileApprovalFlow {
 		return disposition
 	}
 
-	private async showReview(env: IToolEnvironment, batches: PreparedFileBatch[]): Promise<void> {
+	private async showReview(
+		env: IToolEnvironment,
+		batches: PreparedFileBatch[],
+		card: import("../../interfaces/IToolEnvironment").ICardHandle,
+	): Promise<void> {
 		await env.editor.showReview(
 			batches.map((batch) => ({
 				absolutePath: batch.absolutePath,
@@ -122,6 +132,7 @@ export class EditFileApprovalFlow {
 				content: batch.prepared!.finalContent,
 				originalContent: batch.prepared!.content,
 			})),
+			card,
 		)
 	}
 

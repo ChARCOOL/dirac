@@ -1,13 +1,14 @@
 import { atomicWriteFile } from "@core/storage/atomicWrite"
 import { ensureTaskDirectoryExists } from "@core/storage/directoryEnsurers"
 import { getTaskDirectoryPath, listTaskDirectoryIds } from "@core/storage/taskDirectory"
+import { acquireTaskLock } from "@core/task/TaskLockUtils"
 import { type GoalRecord, type GoalStatusTransition, isActiveGoalStatus, isSettledGoalStatus } from "@shared/goal"
 import { fileExistsAtPath } from "@utils/fs"
 import fs from "fs/promises"
 import Mutex from "p-mutex"
 import path from "path"
-import { applyGoalStatusTransition, interruptNonterminalGoalChildren } from "./GoalLifecycle"
-import { assertGoalRecord } from "./validateGoalRecord"
+import { applyGoalStatusTransition } from "./GoalLifecycle"
+import { assertGoalRecord, isLegacyGoalRecord } from "./validateGoalRecord"
 
 const GOAL_STATE_FILE = "goal.json"
 const goalLocks = new Map<string, Mutex>()
@@ -21,12 +22,15 @@ export interface GoalStartupReconciliationFailure {
 
 export interface GoalStartupReconciliationReport {
 	records: GoalRecord[]
+	/** Root directories and historical private children, including non-executable Goals. */
+	ownedDirectoryIds: string[]
 	failures: GoalStartupReconciliationFailure[]
 }
 
 interface GoalLifecycleSnapshot {
 	status: GoalRecord["status"]
 	statusReason?: string
+	settledAt?: number
 	activeDurationMs: number
 	lastActivatedAt?: number
 	lastPausedAt?: number
@@ -58,6 +62,7 @@ function lifecycleSnapshot(record: GoalRecord): GoalLifecycleSnapshot {
 	return {
 		status: record.status,
 		statusReason: record.statusReason,
+		settledAt: record.settledAt,
 		activeDurationMs: record.activeDurationMs,
 		lastActivatedAt: record.lastActivatedAt,
 		lastPausedAt: record.lastPausedAt,
@@ -69,6 +74,7 @@ function assertLifecycleUnchanged(record: GoalRecord, before: GoalLifecycleSnaps
 	if (
 		after.status !== before.status ||
 		after.statusReason !== before.statusReason ||
+		after.settledAt !== before.settledAt ||
 		after.activeDurationMs !== before.activeDurationMs ||
 		after.lastActivatedAt !== before.lastActivatedAt ||
 		after.lastPausedAt !== before.lastPausedAt
@@ -89,19 +95,27 @@ async function readGoalRecord(goalId: string): Promise<GoalRecord> {
 	return parsed
 }
 
-async function containsCurrentGoalRecord(goalId: string): Promise<boolean> {
-	const filePath = goalStatePath(goalId)
-	if (!(await fileExistsAtPath(filePath))) return false
-	const parsed: unknown = JSON.parse(await fs.readFile(filePath, "utf8"))
-	if (isSupersededGoalRecord(parsed)) return false
-	assertGoalRecord(parsed, goalId)
-	return true
-}
-
-function isSupersededGoalRecord(value: unknown): boolean {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+/** Reads ownership IDs without loading transcripts or accepting historical execution state. */
+function ownedGoalDirectoryIds(goalId: string, value: unknown): { directoryIds: string[]; errors: Error[] } {
+	const ids = new Set([goalId])
+	const errors: Error[] = []
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { directoryIds: [...ids], errors }
 	const record = value as Record<string, unknown>
-	return record.version === undefined && typeof record.schemaVersion === "number"
+	if (!Array.isArray(record.children)) return { directoryIds: [...ids], errors }
+	for (const child of record.children) {
+		if (!child || typeof child !== "object" || Array.isArray(child)) continue
+		const id = (child as Record<string, unknown>).id
+		if (typeof id !== "string" || !id) continue
+		// New contained handles are nested under the root, not independent directories.
+		if (record.version === 2) continue
+		try {
+			getTaskDirectoryPath(id)
+			ids.add(id)
+		} catch (error) {
+			errors.push(error instanceof Error ? error : new Error(String(error)))
+		}
+	}
+	return { directoryIds: [...ids], errors }
 }
 
 async function writeGoalRecord(record: GoalRecord): Promise<void> {
@@ -110,37 +124,38 @@ async function writeGoalRecord(record: GoalRecord): Promise<void> {
 }
 
 export class GoalStore {
-	constructor(private readonly clock: () => number = Date.now) {}
+	constructor(private readonly clock: () => number = Date.now) { }
 
 	async create(goalId: string, conversationUlid: string, objectiveMarkdown: string): Promise<GoalRecord> {
 		if (!objectiveMarkdown.trim()) throw new Error("A Goal objective cannot be empty")
 		if (!conversationUlid) throw new Error("A Goal conversation ULID cannot be empty")
 		return withGoalLock(goalId, async () => {
-			const filePath = goalStatePath(goalId)
-			if (await fileExistsAtPath(filePath)) throw new Error(`Goal ${goalId} already exists`)
-			const now = this.clock()
-			assertClockTime(now)
-			await ensureTaskDirectoryExists(goalId)
-			const record: GoalRecord = {
-				version: 1,
-				id: goalId,
-				conversationUlid,
-				status: "paused",
-				statusReason: "Created",
-				objective: { markdown: objectiveMarkdown, revision: 1, updatedAt: now },
-				createdAt: now,
-				updatedAt: now,
-				lastPausedAt: now,
-				activeDurationMs: 0,
-				wakeSequence: 0,
-				eventSequence: 0,
-				events: [],
-				children: [],
-				accountingSources: {},
-				accounting: {},
+			const releaseOwnership = await acquireTaskLock(getTaskDirectoryPath(goalId))
+			try {
+				const filePath = goalStatePath(goalId)
+				if (await fileExistsAtPath(filePath)) throw new Error(`Goal ${goalId} already exists`)
+				const now = this.clock()
+				assertClockTime(now)
+				await ensureTaskDirectoryExists(goalId)
+				const record: GoalRecord = {
+					version: 2,
+					id: goalId,
+					conversationUlid,
+					status: "paused",
+					statusReason: "Created",
+					objective: { markdown: objectiveMarkdown, revision: 1, updatedAt: now },
+					createdAt: now,
+					updatedAt: now,
+					lastPausedAt: now,
+					activeDurationMs: 0,
+					accountingSources: {},
+					accounting: {},
+				}
+				await writeGoalRecord(record)
+				return structuredClone(record)
+			} finally {
+				await releaseOwnership()
 			}
-			await writeGoalRecord(record)
-			return structuredClone(record)
 		})
 	}
 
@@ -148,14 +163,25 @@ export class GoalStore {
 		return withGoalLock(goalId, async () => structuredClone(await readGoalRecord(goalId)))
 	}
 
-	async list(): Promise<GoalRecord[]> {
-		const taskIds = await listTaskDirectoryIds()
-		const goalIds: string[] = []
-		for (const taskId of taskIds) {
-			if (await containsCurrentGoalRecord(taskId)) goalIds.push(taskId)
+	/** Historical ownership is used only for exclusion and explicit user-requested deletion. */
+	async readOwnedDirectoryIds(goalId: string): Promise<string[]> {
+		const parsed: unknown = JSON.parse(await fs.readFile(goalStatePath(goalId), "utf8"))
+		const ownership = ownedGoalDirectoryIds(goalId, parsed)
+		if (ownership.errors.length > 0) {
+			throw new AggregateError(ownership.errors, ownership.errors.map((error) => error.message).join("; "))
 		}
-		const records = await Promise.all(goalIds.map((goalId) => this.read(goalId)))
-		return records.sort((left, right) => left.createdAt - right.createdAt)
+		return ownership.directoryIds
+	}
+
+	async list(): Promise<GoalRecord[]> {
+		const report = await this.scanRecords()
+		if (report.failures.length > 0) {
+			throw new AggregateError(
+				report.failures.map(({ error }) => error),
+				"Could not read persisted Goals",
+			)
+		}
+		return report.records
 	}
 
 	async update(goalId: string, update: GoalRecordUpdate): Promise<GoalRecord> {
@@ -167,6 +193,8 @@ export class GoalStore {
 			const before = lifecycleSnapshot(record)
 			await update(record, now)
 			assertLifecycleUnchanged(record, before)
+			// Older records have no dedicated endpoint; preserve it before advancing updatedAt.
+			if (isSettledGoalStatus(record.status)) record.settledAt ??= record.updatedAt
 			record.updatedAt = now
 			await writeGoalRecord(record)
 			return structuredClone(record)
@@ -184,58 +212,65 @@ export class GoalStore {
 			if (mutate) await mutate(record, now)
 			assertLifecycleUnchanged(record, before)
 			applyGoalStatusTransition(record, transition, now)
-			if (isSettledGoalStatus(record.status)) record.events = []
 			await writeGoalRecord(record)
 			return structuredClone(record)
 		})
 	}
 
-	/** Removes only the Goal record. The owning controller deletes linked run directories after stopping execution. */
+	/** Removes only an unowned Goal record, for creation rollback. */
 	async delete(goalId: string): Promise<void> {
 		await withGoalLock(goalId, async () => {
-			await fs.rm(goalStatePath(goalId), { force: true })
+			const releaseOwnership = await acquireTaskLock(getTaskDirectoryPath(goalId))
+			try {
+				await fs.rm(goalStatePath(goalId), { force: true })
+			} finally {
+				await releaseOwnership()
+			}
 		})
 	}
 
-	async reconcileOnStartup(): Promise<GoalStartupReconciliationReport> {
-		const taskIds = await listTaskDirectoryIds()
-		const goalIds: string[] = []
-		const failures: GoalStartupReconciliationFailure[] = []
-		for (const taskId of taskIds) {
-			try {
-				if (await containsCurrentGoalRecord(taskId)) goalIds.push(taskId)
-			} catch (error) {
-				failures.push({ goalId: taskId, error: error instanceof Error ? error : new Error(String(error)) })
-			}
-		}
-		const now = this.clock()
-		assertClockTime(now)
-
+	/** Discovery is read-only: another process may own any of these Goals. */
+	async scanRecords(): Promise<GoalStartupReconciliationReport> {
 		const records: GoalRecord[] = []
-		for (const goalId of goalIds) {
+		const ownedDirectoryIds = new Set<string>()
+		const failures: GoalStartupReconciliationFailure[] = []
+		for (const goalId of await listTaskDirectoryIds()) {
 			try {
-				const record = await withGoalLock(goalId, async () => {
-					const current = await readGoalRecord(goalId)
-					if (now < current.updatedAt) throw new Error(`Goal ${goalId} recovery time predates its persisted state`)
-					const interruptedChildren = interruptNonterminalGoalChildren(current, now)
-					const wasActive = isActiveGoalStatus(current.status)
-					if (wasActive) {
-						applyGoalStatusTransition(
-							current,
-							{ status: "paused", statusReason: "Paused after interrupted process restart" },
-							now,
-						)
-					}
-					if (interruptedChildren || wasActive) current.events = []
-					if (interruptedChildren && !wasActive) current.updatedAt = now
-					if (interruptedChildren || wasActive) await writeGoalRecord(current)
-					return structuredClone(current)
-				})
-				records.push(record)
+				const filePath = goalStatePath(goalId)
+				if (!(await fileExistsAtPath(filePath))) continue
+				ownedDirectoryIds.add(goalId)
+				const parsed: unknown = JSON.parse(await fs.readFile(filePath, "utf8"))
+				const ownership = ownedGoalDirectoryIds(goalId, parsed)
+				for (const id of ownership.directoryIds) ownedDirectoryIds.add(id)
+				if (ownership.errors.length > 0) {
+					throw new AggregateError(ownership.errors, `Goal ${goalId} has invalid child directory ownership`)
+				}
+				if (isLegacyGoalRecord(parsed)) continue
+				assertGoalRecord(parsed, goalId)
+				records.push(parsed)
 			} catch (error) {
 				failures.push({ goalId, error: error instanceof Error ? error : new Error(String(error)) })
 			}
 		}
-		return { records: records.sort((left, right) => left.createdAt - right.createdAt), failures }
+		return {
+			records: records.sort((left, right) => left.createdAt - right.createdAt),
+			ownedDirectoryIds: [...ownedDirectoryIds],
+			failures,
+		}
+	}
+
+	/** Call only while holding this Goal's task-directory execution lock. */
+	async recoverInterruptedExecution(goalId: string): Promise<GoalRecord> {
+		return withGoalLock(goalId, async () => {
+			const current = await readGoalRecord(goalId)
+			const now = this.clock()
+			assertClockTime(now)
+			if (now < current.updatedAt) throw new Error(`Goal ${goalId} recovery time predates its persisted state`)
+			if (isActiveGoalStatus(current.status)) {
+				applyGoalStatusTransition(current, { status: "paused", statusReason: "Recovered interrupted execution" }, now)
+				await writeGoalRecord(current)
+			}
+			return structuredClone(current)
+		})
 	}
 }

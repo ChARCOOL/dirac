@@ -1,7 +1,7 @@
 import { formatResponse } from "@core/formatResponse"
 import { continuationPrompt } from "@core/prompts/contextManagement"
+import { formatCurrentTurnUserRequests } from "@core/text-condensation/CurrentTurnUserRequests"
 import { CONVERSATION_CONTINUATION_TEMPLATE_ID } from "@core/text-condensation/templates"
-import { showSystemNotification } from "@integrations/notifications"
 import { CardStatus } from "@shared/ExtensionMessage"
 import { DiracAskResponse } from "@shared/WebviewMessage"
 import { telemetryService } from "@/services/telemetry"
@@ -41,9 +41,11 @@ export class CondenseTool implements IDiracTool {
 	async processCall(args: any, env: IToolEnvironment): Promise<any> {
 		const source = this.getSource(env)
 		const signal = env.orchestration.getTaskState("abortSignal")
-		const context = await this.resolveContext(args.context, signal, env)
+		const currentTurnUserRequests = env.orchestration.getCurrentTurnUserRequests()
+		const context = await this.resolveContext(args.context, currentTurnUserRequests, signal, env)
 		this.throwIfCancelled(signal)
 		if (context === null) {
+			env.orchestration.reportFailure()
 			return formatResponse.toolResult(
 				"Utility condensation failed. Generate the comprehensive continuation summary from the current conversation yourself and call `condense` again with the complete `context` parameter. Do not call it again without context.",
 			)
@@ -59,7 +61,8 @@ export class CondenseTool implements IDiracTool {
 		this.consumeSource(env)
 		env.orchestration.setTaskState("consecutiveMistakeCount", 0)
 
-		const approval = source === "user" ? await this.requestUserApproval(context, env) : undefined
+		const requiresApproval = source === "user" && env.config.autoApprover.shouldAutoApproveTool(DiracDefaultTool.CONDENSE) !== true
+		const approval = requiresApproval ? await this.requestUserApproval(context, env) : undefined
 		this.throwIfCancelled(signal)
 		if (approval && !approval.approved) {
 			this.captureToolUsage(false, env)
@@ -76,7 +79,7 @@ export class CondenseTool implements IDiracTool {
 			return formatResponse.toolError("Context compaction was cancelled by PreCompact hook.")
 		}
 
-		let result = continuationPrompt(context)
+		let result = continuationPrompt(context, currentTurnUserRequests)
 		if (hookResult.contextModification) {
 			result += `\n\n[Context Modification from PreCompact Hook]\n${hookResult.contextModification}`
 		}
@@ -104,7 +107,7 @@ export class CondenseTool implements IDiracTool {
 		}
 
 		try {
-			await this.displayCompletedSummary(context, source, approval, env)
+			await this.displayCompletedSummary(context, approval, env)
 		} catch (error) {
 			env.logging.warn("Failed to present completed conversation compaction", error)
 		}
@@ -132,6 +135,7 @@ export class CondenseTool implements IDiracTool {
 
 	private async resolveContext(
 		context: unknown,
+		currentTurnUserRequests: readonly string[],
 		signal: AbortSignal,
 		env: IToolEnvironment,
 	): Promise<string | null | undefined> {
@@ -144,6 +148,7 @@ export class CondenseTool implements IDiracTool {
 			const result = await condensation.condenseConversation(CONVERSATION_CONTINUATION_TEMPLATE_ID, {
 				historyScope: "effective",
 				signal,
+				additionalSourceText: formatCurrentTurnUserRequests(currentTurnUserRequests),
 			})
 			if (signal.aborted) throw new Error("Task instance aborted")
 			if (result.text.trim().length === 0) {
@@ -158,12 +163,8 @@ export class CondenseTool implements IDiracTool {
 	}
 
 	private async requestUserApproval(context: string, env: IToolEnvironment): Promise<ApprovalResult> {
-		if (env.config.isSubagentExecution) {
-			throw new Error("Subagents cannot condense the parent conversation.")
-		}
-
 		if (env.config.autoApprovalSettings.enableNotifications) {
-			showSystemNotification({
+			env.system.showNotification({
 				subtitle: "Dirac wants to condense the conversation...",
 				message: "Review the generated conversation summary before condensing.",
 			})
@@ -173,6 +174,7 @@ export class CondenseTool implements IDiracTool {
 			header: "Condense Conversation",
 			icon: DiracIcon.CHAT,
 			requireApproval: true,
+			operationalInput: true,
 			collapsed: false,
 			actions: [
 				{ label: "Condense", value: DiracAskResponse.APPROVE, primary: true },
@@ -200,17 +202,14 @@ export class CondenseTool implements IDiracTool {
 
 	private async displayCompletedSummary(
 		context: string,
-		source: CondenseSource,
 		approval: ApprovalResult | undefined,
 		env: IToolEnvironment,
 	): Promise<void> {
-		if (source === "user") {
-			if (!approval?.approved) throw new Error("Approved user condense is missing its approval card.")
+		if (approval?.approved) {
 			await approval.card.update({ header: "Conversation Condensed", collapsed: true })
 			await approval.card.finalize(CardStatus.SUCCESS)
 			return
 		}
-		if (env.config.isSubagentExecution) return
 
 		const card = await env.ui.createCard({
 			header: "Conversation Condensed",

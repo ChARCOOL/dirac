@@ -4,6 +4,8 @@ import sinon from "sinon"
 import { openAiCodexOAuthManager } from "@/integrations/openai-codex/oauth"
 import { expectLoggerErrors } from "@/test/loggerGuard"
 import { OpenAiCodexHandler } from "../openai-codex"
+import { ApiConfigurationError, ApiConfigurationErrorCode } from "@core/api/ApiConfigurationError"
+import { buildApiHandlerForSelection } from "@core/api"
 
 const tools = [
 	{
@@ -45,6 +47,43 @@ describe("OpenAiCodexHandler persisted reasoning", () => {
 		sinon.restore()
 	})
 
+	it("uses the default only when no model was explicitly selected", () => {
+		expect(new OpenAiCodexHandler({}).getModel().id).to.equal("gpt-6-astra")
+		expect(createHandler("gpt-6-luna").getModel().id).to.equal("gpt-6-luna")
+	})
+
+	for (const modelId of ["luna", "", "toString"]) {
+		it(`rejects the invalid explicit model ID ${JSON.stringify(modelId)} instead of selecting Astra`, () => {
+			let error: unknown
+			try {
+				createHandler(modelId).getModel()
+			} catch (caught) {
+				error = caught
+			}
+			expect(error).to.be.instanceOf(ApiConfigurationError)
+			expect((error as ApiConfigurationError).code).to.equal(ApiConfigurationErrorCode.ModelUnavailable)
+			expect((error as Error).message).to.include(modelId)
+		})
+	}
+
+	it("allows a Utility handler to recover a websocket transport failure through HTTP", async () => {
+		expectLoggerErrors()
+		const handler = buildApiHandlerForSelection({}, { provider: "openai-codex", modelId: "gpt-6-luna" })
+		const websocket = sinon.stub(handler as any, "createResponseStreamWebsocket").callsFake(async function* () {
+			throw new Error("Responses websocket emitted an error event")
+		})
+		const http = sinon.stub(handler as any, "createResponseStreamHttp").callsFake(async function* (body: any) {
+			expect(body.model).to.equal("gpt-6-luna")
+			yield { type: "text", text: "summary" }
+		})
+
+		expect(await drain(handler.createMessage("system", [{ role: "user", content: "conversation" }]))).to.deep.equal([
+			{ type: "text", text: "summary" },
+		])
+		expect(websocket.callCount).to.equal(1)
+		expect(http.callCount).to.equal(1)
+	})
+
 	it("sends the priority tier for subscription Fast mode", async () => {
 		const handler = createHandler("gpt-5.6-terra", { inferenceSpeed: "fast" })
 		const requests: any[] = []
@@ -82,6 +121,25 @@ describe("OpenAiCodexHandler persisted reasoning", () => {
 		requests[0].model.should.equal("gpt-6.1-sol")
 		requests[0].reasoning.effort.should.equal("medium")
 	})
+
+	for (const [reasoningEffort, expectedEffort] of [[undefined, "medium"], ["none", "none"], ["max", "max"], ["minimal", "medium"]]) {
+		it(`sends GPT-6.1 Terra through Codex Responses with ${reasoningEffort ?? "default"} effort`, async () => {
+			const handler = new OpenAiCodexHandler({ apiModelId: "gpt-6.1-terra", reasoningEffort })
+			const requests: any[] = []
+			sinon.stub(handler as any, "createResponseStreamWebsocket").callsFake(async function* (request: any) {
+				requests.push(request)
+			})
+
+			await drain(handler.createMessage("system", [{ role: "user", content: "hello" }] as any, tools))
+
+			requests[0].model.should.equal("gpt-6.1-terra")
+			requests[0].reasoning.effort.should.equal(expectedEffort)
+			expect(requests[0].reasoning.summary).to.equal(expectedEffort === "none" ? undefined : "auto")
+			requests[0].reasoning.context.should.equal("all_turns")
+			requests[0].store.should.equal(false)
+			requests[0].tools.find((tool: any) => tool.type === "function").strict.should.equal(true)
+		})
+	}
 
 	it("advertises provider-native web search support", () => {
 		createHandler().supportsNativeWebSearch().should.equal(true)

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
 		newSession: vi.fn(),
 		loadSession: vi.fn(),
 		unstable_resumeSession: vi.fn(),
+		unstable_forkSession: vi.fn(),
 		replayLoadedSessionHistory: vi.fn(),
 		unstable_listSessions: vi.fn(),
 		listProviders: vi.fn(),
@@ -77,6 +78,7 @@ describe("AcpAgent", () => {
 		mocks.diracAgentInstance.newSession.mockResolvedValue({ sessionId: "session-1" })
 		mocks.diracAgentInstance.loadSession.mockResolvedValue({})
 		mocks.diracAgentInstance.unstable_resumeSession.mockResolvedValue({})
+		mocks.diracAgentInstance.unstable_forkSession.mockResolvedValue({ sessionId: "session-forked" })
 
 		mocks.diracAgentInstance.closeSession.mockResolvedValue({})
 		mocks.diracAgentInstance.deleteSession.mockResolvedValue({})
@@ -273,16 +275,42 @@ describe("AcpAgent", () => {
 		expect(mocks.callOrder).toEqual(["subscribe", "publish"])
 	})
 
-	it("delegates unstable_listSessions", async () => {
+	it("forks a session, subscribes to the forked sessionId, and skips history replay", async () => {
+		vi.useFakeTimers()
+		const agent = new AcpAgent(connection, {})
+
+		await expect(
+			agent.unstable_forkSession({ sessionId: "session-1", cwd: "/tmp/workspace", mcpServers: [] }),
+		).resolves.toEqual({ sessionId: "session-forked" })
+
+		expect(mocks.diracAgentInstance.unstable_forkSession).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			cwd: "/tmp/workspace",
+			mcpServers: [],
+		})
+		expect(mocks.diracAgentInstance.emitterForSession).toHaveBeenCalledWith("session-forked")
+		expect(mocks.diracAgentInstance.replayLoadedSessionHistory).not.toHaveBeenCalled()
+		expect(mocks.callOrder).toEqual(["subscribe"])
+
+		await vi.runAllTimersAsync()
+		expect(mocks.callOrder).toEqual(["subscribe", "publish"])
+		expect(mocks.diracAgentInstance.publishSessionSetupUpdates).toHaveBeenCalledWith("session-forked")
+	})
+
+	it("delegates listSessions and unstable_listSessions", async () => {
 		mocks.diracAgentInstance.unstable_listSessions.mockResolvedValue({
 			sessions: [{ sessionId: "task-1", cwd: "/tmp/workspace", title: "Task", updatedAt: "2026-05-27T00:00:00.000Z" }],
 		})
 		const agent = new AcpAgent(connection, {})
 
+		await expect(agent.listSessions({ cwd: "/tmp/workspace" })).resolves.toEqual({
+			sessions: [{ sessionId: "task-1", cwd: "/tmp/workspace", title: "Task", updatedAt: "2026-05-27T00:00:00.000Z" }],
+		})
 		await expect(agent.unstable_listSessions({ cwd: "/tmp/workspace" })).resolves.toEqual({
 			sessions: [{ sessionId: "task-1", cwd: "/tmp/workspace", title: "Task", updatedAt: "2026-05-27T00:00:00.000Z" }],
 		})
 
+		expect(mocks.diracAgentInstance.unstable_listSessions).toHaveBeenCalledTimes(2)
 		expect(mocks.diracAgentInstance.unstable_listSessions).toHaveBeenCalledWith({ cwd: "/tmp/workspace" })
 	})
 
@@ -623,6 +651,68 @@ describe("AcpAgent", () => {
 		).resolves.toBeUndefined()
 
 		expect(mocks.diracAgentInstance.recordClientAnnotation).toHaveBeenCalledWith({ sessionId: "session-1", annotation })
+	})
+
+	it.each([
+		false,
+		true,
+	])("adapts replayed and live config updates per transport (boolean support: %s)", async (supportsBoolean) => {
+		vi.useFakeTimers()
+		connection.sessionUpdate.mockResolvedValue(undefined)
+		const emitter = new EventEmitter()
+		mocks.diracAgentInstance.emitterForSession.mockReturnValue(emitter)
+		const option = Object.freeze({
+			id: "yolo",
+			name: "YOLO",
+			description: "Approval policy",
+			category: "mode",
+			type: "boolean",
+			currentValue: true,
+			_meta: { "test/option": "preserved" },
+		})
+		const select = Object.freeze({
+			id: "model",
+			name: "Model",
+			type: "select",
+			currentValue: "true",
+			options: [{ value: "true", name: "A model named true" }],
+		})
+		const configOptions = Object.freeze([option, select])
+		const update = Object.freeze({ sessionUpdate: "config_option_update", configOptions, _meta: { "dev.dirac/seq": 7 } })
+		mocks.diracAgentInstance.loadSession.mockResolvedValueOnce({ configOptions })
+		mocks.diracAgentInstance.replayLoadedSessionHistory.mockImplementationOnce(async () => {
+			emitter.emit("config_option_update", update)
+		})
+		const agent = new AcpAgent(connection, {})
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: supportsBoolean ? { session: { configOptions: { boolean: {} } } } : {},
+		})
+		const expectedOption = supportsBoolean
+			? option
+			: {
+					...option,
+					type: "select",
+					currentValue: "true",
+					options: [
+						{ value: "false", name: "Off" },
+						{ value: "true", name: "On" },
+					],
+				}
+		await expect(agent.loadSession({ sessionId: "session-1", cwd: "/tmp/workspace", mcpServers: [] })).resolves.toEqual({
+			configOptions: [expectedOption, select],
+		})
+		emitter.emit("config_option_update", update)
+		expect(connection.sessionUpdate).toHaveBeenCalledTimes(2)
+		for (const [notification] of connection.sessionUpdate.mock.calls) {
+			expect(notification).toEqual({
+				sessionId: "session-1",
+				update: { ...update, configOptions: [expectedOption, select] },
+			})
+		}
+		expect(option).toMatchObject({ type: "boolean", currentValue: true })
+		await vi.runAllTimersAsync()
+		agent.disconnect()
 	})
 
 	it("forwards client _meta without interpreting it", async () => {

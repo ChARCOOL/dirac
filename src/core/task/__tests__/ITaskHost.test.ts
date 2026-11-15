@@ -137,7 +137,6 @@ describe("ITaskHost contract", () => {
 			stateManager: StateManager.get(),
 			task: "test task",
 			taskId: "host-contract-1",
-			taskLockAcquired: false,
 			workingConfiguration: StateManager.get().captureEffectiveTaskConfiguration(),
 		})
 

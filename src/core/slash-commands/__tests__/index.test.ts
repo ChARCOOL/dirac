@@ -10,13 +10,13 @@ describe("slash-commands", () => {
 	})
 
 	it("should process builtin slash command", async () => {
-		const text = "<task>" + "/newtask" + "</task>"
+		const text = "<task>" + "/compact" + "</task>"
 		const result = await parseSlashCommands(text, {}, {}, "test-ulid", {
 			providerId: "anthropic",
 			model: { id: "claude-3-5-sonnet-20240620", info: {} as any },
 			mode: "act",
 		})
-		expect(result.processedText).to.include("help them create a new task with preloaded context")
+		expect(result.processedText).to.include("create a detailed summary of the conversation so far")
 	})
 	it("should process /askDirac slash command", async () => {
 		const text = "<task>" + "/askDirac" + "</task>"

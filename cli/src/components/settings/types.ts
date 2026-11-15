@@ -8,6 +8,7 @@ export enum SettingsTab {
 	RUNNING_TASKS = "running-tasks",
 	TOOLS = "tools",
 	TERMINAL = "terminal",
+	SANDBOX = "sandbox",
 	GENERAL = "general",
 }
 
@@ -35,6 +36,7 @@ export interface ListItem {
 	value: any
 	cycleOptions?: readonly string[]
 	description?: string
+	alwaysShowDescription?: boolean
 	expandedHelp?: string
 	keywords?: string[]
 	persistentHelp?: string

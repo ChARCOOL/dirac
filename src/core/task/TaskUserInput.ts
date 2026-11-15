@@ -1,6 +1,5 @@
 import { formatResponse } from "@core/formatResponse"
 import { processFilesIntoText } from "@integrations/misc/extract-text"
-import { Logger } from "@shared/services/Logger"
 import { TaskStatus } from "@shared/ExtensionMessage"
 import { DiracAskResponse } from "@shared/WebviewMessage"
 import { DiracContent } from "@shared/messages/content"
@@ -12,40 +11,42 @@ export interface TaskUserInputContext {
 }
 
 export async function waitForFollowUp(ctx: TaskUserInputContext): Promise<DiracContent[] | undefined> {
-	if (ctx.taskState.status !== TaskStatus.COMPLETED) {
-		ctx.taskState.status = TaskStatus.AWAITING_USER_INPUT
-	}
-
+	if (ctx.taskState.status !== TaskStatus.COMPLETED) ctx.taskState.status = TaskStatus.AWAITING_USER_INPUT
 	const messageTs = Date.now()
 	ctx.taskState.lastMessageTs = messageTs
-
-	await pWaitFor(
-		() => {
-			return ctx.taskState.askResponse !== undefined || ctx.taskState.lastMessageTs !== messageTs || ctx.taskState.abort
-		},
-		{ interval: 100 },
-	)
-
-	if (ctx.taskState.abort || ctx.taskState.lastMessageTs !== messageTs) {
-		return undefined
-	}
-
-	const text = ctx.taskState.askResponseText || ""
-	const images = ctx.taskState.askResponseImages as string[] | undefined
-	const files = ctx.taskState.askResponseFiles as string[] | undefined
-
-	const userContent: DiracContent[] = [{ type: "text", text: `<feedback>\n${text}\n</feedback>`, isUserInput: true }]
-	if (images && images.length > 0) {
-		userContent.push(...formatResponse.imageBlocks(images))
-	}
-	if (files && files.length > 0) {
-		const fileContentString = await processFilesIntoText(files)
-		if (fileContentString) {
-			userContent.push({ type: "text", text: fileContentString })
+	ctx.taskState.waitingForFollowUp = true
+	try {
+		await pWaitFor(
+			() => ctx.taskState.askResponse !== undefined || ctx.taskState.lastMessageTs !== messageTs || ctx.taskState.abort,
+			{ interval: 100 },
+		)
+		if (ctx.taskState.abort || ctx.taskState.lastMessageTs !== messageTs) return undefined
+		const text = ctx.taskState.askResponseText || ""
+		const images = ctx.taskState.askResponseImages
+		const files = ctx.taskState.askResponseFiles
+		const userContent: DiracContent[] = text
+			? [{ type: "text", text: `<feedback>\n${text}\n</feedback>`, isUserInput: true }]
+			: []
+		if (images?.length) userContent.push(...formatResponse.imageBlocks(images))
+		if (files?.length) {
+			const fileContentString = await processFilesIntoText(files)
+			if (fileContentString) userContent.push({ type: "text", text: fileContentString })
 		}
+		return userContent
+	} finally {
+		ctx.taskState.waitingForFollowUp = false
 	}
+}
 
-	return userContent
+export function clearAskResponse(taskState: TaskState): void {
+	taskState.askResponse = undefined
+	taskState.askResponseCardId = undefined
+	taskState.askResponseText = undefined
+	taskState.askResponseImages = undefined
+	taskState.askResponseFiles = undefined
+	taskState.askResponseUserEdits = undefined
+	taskState.askResponseAction = undefined
+	taskState.askResponseValue = undefined
 }
 
 export async function submitCardResponse(
@@ -57,23 +58,37 @@ export async function submitCardResponse(
 		images?: string[]
 		files?: string[]
 		value?: string
+		commandApprovalChoiceId?: string
+		userEdits?: Record<string, string>
 	},
 ): Promise<void> {
-	const { cardId, response, text, images, files, value } = params
-	if (cardId && ctx.taskState.lastWaitingCardId !== cardId) {
-		Logger.warn(`[Task] Received response for card ${cardId}, but waiting for ${ctx.taskState.lastWaitingCardId}`)
-		return
+	const { cardId, response, text, images, files, value, userEdits, commandApprovalChoiceId } = params
+	const state = ctx.taskState
+	if (!cardId && response !== DiracAskResponse.MESSAGE) {
+		throw new Error(`An exact card ID is required for action ${response}`)
+	}
+	const targetCardId = cardId || state.lastWaitingCardId
+	const pending = targetCardId ? state.pendingCardInteractions.get(targetCardId) : undefined
+	if (cardId && (!pending || pending.signal.aborted)) {
+		throw new Error(`Card ${cardId} has no pending interaction`)
 	}
 	const isStandardResponse = Object.values(DiracAskResponse).includes(response as DiracAskResponse)
-	ctx.taskState.askResponse = isStandardResponse ? (response as DiracAskResponse) : undefined
-	ctx.taskState.askResponseText = text
-	ctx.taskState.askResponseImages = images
-	ctx.taskState.askResponseFiles = files
-	ctx.taskState.askResponseAction = response as string
-	ctx.taskState.askResponseValue = value
-	// When user sends a text message while a card is awaiting approval,
-	// signal that the tool should be skipped and forward to LLM.
-	if (response === DiracAskResponse.MESSAGE && text && ctx.taskState.status !== TaskStatus.CANCELLED) {
+	const standardResponse = isStandardResponse ? (response as DiracAskResponse) : undefined
+	if (pending) {
+		if (pending.signal.aborted || pending.response) throw new Error(`Card ${targetCardId} is no longer awaiting a response`)
+		pending.response = { response: standardResponse, action: response, text, images, files, value, userEdits, commandApprovalChoiceId }
+	} else {
+		state.askResponse = standardResponse
+		state.askResponseCardId = undefined
+		state.askResponseText = text
+		state.askResponseImages = images
+		state.askResponseFiles = files
+		state.askResponseUserEdits = userEdits
+		state.askResponseAction = response
+		state.askResponseValue = value
+	}
+	// Card feedback is owned by that waiter's ToolSkippedByUserMessage outcome, not the current model turn.
+	if (!pending && response === DiracAskResponse.MESSAGE && text && state.status !== TaskStatus.CANCELLED) {
 		ctx.taskState.didRejectTool = true
 	}
 }

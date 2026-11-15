@@ -1,0 +1,71 @@
+/* Shared, measured label typography. Palettes and kind descriptors remain style-owned. */
+.architecture-board[data-board-style] .board-node .node-content .node-title.fitted-title {
+	position: absolute;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: stretch;
+	box-sizing: border-box;
+	min-width: 0;
+	max-width: none;
+	margin: 0;
+	padding: 0;
+	font-family: "Board Inter", system-ui, sans-serif;
+	font-weight: 500;
+	font-synthesis: none;
+	letter-spacing: normal;
+	text-align: center;
+	text-wrap: initial;
+	white-space: normal;
+	overflow: hidden;
+	-webkit-line-clamp: unset;
+}
+
+.architecture-board .fitted-title .title-line {
+	display: block;
+	flex: none;
+	white-space: pre;
+	overflow: hidden;
+	unicode-bidi: plaintext;
+}
+
+.architecture-board[data-board-style] .kind-group .node-content .node-title.fitted-title {
+	align-items: flex-start;
+	text-align: start;
+	background: transparent;
+}
+
+.architecture-board .kind-group .fitted-title .title-line {
+	padding-inline: 12px;
+	background: var(--board-bg);
+	border-radius: 4px;
+}
+
+.architecture-board[data-board-style]
+	.board-node
+	.node-content
+	:is(.earth-kind, .linen-kind, .interaction-kind, .class-header-glyph) {
+	position: absolute;
+	left: var(--descriptor-x);
+	top: var(--descriptor-y);
+	width: var(--descriptor-width);
+	height: 14px;
+	right: auto;
+	margin: 0;
+	justify-content: center;
+	text-align: center;
+	white-space: nowrap;
+}
+
+.architecture-board .board-edge-label .edge-title {
+	font-family: "Board Inter", system-ui, sans-serif;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.4;
+	letter-spacing: normal;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}

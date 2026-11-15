@@ -31,7 +31,7 @@ import { getRequestRegistry } from "@/core/controller/grpc-handler"
 import { subscribeToState } from "@/core/controller/state/subscribeToState"
 import { showTaskWithId } from "@/core/controller/task/showTaskWithId"
 import { Logger } from "@/shared/services/Logger"
-import { cardBodyForDisplay } from "./card-body"
+import { cardBodyForDisplay, communicationBodyPreview } from "./card-body"
 import { stderrStyle } from "./display"
 import { approveCardForPlainTextYolo, getStandaloneCardDisposition, StandaloneCardDisposition } from "./standalone-card-policy"
 import { emitTaskStartedMessage } from "./task-start-output"
@@ -277,10 +277,7 @@ export async function runPlainTextTask(options: PlainTextTaskOptions): Promise<b
 		}
 
 		// Check for API failure (retries exhausted)
-		if (
-			content.type === DiracMessageType.API_STATUS &&
-			content.status.cancelReason === "retries_exhausted"
-		) {
+		if (content.type === DiracMessageType.API_STATUS && content.status.cancelReason === "retries_exhausted") {
 			rejectCompletion(new Error("API request failed: retries exhausted"))
 		}
 	}
@@ -558,7 +555,13 @@ function handleMessageForPipeMode(
 			`${stderrStyle.metadata(`${timestamp}${statusPrefix}`)}${statusIndicator}${styledHeader}${stderrStyle.metadata(`${statusStr}${extra}`)}\n`,
 		)
 
-		if (verbose && card.body && !isTaskCompletionCard(card)) {
+		if (card.communication) {
+			if (card.body) {
+				process.stderr.write(
+					`${stderrStyle.toolBody(verbose ? card.body : communicationBodyPreview(card.body, process.stderr.columns || 80))}\n`,
+				)
+			}
+		} else if (verbose && card.body && !isTaskCompletionCard(card)) {
 			process.stderr.write(`${stderrStyle.toolBody(cardBodyForDisplay(card.body, card.renderType))}\n`)
 		}
 		return

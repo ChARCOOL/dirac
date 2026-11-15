@@ -1,3 +1,4 @@
+import { prepareSandboxSettingsUpdate } from "@shared/SandboxSettings"
 import type { ApiConfiguration } from "@shared/api"
 import { Empty } from "@shared/proto/dirac/common"
 import { UpdateSettingsRequest } from "@shared/proto/dirac/state"
@@ -60,6 +61,7 @@ function persistCombinedWebviewUpdate(
 	previousRegistryToggles?: Record<string, boolean>,
 ): TerminalProfileChangeResult | undefined {
 	let terminalProfileChange: TerminalProfileChangeResult | undefined
+	if (settingsPatch.sandboxSettings !== undefined) settingsPatch.sandboxSettings = prepareSandboxSettingsUpdate(previousSettings.sandboxSettings, settingsPatch.sandboxSettings)
 	try {
 		if (settingsPatch.toolToggles && registry) registry.loadToggles(settingsPatch.toolToggles)
 		for (const [key, value] of Object.entries(settingsPatch))
@@ -101,9 +103,9 @@ function buildCombinedWebviewPatches(
 		...(request.vscodeTerminalExecutionMode === undefined || request.vscodeTerminalExecutionMode === ""
 			? {}
 			: {
-					vscodeTerminalExecutionMode:
-						request.vscodeTerminalExecutionMode === "backgroundExec" ? "backgroundExec" : "vscodeTerminal",
-				}),
+				vscodeTerminalExecutionMode:
+					request.vscodeTerminalExecutionMode === "backgroundExec" ? "backgroundExec" : "vscodeTerminal",
+			}),
 	}
 	if (request.browserSettings !== undefined) {
 		persistedSettings.browserSettings = buildBrowserSettingsWebview(
@@ -115,6 +117,8 @@ function buildCombinedWebviewPatches(
 	if (normalizedToolToggles !== undefined) persistedSettings.toolToggles = normalizedToolToggles
 
 	const activeSettings: Partial<Settings> = { ...persistedSettings }
+	delete activeSettings.subagentRoles
+	delete activeSettings.sandboxSettings
 	if (request.browserSettings !== undefined && activeConfiguration) {
 		activeSettings.browserSettings = buildBrowserSettingsWebview(
 			activeConfiguration.settings.browserSettings as Settings["browserSettings"],
@@ -159,6 +163,8 @@ function requestAddressesActiveTask(
 	normalizedToolToggles: Record<string, boolean> | undefined,
 ): boolean {
 	const activeSettings = buildWebviewSettingsPatch(request)
+	delete activeSettings.subagentRoles
+	delete activeSettings.sandboxSettings
 	delete activeSettings.shellIntegrationTimeout
 	delete activeSettings.terminalOutputLineLimit
 	return (
@@ -186,10 +192,10 @@ async function commitWebviewSettings(
 	const activeTaskPatch =
 		controller.task && requestAddressesActiveTask(request, normalizedToolToggles)
 			? (current: TaskWorkingConfiguration) => {
-					previousActiveTerminalProfile = current.settings.defaultTerminalProfile
-					preparedUpdate = buildCombinedWebviewPatches(controller, request, current, normalizedToolToggles)
-					return preparedUpdate.activePatch
-				}
+				previousActiveTerminalProfile = current.settings.defaultTerminalProfile
+				preparedUpdate = buildCombinedWebviewPatches(controller, request, current, normalizedToolToggles)
+				return preparedUpdate.activePatch
+			}
 			: undefined
 	let terminalProfileChange: TerminalProfileChangeResult | undefined
 	const persist = async () => {

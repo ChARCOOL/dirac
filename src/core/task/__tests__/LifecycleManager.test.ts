@@ -1,3 +1,6 @@
+import assert from "node:assert/strict"
+import { HookFactory } from "@core/hooks/hook-factory"
+import { HookCleanupError } from "@core/hooks/HookCleanupError"
 import "should"
 import { CardStatus, DiracMessageType, TaskStatus } from "@shared/ExtensionMessage"
 import { DiracAskResponse } from "@shared/WebviewMessage"
@@ -5,6 +8,8 @@ import pWaitFor from "p-wait-for"
 import sinon from "sinon"
 import { expectLoggerErrors } from "@/test/loggerGuard"
 import { LifecycleManager } from "../LifecycleManager"
+import { HookManager } from "../HookManager"
+import { TaskState } from "../TaskState"
 
 // Characterization tests for LifecycleManager — verifies task lifecycle:
 // checkpoint initialization, task start, resume from history, and abort.
@@ -54,7 +59,7 @@ describe("LifecycleManager", () => {
 			// Stub ensureCheckpointInitialized via module proxy
 			const initModule = require("@integrations/checkpoints/initializer")
 			const origInit = initModule.ensureCheckpointInitialized
-			initModule.ensureCheckpointInitialized = async () => {}
+			initModule.ensureCheckpointInitialized = async () => { }
 			try {
 				await manager.initializeCheckpoints(true)
 				sinon.assert.calledOnce(deps.taskMessenger.createCheckpoint)
@@ -88,6 +93,34 @@ describe("LifecycleManager", () => {
 	})
 
 	describe("startTask", () => {
+		for (const boundary of ["initialization", "initial presentation"]) {
+			it(`does not start TaskStart after cancellation during ${boundary}`, async () => {
+				deps.getWorkingConfiguration = () => ({
+					settings: { enableCheckpointsSetting: false, hooksEnabled: true, mode: "act" },
+					apiConfiguration: {},
+				})
+				const executeHook = sinon.stub(require("@core/hooks/hook-executor"), "executeHook").resolves({ wasCancelled: false })
+				let release!: () => void
+				const paused = new Promise<void>((resolve) => { release = resolve })
+				const initialization = boundary === "initialization"
+				const pendingOperation = initialization
+					? deps.diracIgnoreController.initialize
+					: deps.taskMessenger.upsertText
+				pendingOperation.returns(paused)
+
+				const run = manager.startTask("task")
+				await pWaitFor(() => pendingOperation.calledOnce, { interval: 1 })
+				await manager.abortTask()
+				release()
+				await run
+
+				sinon.assert.notCalled(executeHook)
+				sinon.assert.notCalled(deps.hookManager.runUserPromptSubmitHook)
+				sinon.assert.notCalled(deps.initiateTaskLoop)
+				if (initialization) sinon.assert.notCalled(deps.taskMessenger.upsertText)
+			})
+		}
+
 		it("initializes ignore and permission controllers", async () => {
 			await manager.startTask("test task")
 			sinon.assert.calledOnce(deps.diracIgnoreController.initialize)
@@ -128,7 +161,7 @@ describe("LifecycleManager", () => {
 			const userContent = deps.initiateTaskLoop.firstCall.args[0]
 			userContent.some((c: any) => c.text === "file content here").should.equal(true)
 			const fileContent = userContent.find((c: any) => c.text === "file content here")
-			;(fileContent.isUserInput === undefined).should.equal(true)
+				; (fileContent.isUserInput === undefined).should.equal(true)
 		})
 
 		it("keeps hook-provided command examples unmarked", async () => {
@@ -143,7 +176,7 @@ describe("LifecycleManager", () => {
 				await manager.startTask("task")
 				const userContent = deps.initiateTaskLoop.firstCall.args[0]
 				const hookContent = userContent.find((c: any) => c.text?.includes("<hook_context"))
-				;(hookContent.isUserInput === undefined).should.equal(true)
+					; (hookContent.isUserInput === undefined).should.equal(true)
 			} finally {
 				hookModule.executeHook = originalExecuteHook
 			}
@@ -182,7 +215,7 @@ describe("LifecycleManager", () => {
 				files_in_context: [],
 				model_usage: [],
 				environment_history: [],
-				active_skill_ids: ["new-tool"],
+				active_skill_ids: ["new-tool", "architecture-board"],
 			})
 		}
 
@@ -193,6 +226,30 @@ describe("LifecycleManager", () => {
 			deps.postStateToWebview = sinon.stub().callsFake(async () => {
 				deps.taskState.askResponse = response
 				deps.postStateToWebview = origPostState
+			})
+		}
+
+		for (const storageAddress of [
+			undefined,
+			{ kind: "tasklet", rootTaskId: "root", taskletId: "tasklet_00000000-0000-4000-8000-000000000001" },
+		]) {
+			it(`forwards ${storageAddress ? "contained" : "legacy"} resume storage without changing registry ownership`, async () => {
+				setupDiskMocks()
+				deps.storageAddress = storageAddress
+				const registryModule = require("@core/task/tools/registry/refreshToolRegistry")
+				const refresh = sinon.stub(registryModule, "refreshTaskTools").resolves([])
+				await manager.resumeTaskFromHistory(undefined, { systemContext: "Resume" })
+				const disk = require("@core/storage/disk")
+				for (const name of [
+					"getSavedPresentationHistory",
+					"getSavedApiConversationState",
+					"getSavedApiConversationProviderState",
+					"ensureTaskDirectoryExists",
+					"getTaskMetadata",
+				]) {
+					sinon.assert.alwaysCalledWithExactly(disk[name], storageAddress ?? deps.taskId)
+				}
+				sinon.assert.calledOnceWithExactly(refresh, deps.taskId, storageAddress ?? deps.taskId)
 			})
 		}
 
@@ -237,6 +294,84 @@ describe("LifecycleManager", () => {
 			deps.taskState.status.should.equal(TaskStatus.COMPLETED)
 		})
 
+		it("restores COMPLETED status when a structured tasklet accounting card trails completion", async () => {
+			setupDiskMocks([
+				{
+					id: "completion", ts: 1,
+					content: { type: DiracMessageType.CARD, card: { kind: "task_completion", status: CardStatus.SUCCESS } },
+				},
+				{
+					id: "tasklet-usage:child", ts: 2,
+					content: {
+						type: DiracMessageType.CARD,
+						card: {
+							id: "tasklet-usage:child", header: "Tasklet usage", status: CardStatus.SUCCESS, renderType: "text",
+							rawOutput: { source: "tasklet", taskletId: "child", tokensIn: 200, tokensOut: 40, cost: 1.25, reasoningTokens: 10 },
+						},
+					},
+				},
+			])
+			unblockWaitFor()
+			await manager.resumeTaskFromHistory()
+			deps.taskState.status.should.equal(TaskStatus.COMPLETED)
+			deps.messageStateHandler.getDiracMessages().map((message: any) => message.id).should.eql([
+				"completion", "tasklet-usage:child",
+			])
+		})
+
+		for (const status of ["running", "waiting", "completed", "failed", "interrupted"]) {
+			it(`ignores trailing ${status} tasklet presentation when restoring root completion`, async () => {
+				setupDiskMocks([
+					{ id: "completion", ts: 1, content: { type: DiracMessageType.CARD, card: { kind: "task_completion", status: CardStatus.SUCCESS } } },
+					{
+						id: "tasklet:child", ts: 2, content: {
+							type: DiracMessageType.CARD, card: {
+								id: "tasklet:child", header: "Child", status: CardStatus.RUNNING, renderType: "text",
+								rawInput: { isTasklet: true, taskletId: "child" }, rawOutput: { tasklet: { taskletId: "child", status, communications: [] } },
+							}
+						}
+					},
+				])
+				unblockWaitFor()
+				await manager.resumeTaskFromHistory()
+				deps.taskState.status.should.equal(TaskStatus.COMPLETED)
+				deps.messageStateHandler.getDiracMessages().length.should.equal(2)
+			})
+		}
+
+		it("preserves reported tokens from an unknown-priced request during restoration", async () => {
+			setupDiskMocks([
+				{
+					id: "unknown-priced-request", ts: 1,
+					content: { type: DiracMessageType.API_STATUS, status: { tokensIn: 100, tokensOut: 20 } },
+				},
+			])
+			unblockWaitFor()
+			await manager.resumeTaskFromHistory()
+			const messages = deps.messageStateHandler.getDiracMessages()
+			messages.length.should.equal(1)
+			messages[0].id.should.equal("unknown-priced-request")
+			messages[0].content.status.should.eql({ tokensIn: 100, tokensOut: 20 })
+		})
+
+		it("preserves archived retry spend when the following unknown-priced attempt reports no usage", async () => {
+			const deletedMetrics = { tokensIn: 100, tokensOut: 20, cost: 0.5, reasoningTokens: 3 }
+			setupDiskMocks([{
+				id: "retried-request", ts: 1,
+				content: {
+					type: DiracMessageType.API_STATUS, status: {
+						tokensIn: 0, tokensOut: 0, deletedMetrics,
+						usageAvailability: { inputTokens: false, outputTokens: false, cacheWrites: false, cacheReads: false, reasoningTokens: false, cost: false },
+					}
+				},
+			}])
+			unblockWaitFor()
+			await manager.resumeTaskFromHistory()
+			const messages = deps.messageStateHandler.getDiracMessages()
+			messages.length.should.equal(1)
+			messages[0].content.status.deletedMetrics.should.eql(deletedMetrics)
+		})
+
 		it("restores CANCELLED status when the last run-produced entry is not a completion card", async () => {
 			setupDiskMocks([
 				{
@@ -259,6 +394,134 @@ describe("LifecycleManager", () => {
 			deps.taskState.status.should.equal(TaskStatus.CANCELLED)
 		})
 
+		it("resumes a contained conversation with only a short line and unprivileged parent guidance", async () => {
+			const history = [
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "old-call", name: "execute_command", input: { command: "do not replay" } }],
+				},
+			]
+			setupDiskMocks([], history)
+			deps.storageAddress = {
+				kind: "tasklet",
+				rootTaskId: "root",
+				taskletId: "tasklet_00000000-0000-4000-8000-000000000001",
+			}
+			await manager.resumeTaskFromHistory(undefined, { taskletResumeMessage: "<task>/reloadtools</task>" })
+
+			deps.initiateTaskLoop.firstCall.args[0].should.eql([
+				{ type: "text", text: "Tasklet resumed." },
+				{ type: "text", text: "<task>/reloadtools</task>" },
+			])
+			deps.messageStateHandler.getApiConversationHistory().should.eql(history)
+			sinon.assert.notCalled(deps.messageStateHandler.overwriteApiConversationHistory)
+			sinon.assert.notCalled(deps.taskMessenger.upsertText)
+			sinon.assert.notCalled(deps.hookManager.runUserPromptSubmitHook)
+			sinon.assert.notCalled(deps.restoreQueuedSteeringFromTranscript)
+			sinon.assert.calledOnce(deps.recordEnvironment)
+		})
+
+		it("keeps a tasklet's trailing user message and opaque checkpoint in place", async () => {
+			const history = [
+				{ role: "assistant", content: "earlier" },
+				{ role: "user", content: [{ type: "text", text: "prior input", isUserInput: true }] },
+			]
+			const providerState = {
+				checkpoint: {
+					providerId: "openai-codex",
+					modelId: "model",
+					compactedThroughHistoryIndex: 1,
+					input: [{ type: "compaction", encrypted_content: "opaque" }],
+				},
+			}
+			setupDiskMocks([], history, providerState)
+			deps.storageAddress = {
+				kind: "tasklet",
+				rootTaskId: "root",
+				taskletId: "tasklet_00000000-0000-4000-8000-000000000001",
+			}
+			await manager.resumeTaskFromHistory(undefined, { taskletResumeMessage: "" })
+
+			deps.initiateTaskLoop.firstCall.args[0].should.eql([{ type: "text", text: "Tasklet resumed." }])
+			deps.messageStateHandler
+				.getApiConversationHistory()
+				.should.eql([history[0], { role: "user", content: [{ type: "text", text: "prior input" }] }])
+			sinon.assert.calledWithExactly(deps.messageStateHandler.setApiConversationProviderState, providerState)
+			sinon.assert.notCalled(deps.messageStateHandler.overwriteApiConversationProviderState)
+			sinon.assert.notCalled(deps.messageStateHandler.overwriteApiConversationHistory)
+		})
+
+		for (const latestRange of [[2, 3], undefined]) {
+			it(`restores the latest tasklet truncation snapshot (${JSON.stringify(latestRange)}) without reviving an older range`, async () => {
+				setupDiskMocks([
+					{ id: "older", ts: 1, content: { type: DiracMessageType.MARKDOWN, text: "older" }, conversationHistoryDeletedRange: [2, 5] },
+					{ id: "latest", ts: 2, content: { type: DiracMessageType.MARKDOWN, text: "latest" }, conversationHistoryDeletedRange: latestRange },
+				])
+				deps.storageAddress = { kind: "tasklet", rootTaskId: "root", taskletId: "tasklet_00000000-0000-4000-8000-000000000001" }
+				deps.taskState.conversationHistoryDeletedRange = [2, 7]
+				deps.initiateTaskLoop.callsFake(async () => {
+					JSON.stringify({ range: deps.taskState.conversationHistoryDeletedRange }).should.equal(JSON.stringify({ range: latestRange }))
+				})
+				await manager.resumeTaskFromHistory(undefined, { taskletResumeMessage: "Continue" })
+				sinon.assert.calledOnce(deps.initiateTaskLoop)
+			})
+		}
+
+		it("preserves the root's history-item truncation range instead of using a presentation snapshot", async () => {
+			setupDiskMocks([{ id: "latest", ts: 1, content: { type: DiracMessageType.MARKDOWN, text: "root" }, conversationHistoryDeletedRange: [2, 3] }])
+			deps.taskState.conversationHistoryDeletedRange = [2, 5]
+			await manager.resumeTaskFromHistory(undefined, { systemContext: "Continue root" })
+			deps.taskState.conversationHistoryDeletedRange.should.eql([2, 5])
+		})
+
+		it("retires stale tasklet cards and restores scoped tools and skills before executing", async () => {
+			const messages = [
+				{
+					id: "old-request",
+					ts: 1,
+					content: { type: DiracMessageType.CARD, card: { id: "old-request", status: CardStatus.WAITING_FOR_INPUT } },
+				},
+			]
+			setupDiskMocks(messages)
+			deps.storageAddress = {
+				kind: "tasklet",
+				rootTaskId: "root",
+				taskletId: "tasklet_00000000-0000-4000-8000-000000000001",
+			}
+			const registry = require("@core/task/tools/registry/refreshToolRegistry")
+			const refresh = sinon.stub(registry, "refreshTaskTools").resolves(["contained-tool"])
+			await manager.resumeTaskFromHistory(undefined, { taskletResumeMessage: "Continue" })
+
+			deps.messageStateHandler.getDiracMessages()[0].content.card.status.should.equal(CardStatus.CANCELLED)
+			sinon.assert.calledWithExactly(refresh, deps.taskId, deps.storageAddress)
+			deps.taskState.taskScopedToolIds.should.eql(["contained-tool"])
+			deps.taskState.activeSkillIds.should.eql(["new-tool", "architecture-board"])
+			sinon.assert.callOrder(refresh, deps.initiateTaskLoop)
+		})
+
+		it("does not execute tasklet resumption when cancellation arrives after restoration", async () => {
+			setupDiskMocks()
+			deps.storageAddress = {
+				kind: "tasklet",
+				rootTaskId: "root",
+				taskletId: "tasklet_00000000-0000-4000-8000-000000000001",
+			}
+			await manager.resumeTaskFromHistory(
+				() => {
+					deps.taskState.abort = true
+				},
+				{ taskletResumeMessage: "Continue" },
+			)
+			sinon.assert.notCalled(deps.initiateTaskLoop)
+		})
+
+		it("rejects tasklet resumption against an ordinary root address", async () => {
+			await manager
+				.resumeTaskFromHistory(undefined, { taskletResumeMessage: "Continue" })
+				.should.be.rejectedWith(/contained tasklet address/)
+			sinon.assert.notCalled(deps.diracIgnoreController.initialize)
+		})
+
 		it("injects synthetic resume context without adding a visible user transcript message", async () => {
 			setupDiskMocks([], [{ role: "assistant", content: "Previous response" }])
 
@@ -271,7 +534,7 @@ describe("LifecycleManager", () => {
 			const resumedContent = deps.initiateTaskLoop.firstCall.args[0]
 			const systemContext = resumedContent.find((block: any) => block.text?.includes("<system_context"))
 			String(systemContext.text).should.containEql("Resume the Goal from durable state.")
-			;(systemContext.isUserInput === undefined).should.equal(true)
+				; (systemContext.isUserInput === undefined).should.equal(true)
 		})
 
 		it("starts a resumed turn from explicit user input without waiting for an interaction callback", async () => {
@@ -337,10 +600,10 @@ describe("LifecycleManager", () => {
 
 			const restoredHistory = deps.messageStateHandler.setApiConversationHistory.firstCall.args[0]
 			const restoredBlock = restoredHistory[0].content[0]
-			;(restoredBlock.isUserInput === undefined).should.equal(true)
+				; (restoredBlock.isUserInput === undefined).should.equal(true)
 			const replayedContent = deps.initiateTaskLoop.firstCall.args[0]
-			const replayedBlock = replayedContent.find((block: any) => block.text === "<task>/reloadtools</task>")
-			;(replayedBlock.isUserInput === undefined).should.equal(true)
+			// Saved content remains in its original turn, not copied into the resume turn.
+			replayedContent.some((block: any) => block.text === "<task>/reloadtools</task>").should.equal(false)
 		})
 
 		it("restores provider-native conversation state", async () => {
@@ -360,7 +623,7 @@ describe("LifecycleManager", () => {
 			sinon.assert.calledWith(deps.messageStateHandler.setApiConversationProviderState, providerState)
 		})
 
-		it("clears a checkpoint whose boundary is removed during resume", async () => {
+		it("preserves the final user turn and its checkpoint during resume", async () => {
 			const providerState = {
 				checkpoint: {
 					providerId: "openai-codex",
@@ -381,10 +644,11 @@ describe("LifecycleManager", () => {
 
 			await manager.resumeTaskFromHistory()
 
-			sinon.assert.calledWith(
-				deps.messageStateHandler.overwriteApiConversationProviderState,
-				sinon.match({ checkpoint: undefined }),
-			)
+			sinon.assert.notCalled(deps.messageStateHandler.overwriteApiConversationProviderState)
+			deps.messageStateHandler.overwriteApiConversationHistory.firstCall.args[0].should.eql([
+				{ role: "assistant", content: "answer" },
+				{ role: "user", content: "unfinished" },
+			])
 		})
 
 		it("sets taskState to initialized and not aborted", async () => {
@@ -398,7 +662,7 @@ describe("LifecycleManager", () => {
 			setupDiskMocks()
 			unblockWaitFor()
 			await manager.resumeTaskFromHistory()
-			deps.taskState.activeSkillIds.should.eql(["new-tool"])
+			deps.taskState.activeSkillIds.should.eql(["new-tool", "architecture-board"])
 		})
 
 		it("waits in the completed state and processes a follow-up message", async () => {
@@ -442,6 +706,50 @@ describe("LifecycleManager", () => {
 	})
 
 	describe("abortTask", () => {
+		for (const fatal of [false, true]) {
+			it(`LifecycleManager joins TaskCancel ownership and ${fatal ? "propagates cleanup failure" : "fails open for ordinary hook errors"}`, async () => {
+				if (!fatal) expectLoggerErrors()
+				deps.getWorkingConfiguration = () => ({ settings: { hooksEnabled: true }, apiConfiguration: {} })
+				deps.messageStateHandler.findMessageIndexById = () => -1
+				deps.taskMessenger.createCard = sinon.stub().resolves({ id: "cancel-hook" })
+				deps.hookManager = new HookManager({
+					...deps, withStateLock: async (operation: () => unknown) => operation(),
+				} as any)
+				deps.taskState.beginApiRequest()
+				sinon.stub(HookFactory.prototype, "hasHook").resolves(true)
+				sinon.stub(HookFactory.prototype, "getHookInfo").resolves({ scriptPaths: ["TaskCancel"] })
+				let release!: () => void
+				const cleanup = new Promise<void>((resolve) => { release = resolve })
+				const failure = fatal
+					? new HookCleanupError([new Error("termination failed")], "cancel hook cleanup failed")
+					: new Error("ordinary hook failure")
+				const run = sinon.stub().callsFake(async () => { await cleanup; throw failure })
+				const factory = sinon.stub(HookFactory.prototype, "createWithStreaming").resolves({ run } as any)
+				let settled = false
+				const pending = manager.abortTask().finally(() => { settled = true })
+				const rejected = fatal ? assert.rejects(pending, (error) => error === failure) : undefined
+				await pWaitFor(() => run.calledOnce, { interval: 1 })
+				assert.equal(settled, false)
+				assert.equal(deps.taskState.activeHookExecutions.size, 1)
+				const execution = [...deps.taskState.activeHookExecutions.values()][0] as any
+				assert.equal(execution.hookName, "TaskCancel")
+				assert.equal(execution.abortController.signal.aborted, false)
+				assert.equal(factory.firstCall.args[2], execution.abortController.signal)
+				sinon.assert.notCalled(deps.browserSession.dispose)
+				const finalization = manager.finalizeTaskRun()
+				const finalizationRejected = fatal ? assert.rejects(finalization, (error) => error === failure) : undefined
+				release()
+				if (rejected) await rejected
+				else await pending
+				if (finalizationRejected) await finalizationRejected
+				else await finalization
+				assert.equal(deps.taskState.activeHookExecutions.size, 0)
+				sinon.assert.calledOnce(deps.browserSession.dispose)
+				if (fatal) sinon.assert.notCalled(deps.messageStateHandler.saveDiracMessagesAndUpdateHistory)
+				else sinon.assert.calledOnce(deps.messageStateHandler.saveDiracMessagesAndUpdateHistory)
+			})
+		}
+
 		it("sets abort flag to true", async () => {
 			await manager.abortTask()
 			deps.taskState.abort.should.equal(true)
@@ -484,40 +792,90 @@ describe("LifecycleManager", () => {
 		})
 
 		it("clears streaming state before publishing CANCELLED", async () => {
-			deps.taskState.isApiRequestActive = true
-			deps.taskState.activeVoiceStreamId = "voice-stream"
-			deps.taskState.isWaitingForFirstChunk = true
-			deps.taskState.didFinishAbortingStream = false
+			deps.taskState.beginApiRequest()
+			deps.taskState.attachVoiceStream("voice-stream")
+			deps.taskState.beginFirstChunkWait()
 
 			await manager.abortTask()
 
 			deps.taskState.isApiRequestActive.should.equal(false)
-			;(deps.taskState.activeVoiceStreamId === undefined).should.equal(true)
+				; (deps.taskState.activeVoiceStreamId === undefined).should.equal(true)
 			deps.taskState.isWaitingForFirstChunk.should.equal(false)
 			deps.taskState.didFinishAbortingStream.should.equal(true)
 			deps.taskState.status.should.equal(TaskStatus.CANCELLED)
 		})
 
-		it("cancels active hook if present", async () => {
-			deps.hookManager.getActiveHookExecution = sinon.stub().resolves({ id: "hook1" })
+		for (const shutdown of ["abortTask", "finalizeTaskRun"] as const) {
+			it(`${shutdown} cancels every hook and waits for each cleanup`, async () => {
+				deps.messageStateHandler.findMessageIndexById = () => -1
+				const hooks = new HookManager({
+					...deps,
+					withStateLock: async (operation: () => unknown) => operation(),
+				} as any)
+				deps.hookManager = hooks
+				let finishFirst!: () => void
+				let finishSecond!: () => void
+				const first = {
+					runId: "first", hookName: "PreToolUse", messageId: "first", abortController: new AbortController(),
+					completion: new Promise<void>((resolve) => { finishFirst = resolve }),
+				}
+				const second = {
+					runId: "second", hookName: "PostToolUse", messageId: "second", abortController: new AbortController(),
+					completion: new Promise<void>((resolve) => { finishSecond = resolve }),
+				}
+				await hooks.setActiveHookExecution(first)
+				await hooks.setActiveHookExecution(second)
+				let finished = false
+				const pending = manager[shutdown]().then(() => { finished = true })
+				await pWaitFor(() => first.abortController.signal.aborted && second.abortController.signal.aborted, { interval: 1 })
+				finished.should.equal(false)
+				await hooks.clearActiveHookExecution("first")
+				finishFirst()
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				finished.should.equal(false)
+				await hooks.clearActiveHookExecution("second")
+				finishSecond()
+				await pending
+				finished.should.equal(true)
+				deps.taskState.activeHookExecutions.size.should.equal(0)
+			})
+		}
+
+		it("stops the command executor even without an active background command", async () => {
 			await manager.abortTask()
-			sinon.assert.calledOnce(deps.hookManager.cancelHookExecution)
-			sinon.assert.calledOnce(deps.hookManager.clearActiveHookExecution)
+			sinon.assert.called(deps.commandExecutor.dispose)
+			sinon.assert.callOrder(deps.commandExecutor.dispose, deps.terminalManager.disposeAll)
 		})
 
-		it("cancels background command if active", async () => {
-			deps.commandExecutor.hasActiveBackgroundCommand = sinon.stub().returns(true)
-			await manager.abortTask()
-			sinon.assert.calledOnce(deps.commandExecutor.cancelBackgroundCommand)
+		it("rejects browser-session replacement once resource cleanup starts", async () => {
+			const previous = deps.browserSession
+			const cleanup = manager.finalizeTaskRun()
+			const replaceSession = () => manager.setBrowserSession({ dispose: sinon.stub().resolves() } as any)
+			replaceSession.should.throw(/stopped/)
+			deps.browserSession.should.equal(previous)
+			await cleanup
 		})
 
 		it("disposes task-scoped resources", async () => {
 			await manager.abortTask()
-			sinon.assert.calledOnce(deps.terminalManager.disposeAll)
+			sinon.assert.calledTwice(deps.terminalManager.disposeAll)
 			sinon.assert.calledOnce(deps.urlContentFetcher.closeBrowser)
 			sinon.assert.calledOnce(deps.commandPermissionController.dispose)
 			sinon.assert.calledOnce(deps.diracIgnoreController.dispose)
 			sinon.assert.calledOnce(deps.fileContextTracker.dispose)
+		})
+
+		it("stops the terminal owner before joining an executor waiting for terminal acquisition", async () => {
+			let terminalClosed!: () => void
+			const close = new Promise<void>((resolve) => { terminalClosed = resolve })
+			deps.commandExecutor.dispose.returns(close)
+			deps.terminalManager.disposeAll.callsFake(() => {
+				terminalClosed()
+				return close
+			})
+			await manager.abortTask()
+			sinon.assert.called(deps.terminalManager.disposeAll)
+			sinon.assert.called(deps.commandExecutor.dispose)
 		})
 
 		it("waits for asynchronous task-scoped resource disposal", async () => {
@@ -559,30 +917,20 @@ describe("LifecycleManager", () => {
 			sinon.assert.calledOnce(deps.commandPermissionController.dispose)
 			sinon.assert.calledOnce(deps.diracIgnoreController.dispose)
 			sinon.assert.calledOnce(deps.fileContextTracker.dispose)
-			sinon.assert.calledOnce(deps.diffViewProvider.revertChanges)
+			sinon.assert.calledOnce(deps.diffViewProvider.reset)
 			deps.taskState.status.should.equal(TaskStatus.CANCELLED)
 		})
 
-		it("reverts diff view changes", async () => {
+		it("releases diff views without reverting shared file contents", async () => {
 			await manager.abortTask()
-			sinon.assert.calledOnce(deps.diffViewProvider.revertChanges)
+			sinon.assert.calledOnce(deps.diffViewProvider.reset)
+			sinon.assert.notCalled(deps.diffViewProvider.revertChanges)
 		})
 
-		it("releases task lock if acquired", async () => {
-			deps.taskState.taskLockAcquired = true
-			const lockModule = require("../TaskLockUtils")
-			sinon.stub(lockModule, "releaseTaskLock").resolves()
+		it("keeps persistence available after cancellation until the owner closes the task", async () => {
+			deps.messageStateHandler.retirePersistence = sinon.stub().resolves()
 			await manager.abortTask()
-			sinon.assert.calledOnce(lockModule.releaseTaskLock)
-			deps.taskState.taskLockAcquired.should.equal(false)
-		})
-
-		it("does not release lock if not acquired", async () => {
-			deps.taskState.taskLockAcquired = false
-			const lockModule = require("../TaskLockUtils")
-			sinon.stub(lockModule, "releaseTaskLock").resolves()
-			await manager.abortTask()
-			sinon.assert.notCalled(lockModule.releaseTaskLock)
+			sinon.assert.notCalled(deps.messageStateHandler.retirePersistence)
 		})
 
 		it("runs TaskCancel hook when hooks enabled", async () => {
@@ -642,7 +990,7 @@ describe("LifecycleManager", () => {
 			await manager.abortTask()
 
 			sinon.assert.calledOnce(deps.hookManager.shouldRunTaskCancelHook)
-			sinon.assert.calledOnce(deps.terminalManager.disposeAll)
+			sinon.assert.calledTwice(deps.terminalManager.disposeAll)
 			sinon.assert.callCount(deps.messageStateHandler.flushPendingWrites, 2)
 		})
 	})
@@ -653,13 +1001,7 @@ function createMockDeps(): any {
 	let apiConversationHistory: any[] = []
 	let apiConversationProviderState: any = {}
 	return {
-		taskState: {
-			isInitialized: false,
-			abort: false,
-			taskScopedToolIds: [],
-			activeSkillIds: [],
-			taskScopedSkillIds: [],
-		} as any,
+		taskState: new TaskState(),
 		messageStateHandler: {
 			setDiracMessages: sinon.stub().callsFake((messages: any[]) => {
 				diracMessages = messages
@@ -706,13 +1048,14 @@ function createMockDeps(): any {
 		terminalManager: { disposeAll: sinon.stub() } as any,
 		urlContentFetcher: { closeBrowser: sinon.stub() } as any,
 		browserSession: { dispose: sinon.stub().resolves() } as any,
-		diffViewProvider: { revertChanges: sinon.stub().resolves() } as any,
+		diffViewProvider: { reset: sinon.stub().resolves(), revertChanges: sinon.stub().resolves() } as any,
 		fileContextTracker: {
 			dispose: sinon.stub(),
 			retrieveAndClearPendingFileContextWarning: sinon.stub().resolves(null),
 		} as any,
 		contextManager: {} as any,
 		commandExecutor: {
+			dispose: sinon.stub().resolves(),
 			hasActiveBackgroundCommand: sinon.stub().returns(false),
 			cancelBackgroundCommand: sinon.stub().resolves(),
 		} as any,
@@ -723,6 +1066,7 @@ function createMockDeps(): any {
 			clearActiveHookExecution: sinon.stub(),
 			getActiveHookExecution: sinon.stub().resolves(undefined),
 			cancelHookExecution: sinon.stub().resolves(),
+			cancelAllHookExecutions: sinon.stub().resolves(),
 			handleHookCancellation: sinon.stub().resolves(),
 			runUserPromptSubmitHook: sinon.stub().resolves({}),
 			shouldRunTaskCancelHook: sinon.stub().resolves(false),

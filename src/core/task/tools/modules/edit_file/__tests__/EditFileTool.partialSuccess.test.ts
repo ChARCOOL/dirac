@@ -72,6 +72,7 @@ function createConfig() {
 	}
 
 	const callbacks = {
+		withMutationAuthorization: async (_tool: string, mutation: () => Promise<unknown>) => mutation(),
 		say: sinon.stub().resolves(undefined),
 		ask: sinon.stub().resolves({ response: DiracAskResponse.APPROVE }),
 		saveCheckpoint: sinon.stub().resolves(),
@@ -93,9 +94,7 @@ function createConfig() {
 		shouldAutoApproveTool: sinon.stub().returns([true, true]),
 		applyLatestBrowserSettings: sinon.stub().resolves(undefined),
 		createUtilityModelRunner: sinon.stub(),
-		createSubagentRuntime: sinon.stub(),
 		assertMutationAuthorized: sinon.stub(),
-		withMutationAuthorization: sinon.stub().callsFake(async (_toolName: unknown, mutation: () => Promise<unknown>) => await mutation()),
 		commitAttemptCompletion: sinon.stub().resolves({ committed: true }),
 		getDiracMessages: sinon.stub().returns([]),
 		updateDiracMessage: sinon.stub().resolves(),
@@ -106,16 +105,15 @@ function createConfig() {
 	const persistenceStateManager = { flushPendingState: sinon.stub().resolves() }
 
 	const config = {
+		invocationEffects: { failed: false, consecutiveMistakeCount: 0 },
 		taskId: "task-1",
 		ulid: "ulid-1",
 		cwd: tmpDir,
 		mode: "act",
 		strictPlanModeEnabled: false,
 		yoloModeToggled: true,
-		doubleCheckCompletionEnabled: false,
 		vscodeTerminalExecutionMode: "backgroundExec",
 		enableParallelToolCalling: true,
-		isSubagentExecution: true, // skip UI calls and approval flow
 		taskState,
 		messageState: {
 			getApiConversationHistory: sinon.stub().returns([]),
@@ -127,6 +125,7 @@ function createConfig() {
 			actions: { executeCommands: false },
 		},
 		autoApprover: {
+			isUnrestrictedAutoApprove: sinon.stub().returns(true),
 			shouldAutoApproveTool: sinon.stub().returns([true, true]),
 		},
 		browserSettings: {},
@@ -194,6 +193,7 @@ describe("EditFileTool.execute – partial success", () => {
 		])
 
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					getDiagnostics: sandbox.stub().resolves({ fileDiagnostics: [] }),
@@ -239,6 +239,7 @@ describe("EditFileTool.execute – partial success", () => {
 		taskState.assistantMessageContent = [block]
 
 		const result = await handler.execute(config, block)
+		assert.equal(config.invocationEffects?.failed, false)
 		// Verify disk content
 		const finalContent = await fs.readFile(filePath, "utf8")
 		assert.equal(finalContent, "line 1\nnew line 2\nline 3\nnew line 4\nline 5")
@@ -278,6 +279,7 @@ describe("EditFileTool.execute – partial success", () => {
 		taskState.assistantMessageContent = [block]
 
 		const result = await handler.execute(config, block)
+		assert.equal(config.invocationEffects?.failed, true)
 		// Verify disk content is UNCHANGED
 		const finalContent = await fs.readFile(filePath, "utf8")
 		assert.equal(finalContent, originalContent)

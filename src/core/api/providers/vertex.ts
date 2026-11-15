@@ -1,10 +1,10 @@
-import type { MessageCreateParamsStreaming as BetaMessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/beta/messages/messages"
+import type { MessageCreateParamsStreaming as BetaMessageCreateParamsStreaming, BetaRawMessageStreamEvent } from "@anthropic-ai/sdk/resources/beta/messages/messages"
 import { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/index"
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk"
 import { FunctionDeclaration as GoogleTool } from "@google/genai"
 import {
 	getAnthropicReasoningEffort,
-	isAnthropicAdaptiveThinkingSupported,
+	getAnthropicThinkingConfig,
 	ModelInfo,
 	VertexModelId,
 	vertexDefaultModelId,
@@ -16,7 +16,8 @@ import { DiracTool } from "@/shared/tools"
 import { ApiHandler, CommonApiHandlerOptions } from "../"
 import { withRetry } from "../retry"
 import { sanitizeAnthropicMessages } from "../transform/anthropic-format"
-import { ApiStream } from "../transform/stream"
+import { AnthropicThinkingRecovery } from "../transform/anthropic-thinking-recovery"
+import { ApiStream, type ApiStreamUsageChunk } from "../transform/stream"
 import { GeminiHandler } from "./gemini"
 
 // The installed SDK types do not yet include xhigh, which the API accepts for Opus 5.5.
@@ -38,6 +39,7 @@ export class VertexHandler implements ApiHandler {
 	private clientAnthropic: AnthropicVertex | undefined
 	private options: VertexHandlerOptions
 	private abortController: AbortController | undefined
+	private readonly thinkingRecovery = new AnthropicThinkingRecovery()
 
 	constructor(options: VertexHandlerOptions) {
 		this.options = options
@@ -118,31 +120,33 @@ export class VertexHandler implements ApiHandler {
 		const clientAnthropic = this.ensureAnthropicClient()
 
 		// Claude implementation
-		const budget_tokens = this.options.thinkingBudgetTokens || 0
-		// Use model metadata to determine if reasoning should be enabled
-		const reasoningOn = (model.info.supportsReasoning ?? false) && (model.info.thinkingAlwaysOn || budget_tokens !== 0)
-		const useAdaptive = isAnthropicAdaptiveThinkingSupported(modelId, model.info)
+		const thinking = getAnthropicThinkingConfig(
+			modelId,
+			model.info,
+			this.options.thinkingBudgetTokens,
+			this.options.reasoningEffort,
+		)
+		const reasoningOn = thinking !== undefined && thinking.type !== "disabled"
+		const useEffort = model.info.supportsReasoningEffort || thinking?.type === "adaptive"
 
 		// Tools are available only when native tools are enabled.
 		const nativeToolsOn = (tools?.length ?? 0) > 0
 
-		const anthropicMessages = sanitizeAnthropicMessages(messages, model.info.supportsPromptCache ?? false)
+		let anthropicMessages = this.thinkingRecovery.prepareAnthropicMessages(
+			sanitizeAnthropicMessages(messages, model.info.supportsPromptCache),
+		)
 		const request = {
 			model: modelId,
 			max_tokens: model.info.maxTokens || 8192,
-			thinking: reasoningOn
-				? useAdaptive
-					? { type: "adaptive", display: "summarized" }
-					: { type: "enabled", budget_tokens: budget_tokens }
-				: undefined,
-			...(reasoningOn && useAdaptive
+			thinking,
+			...(useEffort
 				? {
-						output_config: {
-							effort: getAnthropicReasoningEffort(model.info, this.options.reasoningEffort) as AnthropicEffort,
-						},
-					}
+					output_config: {
+						effort: getAnthropicReasoningEffort(model.info, this.options.reasoningEffort) as AnthropicEffort,
+					},
+				}
 				: {}),
-			temperature: reasoningOn ? undefined : (model.info.temperature ?? undefined),
+			temperature: reasoningOn || model.info.supportsReasoningEffort ? undefined : model.info.temperature,
 			system: [
 				{
 					text: systemPrompt,
@@ -157,12 +161,23 @@ export class VertexHandler implements ApiHandler {
 				nativeToolsOn && !reasoningOn && model.info.supportsForcedToolUse !== false ? { type: "any" } : undefined,
 		} as BetaMessageCreateParamsStreaming
 
-		const stream = await clientAnthropic.beta.messages.create(request, { signal })
-
-		const lastStartedToolCall = { id: "", name: "", arguments: "" }
-
-		for await (const chunk of stream) {
-			yield* this.parseVertexChunk(chunk, lastStartedToolCall)
+		for (let attempt = 0; attempt < 2; attempt++) {
+			let didYield = false
+			try {
+				const stream = await clientAnthropic.beta.messages.create({ ...request, messages: anthropicMessages }, { signal })
+				const lastStartedToolCall = { id: "", name: "", arguments: "" }
+				const usage: ApiStreamUsageChunk = { type: "usage", inputTokens: 0, outputTokens: 0 }
+				for await (const chunk of stream) {
+					for (const parsed of this.parseVertexChunk(chunk, lastStartedToolCall, usage)) {
+						didYield = true
+						yield parsed
+					}
+				}
+				return
+			} catch (error) {
+				if (attempt !== 0 || didYield) throw error
+				anthropicMessages = this.thinkingRecovery.recoverAnthropicMessages(error, anthropicMessages)
+			}
 		}
 	}
 
@@ -172,13 +187,19 @@ export class VertexHandler implements ApiHandler {
 	}
 
 	// Parses a single Anthropic stream chunk into Dirac ApiStreamChunk(s).
-	private *parseVertexChunk(chunk: any, lastStartedToolCall: { id: string; name: string; arguments: string }): Generator<any> {
+	private *parseVertexChunk(
+		chunk: BetaRawMessageStreamEvent,
+		lastStartedToolCall: { id: string; name: string; arguments: string },
+		usage: ApiStreamUsageChunk,
+	): Generator<any> {
 		switch (chunk?.type) {
 			case "message_start":
-				yield this.parseVertexMessageStart(chunk)
+				Object.assign(usage, this.parseVertexMessageStart(chunk))
+				yield { ...usage }
 				break
 			case "message_delta":
-				yield { type: "usage", inputTokens: 0, outputTokens: chunk.usage?.output_tokens || 0 }
+				usage.outputTokens = chunk.usage?.output_tokens ?? usage.outputTokens
+				yield { ...usage }
 				break
 			case "content_block_start":
 				yield* this.parseVertexContentBlockStart(chunk, lastStartedToolCall)

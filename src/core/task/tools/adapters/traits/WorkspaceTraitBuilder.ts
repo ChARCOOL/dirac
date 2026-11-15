@@ -1,9 +1,10 @@
+import * as path from "node:path"
+import { formatResponse } from "@core/formatResponse"
 import { resolveWorkspacePath } from "@core/workspace"
 import { extractFileContent } from "@integrations/misc/extract-file-content"
 import { processFilesIntoText } from "@integrations/misc/extract-text"
 import { countTextFileLines, readTextFileWindow } from "@integrations/misc/read-text-file-window"
 import { listFiles } from "@services/glob/list-files"
-import { fingerprintWorkspaceRoots } from "@services/workspace/WorkspaceFingerprint"
 import * as fs from "fs/promises"
 import { HostProvider } from "@/hosts/host-provider"
 import type { IWorkspaceTrait } from "../../interfaces/IToolEnvironment"
@@ -11,19 +12,35 @@ import type { TaskConfig } from "../../types/TaskConfig"
 
 // Builds the workspace trait — file I/O, path resolution, and listing.
 export function buildWorkspaceTrait(config: TaskConfig): IWorkspaceTrait {
+	const assertReadAccess = (filePath: string): void => {
+		if (!config.services.diracIgnoreController.validateAccess(path.resolve(filePath))) {
+			throw new Error(formatResponse.diracIgnoreError(filePath))
+		}
+	}
+
 	return {
 		resolvePath: async (relPath) => {
 			const result = resolveWorkspacePath(config, relPath, "SurfaceAdapter.resolvePath")
 			return typeof result === "string" ? { absolutePath: result, displayPath: relPath } : result
 		},
-		readFile: async (path) => await fs.readFile(path, "utf8"),
-		readTextFileWindow: async (path, options) => await readTextFileWindow(path, options),
-		countTextFileLines: async (path, signal) => await countTextFileLines(path, signal),
+		readFile: async (path) => {
+			assertReadAccess(path)
+			return await fs.readFile(path, "utf8")
+		},
+		readTextFileWindow: async (path, options) => {
+			assertReadAccess(path)
+			return await readTextFileWindow(path, options)
+		},
+		countTextFileLines: async (path, signal) => {
+			assertReadAccess(path)
+			return await countTextFileLines(path, signal)
+		},
 		readRichFile: async (path) => {
+			assertReadAccess(path)
 			const supportsImages = config.model.info.supportsImages ?? false
 			return await extractFileContent(path, supportsImages)
 		},
-		formatAttachedFiles: processFilesIntoText,
+		formatAttachedFiles: async (paths) => await processFilesIntoText(paths, assertReadAccess),
 		getFileInfo: async (path) => {
 			try {
 				const stats = await fs.stat(path)
@@ -32,11 +49,7 @@ export function buildWorkspaceTrait(config: TaskConfig): IWorkspaceTrait {
 				return { size: 0, isFile: false, exists: false }
 			}
 		},
-		listFiles: async (path, recursive, limit) => await listFiles(path, recursive, limit),
-		fingerprintWorkspace: async () => {
-			const workspaceRoots = config.workspaceManager?.getRoots().map((root) => root.path) ?? [config.cwd]
-			return await fingerprintWorkspaceRoots(workspaceRoots)
-		},
+		listFiles: async (path, recursive, limit, signal) => await listFiles(path, recursive, limit, signal),
 		writeFile: async (path, content) =>
 			await config.callbacks.withMutationAuthorization(config.toolUse?.name, () => fs.writeFile(path, content, "utf8")),
 		saveOpenDocumentIfDirty: async (options) => {

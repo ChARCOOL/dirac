@@ -13,14 +13,18 @@ function createEnvironment(activeSkillIds: string[]) {
 		instructions: "Follow these important instructions.",
 	}
 	const env: any = {
-		config: { isSubagentExecution: true },
+		config: {},
+		ui: {
+			createCard: sinon.stub().resolves({ update: sinon.stub().resolves(), finalize: sinon.stub().resolves() }),
+		},
 		skills: {
 			getAvailableSkills: sinon.stub().resolves([skill]),
 			getSkillContent: sinon.stub().resolves(skill),
 			listSupportingFiles: sinon.stub().resolves({ docs: [], scripts: [] }),
 		},
 		orchestration: {
-			getTaskState: sinon.stub().withArgs("activeSkillIds").returns(activeSkillIds),
+			getTaskState: (key: string) => key === "activeSkillIds" ? activeSkillIds : undefined,
+			reportFailure: sinon.stub(),
 			activateSkill,
 		},
 		telemetry: { captureCustomMetadata: sinon.stub() },

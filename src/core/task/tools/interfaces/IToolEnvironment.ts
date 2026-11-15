@@ -1,5 +1,17 @@
+import type { TaskletRecord } from "../../types/tasklet"
+import type {
+	TaskletMessage,
+	TaskletMessageResult,
+	TaskletSleepOptions,
+	TaskletWakeResult,
+	TaskletInspectionQuery,
+	TaskletInspectionPage,
+	TaskletSummary,
+} from "../../types/tasklet"
+import type { CardParams, ICardHandle } from "./ICardHandle"
+import type { ToolExecutionScope } from "./ToolExecutionScope"
+import type { IArchitectureTrait } from "./IArchitectureTrait"
 import type { TextCondensationTemplateId } from "@core/text-condensation/TextCondenser"
-import type { TextFileWindow, TextFileWindowOptions } from "@shared/text-file-window"
 import type {
 	AstImplementationRequest,
 	AstImplementationResult,
@@ -11,98 +23,19 @@ import type {
 	AstReplacementRequest,
 	SourceMutationPlan,
 } from "@services/source-ast/types"
+import type { GoalObjectiveRevision } from "@shared/goal"
 import { FileDiagnostics } from "@shared/proto/index.dirac"
-import type { SubagentIdentity } from "@shared/subagents"
-import { FileInfo } from "../../../../services/glob/list-files"
-import {
-	ActionButton,
-	BrowserActionResult,
-	Card,
-	CardParams as SharedCardParams,
-	CardLocation,
-	CardStatus,
-	CleanupStrategy,
-	DiracMessage,
-	RenderType,
-} from "../../../../shared/ExtensionMessage"
-import { SkillContent, SkillMetadata } from "../../../../shared/skills"
-import { DiracAskResponse } from "../../../../shared/WebviewMessage"
-import type { DiracStorageMessage } from "../../../../shared/messages/content"
-import { HookExecutionResult } from "../../../hooks/hook-executor"
-import { TaskState } from "../../TaskState"
-import { SubagentProgressUpdate, SubagentRunResult } from "../subagent/SubagentRunner"
-import { TaskConfig } from "../types/TaskConfig"
-import { IDiracContext } from "./IDiracContext"
-import type {
-	GoalChildRecord,
-	GoalChildRole,
-	GoalChildStatus,
-	GoalObjectiveRevision,
-	GoalTaskSummary,
-} from "@shared/goal"
 import type { ResponseArguments } from "@shared/responseTool"
-
-export interface ICardHandle {
-	readonly collapsed: boolean
-	readonly id: string
-	readonly header: string
-	readonly icon?: string
-	readonly renderType: RenderType
-	readonly body?: string
-
-	readonly rawInput?: import("../../../../shared/ExtensionMessage").CardRawInput
-	readonly rawOutput?: import("../../../../shared/ExtensionMessage").CardRawOutput
-	readonly locations?: CardLocation[]
-	readonly requireApproval?: boolean
-	readonly requireFeedback?: boolean
-	readonly feedbackPlaceholder?: string
-	readonly actions?: ActionButton[]
-	readonly maxHeight?: number
-	readonly cleanupStrategy?: CleanupStrategy
-	readonly status: CardStatus
-	/** Whether waitForInteraction will actually suspend for user input. */
-	readonly requiresUserInteraction?: boolean
-
-	/**
-	 * Update the card's metadata or state.
-	 */
-	update(patch: Partial<Omit<Card, "id">>): Promise<void>
-
-	/**
-	 * Blocks until the user interacts with the card (approval, feedback, or custom action).
-	 * Returns the action value (e.g., 'approve', 'reject', 'submit', or custom button value).
-	 */
-	waitForInteraction(): Promise<{
-		action: DiracAskResponse | string
-		response: DiracAskResponse
-		value?: string
-		text?: string
-		images?: string[]
-		files?: string[]
-		userEdits?: Record<string, string>
-	}>
-
-	/**
-	 * Append a small, bounded status update to the existing body.
-	 * Callers must not use this for unbounded stdout or log streaming.
-	 */
-	appendBody(chunk: string): Promise<void>
-
-	/**
-	 * Transitions the card to a final state and resolves any pending interaction.
-	 */
-	finalize(status: CardStatus, doNotAutoCollapse?: boolean): Promise<void>
-}
-
-export interface CardParams extends SharedCardParams {
-	/**
-	 * Classifies tool permissions for the shared approval pipeline.
-	 * Utility may approve `tool`; `manual_tool` requires the user unless an explicit unrestricted mode is active.
-	 */
-	permissionRequestKind?: "tool" | "manual_tool"
-	/** Internal live predicate used to resolve a displayed tool permission after settings change. */
-	isAutoApproved?: () => boolean
-}
+import type { TextFileWindow, TextFileWindowOptions } from "@shared/text-file-window"
+import { FileInfo } from "../../../../services/glob/FileInfo"
+import { BrowserActionResult, DiracMessage } from "../../../../shared/ExtensionMessage"
+import { SkillContent, SkillMetadata } from "../../../../shared/skills"
+import { HookExecutionResult } from "../../../hooks/HookExecutionResult"
+import { TaskState, type TaskStateWritableKey } from "../../TaskState"
+import { ToolConfig } from "../types/ToolConfig"
+import { IDiracContext } from "./IDiracContext"
+export type { CardParams, ICardHandle } from "./ICardHandle"
+export type { IArchitectureTrait } from "./IArchitectureTrait"
 
 export interface IUITrait {
 	/**
@@ -148,7 +81,7 @@ export interface IInteractionTrait {
 	}>
 
 	/**
-	 * Generic ask for followup, plan_mode, new_task, condense, etc.
+	 * Generic ask for followup, plan_mode, condense, etc.
 	 */
 }
 
@@ -178,13 +111,16 @@ export interface SystemCommandResult {
 	signal?: NodeJS.Signals | null
 	logFilePath?: string
 	backgroundCompletion?: Promise<void>
+	sandbox?: import("@shared/SandboxExecution").SandboxExecutionStatus
 }
 
 export interface ISystemTrait {
+	/** Host-captured immutable context, not model-controlled launch options. */
+	captureCommandSandbox?(): import("@shared/SandboxExecution").SandboxExecutionContext
 	/**
 	 * Executes a shell command.
 	 */
-	executeCommand(command: string, options?: { timeout?: number }): Promise<SystemCommandResult>
+	executeCommand(command: string, options?: { timeout?: number; cwd?: string; assertAuthorized?: () => void; sandboxContext?: import("@shared/SandboxExecution").SandboxExecutionContext }): Promise<SystemCommandResult>
 
 	/**
 	 * Performs a regex search across files.
@@ -244,7 +180,7 @@ export interface IWorkspaceTrait {
 	/**
 	 * Lists files in the specified directory.
 	 */
-	listFiles(path: string, recursive: boolean, limit: number): Promise<[FileInfo[], boolean]>
+	listFiles(path: string, recursive: boolean, limit: number, signal?: AbortSignal): Promise<[FileInfo[], boolean]>
 	/**
 	 * Reads the content of a file.
 	 */
@@ -263,9 +199,6 @@ export interface IWorkspaceTrait {
 	 * Returns information about a file (size, existence, etc.).
 	 */
 	getFileInfo(path: string): Promise<{ size: number; isFile: boolean; exists: boolean }>
-
-	/** Fingerprints workspace file paths and bytes for completion-verification retry arbitration. */
-	fingerprintWorkspace(): Promise<string>
 
 	/**
 	 * Writes content to a file.
@@ -286,8 +219,11 @@ export interface SaveResult {
 export interface IEditorTrait {
 	/** Reads authoritative text through the editor's configured transport. */
 	readText(path: string): Promise<string>
-	/** Opens the diff/review UI for one or more files */
-	showReview(files: { absolutePath: string; displayPath: string; content: string; originalContent?: string }[]): Promise<void>
+	/** Opens a preview bound to the exact interaction card; private owner-routed requests remain non-actionable. */
+	showReview(
+		files: { absolutePath: string; displayPath: string; content: string; originalContent?: string }[],
+		card: ICardHandle,
+	): Promise<void>
 	/** Hides the review UI */
 	hideReview(): Promise<void>
 	/** Opens a specific file in the editor */
@@ -313,31 +249,63 @@ export interface IEditorTrait {
 }
 
 export interface ISourceAstTrait {
-	outline(request: AstOutlineRequest): Promise<AstOutlineResult>
-	implementations(request: AstImplementationRequest): Promise<AstImplementationResult>
-	occurrences(request: AstOccurrenceRequest): Promise<AstOccurrenceResult>
+	/** Service-owned read queries; cancellation stops observation, not shared service resource ownership. */
+	outline(request: AstOutlineRequest, signal?: AbortSignal): Promise<AstOutlineResult>
+	implementations(request: AstImplementationRequest, signal?: AbortSignal): Promise<AstImplementationResult>
+	occurrences(request: AstOccurrenceRequest, signal?: AbortSignal): Promise<AstOccurrenceResult>
 	planRename(request: AstRenameRequest): Promise<SourceMutationPlan>
 	planReplacements(request: AstReplacementRequest): Promise<SourceMutationPlan>
 	getAnchorFingerprint(path: string): string | null
 }
 
+export type {
+	TaskletInteractionResult,
+	TaskletInteraction,
+	TaskletInspection,
+	TaskletTranscript,
+	TaskletInteractionDecision,
+	TaskletResolution,
+	TaskletMessage,
+	TaskletMessageResult,
+	TaskletSleepOptions,
+	TaskletWakeResult,
+	TaskletInspectionQuery,
+	TaskletInspectionPage,
+	TaskletSummary,
+} from "../../types/tasklet"
+
+/** Parent-only controls. Implementations expose data and operations, never the live Task/host. */
+export interface TaskletControls {
+	/** Read-only user catalog and authority ceiling; no settings mutation capability. */
+	sandboxCatalog?(): unknown
+	/** Acceptance only: does not wait for or assert successful completion of the assignment. */
+	start(input: { title: string; prompt: string } & import("../../TaskletConfiguration").TaskletStartOptions): Promise<TaskletRecord>
+	/** Explicit follow-up under the same handle/conversation; returns acceptance, not a result. */
+	resume(id: string, message?: string): Promise<TaskletRecord>
+	list(query?: TaskletInspectionQuery): TaskletInspectionPage<TaskletSummary>
+	inspect(id: string, query?: TaskletInspectionQuery): Promise<TaskletInspectionPage>
+	/** All direct guidance, questions, replies and permission decisions use this path. */
+	message(items: TaskletMessage[]): Promise<TaskletMessageResult[]>
+	interrupt(id: string, reason?: string): Promise<TaskletSummary>
+	/** Voluntary wait only; does not consume events/input, join children or start another model loop. */
+	sleep(options?: TaskletSleepOptions): Promise<TaskletWakeResult>
+}
+
 export interface IOrchestrationTrait {
-	runSubagent(
-		prompt: string,
-		options?: {
-			subagentName?: string
-			taskTitle?: string
-			agentIdentity?: SubagentIdentity
-			timeout?: number
-			includeHistory?: boolean
-			useUtilityModel?: boolean
-			allowedTools?: string[]
-			systemSuffix?: string
-			onUpdate?: (update: SubagentProgressUpdate) => void | Promise<void>
-			/** Abort signal to cancel the subagent run (e.g., parent task cancellation). */
-			signal?: AbortSignal
-		},
-	): Promise<SubagentRunResult>
+	/** Report a returned semantic failure without changing the model-mistake counter. */
+	reportFailure(): void
+	/** Stable runtime identity; roots are always Dirac. */
+	readonly agentIdentity: { readonly id: string; readonly parent: string | null; readonly role?: string }
+	/** Available only to an owning ordinary root; never exposes a live Task or host. */
+	readonly tasklets?: TaskletControls
+	/** Runtime-authenticated ordinary communication and discovery for roots and children. */
+	readonly agentCommunication?: import("../../AgentCommunication").AgentCommunicationCapability
+	/** Child-only voluntary communication wait; never resolves structured input. */
+	readonly agentWait?: import("../../AgentCommunication").AgentWaitCapability
+	readonly sharedJournal?: import("../../SharedJournalTypes").SharedJournalCapability
+	readonly commandApprovals?: import("./CommandApprovals").CommandApprovalsCapability
+	readonly commandCapabilities?: import("./TaskCommandCapabilities").TaskCommandCapabilitiesCapability
+
 
 	/**
 	 * Executes a lifecycle hook.
@@ -360,6 +328,8 @@ export interface IOrchestrationTrait {
 	 * Returns the conversation history.
 	 */
 	getHistory(): DiracMessage[]
+	/** Original delivered user requests since the latest successful completion, independent of API truncation. */
+	getCurrentTurnUserRequests(): string[]
 
 	/**
 	 * Updates the conversation history truncation range.
@@ -378,12 +348,16 @@ export interface IOrchestrationTrait {
 	getTaskState<T extends keyof TaskState>(key: T): TaskState[T]
 
 	/**
-	 * Updates the runtime task state.
+	 * Updates the runtime task state. Only plain writable fields are accepted:
+	 * transition-gated fields are written through their named TaskState
+	 * transitions, method keys are not data, and getter-only keys
+	 * (abortSignal, lastWaitingCardId) have no setter at all.
 	 */
-	setTaskState<T extends keyof TaskState>(key: T, value: TaskState[T]): void
+	setTaskState<T extends TaskStateWritableKey>(key: T, value: TaskState[T]): void
 
-	/** Ends the current task and asks its controller to start a replacement after unwind. */
-	requestTaskReplacement(context: string, images?: string[], files?: string[]): void
+	/** Records the accepted completion response on task state. */
+	commitCompletionResponse(response: string): void
+
 
 	/** Activates a trusted skill and persists the activation for task resume. */
 	activateSkill(skillId: string): Promise<void>
@@ -404,30 +378,10 @@ export interface IResponseObserverTrait {
 	recordResponse(response: ResponseArguments): Promise<void>
 }
 
-export interface TranscriptPage {
-	entries: DiracStorageMessage[]
-	nextCursor?: string
-}
+export type { TranscriptPage } from "@shared/messages/content"
 
 export interface IGoalTrait {
-	startTask(input: { taskTitle: string; prompt: string }): Promise<GoalChildRecord>
-	listTasks(input: {
-		status?: GoalChildStatus[]
-		role?: GoalChildRole
-		cursor?: string
-		limit?: number
-	}): Promise<{ tasks: GoalTaskSummary[]; nextCursor?: string }>
-	sendTaskMessage(input: { taskId: string; message: string }): Promise<GoalChildRecord>
-	cancelTask(input: { taskId: string; reason?: string }): Promise<GoalChildRecord>
-	readTaskTranscript(input: { taskId: string; cursor?: string; limit?: number }): Promise<TranscriptPage>
-	resolveTaskInteraction(input: {
-		taskId: string
-		interactionId: string
-		resolution: "allow" | "reject" | "answer" | "passthrough"
-		answer?: string
-	}): Promise<{ resolved: true; task: GoalChildRecord }>
-	waitForEvents(): Promise<string>
-	startVerification(input: { focus?: string }): Promise<GoalChildRecord>
+	getObjective(): Promise<GoalObjectiveRevision>
 	replaceObjective(markdown: string): Promise<GoalObjectiveRevision>
 	blockGoal(reason: string): Promise<void>
 	commitCompletion(result: string): Promise<CompletionCommitResult>
@@ -494,18 +448,23 @@ export interface IConversationCondensationTrait {
 }
 
 export interface IToolEnvironment {
+	/** Absent only for discovery and unadmitted test environments. */
+	readonly execution?: ToolExecutionScope
 	readonly telemetry: ITelemetryTrait
 	readonly ui: IUITrait
 	readonly interaction: IInteractionTrait
 	readonly system: ISystemTrait
 	readonly workspace: IWorkspaceTrait
 	readonly sourceAst: ISourceAstTrait
-	readonly diagnostics: IDiagnosticsTrait
+	/** Absent when the host cannot supply editor diagnostics. */
+	readonly diagnostics?: IDiagnosticsTrait
 
 	readonly anchors: IAnchorTrait
 	readonly editor: IEditorTrait
 	readonly browser: IBrowserTrait
 	readonly skills: ISkillsTrait
+	/** Only foreground conversations own architecture storage; absent for private workers. */
+	readonly architecture?: IArchitectureTrait
 	readonly orchestration: IOrchestrationTrait
 	readonly responseObserver: IResponseObserverTrait
 	readonly goal?: IGoalTrait
@@ -519,7 +478,7 @@ export interface IToolEnvironment {
 	readonly toolName: string
 
 	/** Task and environment configuration */
-	readonly config: TaskConfig
+	readonly config: ToolConfig
 
 	/** Structured logging access for tools */
 	readonly logging: ILoggingTrait

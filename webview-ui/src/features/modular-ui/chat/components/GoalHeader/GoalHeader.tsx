@@ -1,4 +1,4 @@
-import type { GoalAccounting, GoalStatus, GoalTaskSummary, GoalViewState } from "@shared/goal"
+import type { GoalAccounting, GoalStatus, GoalViewState } from "@shared/goal"
 import { GoalControlRequest } from "@shared/proto/dirac/goal"
 import {
 	AlertTriangleIcon,
@@ -12,7 +12,6 @@ import {
 } from "lucide-react"
 import { useCallback, useId, useMemo, useRef, useState } from "react"
 import { GoalServiceClient } from "@/shared/api/grpc-client"
-import MarkdownBlock from "@/shared/ui/MarkdownBlock"
 import { formatLargeNumber } from "@/shared/lib/format"
 import { Badge } from "@/shared/ui/badge"
 import { Button } from "@/shared/ui/button"
@@ -25,7 +24,9 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/shared/ui/dialog"
+import MarkdownBlock from "@/shared/ui/MarkdownBlock"
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover"
+import { TaskletActivityIndicator } from "../TaskletActivityIndicator"
 
 type GoalAction = "resume" | "pause" | "stop"
 
@@ -94,24 +95,6 @@ function AccountingMetrics({ accounting }: { accounting: GoalAccounting }) {
 	)
 }
 
-function ChildSummary({ child }: { child: GoalTaskSummary }) {
-	return (
-		<li className="rounded-sm border border-foreground/5 bg-foreground/5 px-2 py-1.5">
-			<div className="flex min-w-0 flex-wrap items-center gap-1.5">
-				<span className="min-w-0 flex-1 truncate text-xs font-medium">{child.title}</span>
-				<Badge className="shrink-0 capitalize" type="default" variant="outline">
-					{child.status}
-				</Badge>
-			</div>
-			<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-description">
-				{child.runningDurationMs !== undefined && <span>Running {formatDuration(child.runningDurationMs)}</span>}
-				<span>Idle {formatDuration(child.idleDurationMs)}</span>
-				{child.pendingInteraction && <span className="text-warning">Needs {child.pendingInteraction.kind}</span>}
-			</div>
-			{child.terminalSummary && <p className="mb-0 mt-1 line-clamp-2 text-xs text-description">{child.terminalSummary}</p>}
-		</li>
-	)
-}
 
 interface GoalHeaderProps {
 	goal: GoalViewState
@@ -128,10 +111,9 @@ const GoalHeader = ({ goal }: GoalHeaderProps) => {
 	const stopMenuItemRef = useRef<HTMLButtonElement>(null)
 	const cancelStopRef = useRef<HTMLButtonElement>(null)
 	const objectivePreview = useMemo(() => plainTextObjective(goal.objective.markdown), [goal.objective.markdown])
-	const taskChildren = useMemo(() => goal.children.filter((child) => child.role === "task"), [goal.children])
-	const pendingChildren = useMemo(() => goal.children.filter((child) => child.pendingInteraction), [goal.children])
-	const canResume = goal.status === "paused" || goal.status === "blocked"
-	const canPause = goal.status === "working" || goal.status === "waiting"
+	const activeStatus = goal.status === "working" || goal.status === "waiting"
+	const canResume = goal.status === "paused" || goal.status === "blocked" || (activeStatus && goal.hasLocalExecution === false)
+	const canPause = activeStatus && goal.hasLocalExecution !== false
 	const canStop = goal.status !== "achieved" && goal.status !== "stopped"
 
 	const runControl = useCallback(
@@ -185,6 +167,8 @@ const GoalHeader = ({ goal }: GoalHeaderProps) => {
 							{objectivePreview || "Untitled Goal"}
 						</span>
 					</button>
+
+					<TaskletActivityIndicator />
 
 					<output
 						aria-atomic="true"
@@ -287,28 +271,13 @@ const GoalHeader = ({ goal }: GoalHeaderProps) => {
 						id={detailsId}>
 						<section aria-labelledby={`${detailsId}-status`}>
 							<h3 className="mb-1 mt-0 text-xs font-medium" id={`${detailsId}-status`}>
-								Status and pending work
+								Status
 							</h3>
 							<div className="rounded-sm border border-foreground/5 bg-foreground/5 p-2 text-xs">
 								<p className="m-0 text-description">
 									<span className="font-medium text-foreground">Reason: </span>
 									{goal.statusReason ?? `Goal is ${goal.status}.`}
 								</p>
-								<p className="mb-0 mt-1 text-description">
-									<span className="font-medium text-foreground">Pending: </span>
-									{goal.pendingInteractionCount === 0
-										? "No user interactions."
-										: `${goal.pendingInteractionCount} user interaction${goal.pendingInteractionCount === 1 ? "" : "s"}.`}
-								</p>
-								{pendingChildren.length > 0 && (
-									<ul className="mb-0 mt-1 list-none space-y-0.5 p-0 text-description">
-										{pendingChildren.map((child) => (
-											<li key={child.id}>
-												{child.title} · {child.pendingInteraction?.kind}
-											</li>
-										))}
-									</ul>
-								)}
 							</div>
 						</section>
 
@@ -321,36 +290,7 @@ const GoalHeader = ({ goal }: GoalHeaderProps) => {
 							</div>
 						</section>
 
-						<section aria-labelledby={`${detailsId}-tasks`}>
-							<div className="mb-1 flex items-center justify-between gap-2">
-								<h3 className="m-0 text-xs font-medium" id={`${detailsId}-tasks`}>
-									Contained Tasks
-								</h3>
-								<span className="text-[10px] text-description">{taskChildren.length} total</span>
-							</div>
-							{taskChildren.length > 0 ? (
-								<ul className="m-0 flex list-none flex-col gap-1 p-0">
-									{taskChildren.map((child) => (
-										<ChildSummary child={child} key={child.id} />
-									))}
-								</ul>
-							) : (
-								<p className="mb-0 mt-0 text-xs text-description">No contained Tasks yet.</p>
-							)}
-						</section>
 
-						<section aria-labelledby={`${detailsId}-verification`}>
-							<h3 className="mb-1 mt-0 text-xs font-medium" id={`${detailsId}-verification`}>
-								Latest verification
-							</h3>
-							{goal.latestVerification ? (
-								<ul className="m-0 list-none p-0">
-									<ChildSummary child={goal.latestVerification} />
-								</ul>
-							) : (
-								<p className="mb-0 mt-0 text-xs text-description">No verification result recorded.</p>
-							)}
-						</section>
 
 						<section aria-labelledby={`${detailsId}-timing`}>
 							<h3 className="mb-1 mt-0 text-xs font-medium" id={`${detailsId}-timing`}>

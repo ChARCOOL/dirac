@@ -7,7 +7,7 @@ import type { ChatState, MessageHandlers, ScrollBehavior } from "../types/chatTy
 import { MessageRenderer } from "./VirtuosoItemRenderer"
 
 interface MessagesAreaProps {
-	task: DiracMessage
+	task?: DiracMessage
 	renderedMessageIds: string[]
 	scrollBehavior: ScrollBehavior
 	chatState: ChatState
@@ -27,6 +27,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 }) => {
 	const {
 		virtuosoRef,
+		setScrollerEl,
 		toggleRowExpansion,
 		handleAtBottomStateChange,
 		handleListHeightChanged,
@@ -62,8 +63,8 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				activeVoiceStreamId={activeVoiceStreamId}
 				expandedRows={expandedRows}
 				isLastMessage={index === renderedMessageIds.length - 1}
-				messageId={messageId}
 				messageHandlers={stableMessageHandlers}
+				messageId={messageId}
 				onSetQuote={setActiveQuote}
 				onToggleExpand={toggleRowExpansion}
 			/>
@@ -92,7 +93,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				increaseViewportBy={{ top: 800, bottom: 200 }}
 				initialTopMostItemIndex={{ index: "LAST", align: "end" }}
 				itemContent={itemContent}
-				key={task.id}
+				key={task?.id ?? "local-observation"}
 				onKeyDownCapture={handleScrollKeyDown}
 				onPointerDownCapture={handleScrollPointerDown}
 				onPointerUpCapture={handleScrollPointerUp}
@@ -101,6 +102,7 @@ export const MessagesArea: React.FC<MessagesAreaProps> = ({
 				onTouchStartCapture={handleScrollTouchStart}
 				onWheelCapture={handleScrollWheel}
 				ref={virtuosoRef}
+				scrollerRef={setScrollerEl}
 				style={{
 					height: "100%",
 					overflowAnchor: "none",

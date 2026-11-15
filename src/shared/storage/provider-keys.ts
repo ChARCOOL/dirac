@@ -35,6 +35,7 @@ const ProviderKeyMap: Partial<Record<ApiProvider, string>> = {
 	groq: "GroqModelId",
 	baseten: "BasetenModelId",
 	huggingface: "HuggingFaceModelId",
+	"huawei-cloud-maas": "HuaweiCloudMaasModelId",
 	aihubmix: "AihubmixModelId",
 	nousResearch: "NousResearchModelId",
 	"vercel-ai-gateway": "VercelAiGatewayModelId",
@@ -55,7 +56,6 @@ const ProviderModelInfoKeyMap: Partial<Record<ApiProvider, string>> = {
 
 export const ProviderToBaseUrlKeyMap: Partial<Record<ApiProvider, SettingsKey>> = {
 	openai: "openAiBaseUrl",
-	"openai-native": "openAiBaseUrl",
 	litellm: "liteLlmBaseUrl",
 	lmstudio: "lmStudioBaseUrl",
 	anthropic: "anthropicBaseUrl",

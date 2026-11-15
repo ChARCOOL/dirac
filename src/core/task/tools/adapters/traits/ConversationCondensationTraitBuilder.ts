@@ -25,7 +25,6 @@ export function buildConversationCondensationTrait(config: TaskConfig): IConvers
 				{
 					utilityModelEnabled: config.utilityModelEnabled,
 					utilityModelUseCondense: config.utilityModelUseCondense,
-					utilityModelUseNewTask: config.utilityModelUseNewTask,
 					utilityModelSelection: config.utilityModelSelection,
 				},
 				template,
@@ -35,7 +34,6 @@ export function buildConversationCondensationTrait(config: TaskConfig): IConvers
 			const settings = {
 				utilityModelEnabled: config.utilityModelEnabled,
 				utilityModelUseCondense: config.utilityModelUseCondense,
-				utilityModelUseNewTask: config.utilityModelUseNewTask,
 				utilityModelSelection: config.utilityModelSelection,
 			}
 			const selection = getConfiguredUtilityModelSelection(settings.utilityModelSelection)

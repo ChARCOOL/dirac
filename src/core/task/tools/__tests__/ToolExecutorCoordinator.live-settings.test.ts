@@ -21,7 +21,7 @@ class ApprovalBoundaryTool implements IDiracTool {
 	constructor(
 		private readonly reachedPreparationBoundary: () => void,
 		private readonly continueToApproval: Promise<void>,
-	) {}
+	) { }
 
 	spec(): DiracToolSpec {
 		return { id: DiracDefaultTool.RESPOND, name: DiracDefaultTool.RESPOND, description: "test", parameters: [] }
@@ -67,15 +67,12 @@ describe("ToolExecutorCoordinator live task settings", () => {
 				get: () => yoloModeToggled,
 			})
 
-			const cardState = { id: "approval-card", header: "Permission", status: CardStatus.RUNNING }
 			const protocolCard = {
-				id: cardState.id,
-				getCard: () => cardState,
+				id: "approval-card",
+				getCard: () => ({ id: "approval-card", status: CardStatus.SUCCESS }),
 				update: sinon.stub().resolves(),
 				appendBody: sinon.stub().resolves(),
-				finalize: sinon.stub().callsFake(async (status: CardStatus) => {
-					cardState.status = status
-				}),
+				finalize: sinon.stub().resolves(),
 				waitForInteraction: sinon.stub().resolves({ action: DiracAskResponse.APPROVE }),
 			}
 			taskMessenger.createCard.resolves(protocolCard)
@@ -92,7 +89,7 @@ describe("ToolExecutorCoordinator live task settings", () => {
 			yoloModeToggled = testCase.nextYolo
 			continueToApproval.resolve()
 
-			assert.equal(await execution, "done")
+			assert.equal((await execution).content, "done")
 			if (testCase.nextYolo) {
 				sinon.assert.calledWithMatch(taskMessenger.createCard, {
 					status: CardStatus.RUNNING,

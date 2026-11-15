@@ -1,15 +1,20 @@
+import * as path from "node:path"
+import { describeSandboxExecution } from "@shared/SandboxExecution"
+import { WorkspacePathAdapter } from "../../../../workspace/WorkspacePathAdapter"
+import type { CommandApprovalRequest } from "../../interfaces/CommandApprovals"
 import { formatResponse } from "@core/formatResponse"
 import { DiracAskResponse } from "@shared/WebviewMessage"
 import { DiracIcon } from "@/shared/icons"
 import { truncateHeadTail } from "../../../../../shared/content-limits"
 import { CardStatus } from "../../../../../shared/ExtensionMessage"
 import { DiracDefaultTool, DiracToolSpec } from "../../../../../shared/tools"
-import { WorkspacePathAdapter } from "../../../../workspace/WorkspacePathAdapter"
 import { IDiracTool } from "../../interfaces/IDiracTool"
 import { ICardHandle, IToolEnvironment } from "../../interfaces/IToolEnvironment"
 import { SurfaceType } from "../../interfaces/SurfaceType"
 import { ToolSkippedByUserMessage } from "../../types/ToolSkippedByUserMessage"
 import { resolveCommandTimeoutSeconds } from "../../utils/CommandTimeoutUtils"
+import { resolveCommandApproval } from "../../autoApprove"
+import { classifyCommandCapabilities, mergeCommandCapabilities } from "../../utils/CommandSafetyChecker"
 
 import { shortenCommandForDisplay } from "./path-display"
 
@@ -25,6 +30,14 @@ export interface NormalizedCommand {
 	command: string
 	displayName: string
 	language?: string
+	script?: { source: string; interpreter: string }
+}
+
+interface PreparedCommand extends NormalizedCommand {
+	sandboxContext?: import("@shared/SandboxExecution").SandboxExecutionContext
+	approvalRequest: CommandApprovalRequest
+	usedWorkspaceHint: boolean
+	resolvedToNonPrimary: boolean
 }
 
 interface WorkspaceHintMatch {
@@ -89,38 +102,80 @@ export class ExecuteCommandTool implements IDiracTool {
 	}
 
 	public async processCall(args: any, env: IToolEnvironment): Promise<any> {
-		const commands = this.normalizeCommands(args)
+		if (env.orchestration.commandCapabilities) await env.orchestration.commandCapabilities.ready()
+		const sandboxContext = env.system.captureCommandSandbox?.()
+		const commands = this.normalizeCommands(args).map((command) => ({ ...this.prepareCommand(command, env), sandboxContext }))
 		if (commands.length === 0) {
 			throw new Error("Missing required parameter: 'commands' or 'script' must be provided and non-empty.")
 		}
-
 		this.validateCommands(commands)
 
-		const utilityPermissionHandlingEnabled = env.config.permissionDecisionBinding !== undefined
-		const approval = this.getCommandApprovalRequirement(commands, utilityPermissionHandlingEnabled)
-
-		if (approval.required) {
-			const { approved, message } = await this.requestApproval(
-				commands,
-				env,
-				approval.utilityEligible,
-				utilityPermissionHandlingEnabled,
-			)
+		const requiresApproval = commands.filter(
+			(command) =>
+				this.getCommandApprovalRequirement([command], env.config.permissionDecisionBinding !== undefined).required,
+		)
+		let denialMessage: string | undefined
+		const approve = async (missing: readonly number[]): Promise<boolean> => {
+			const pending = missing.map((index) => requiresApproval[index])
+			const utilityEnabled = env.config.permissionDecisionBinding !== undefined
+			const approval = this.getCommandApprovalRequirement(pending, utilityEnabled)
+			const result = await this.requestApproval(pending, env, approval.utilityEligible, utilityEnabled)
+			denialMessage = result.message
+			return result.approved
+		}
+		const grants = env.orchestration.commandApprovals
+		if (requiresApproval.length > 0) {
+			const approved = grants
+				? await grants.authorize(
+					requiresApproval.map(({ approvalRequest }) => approvalRequest),
+					approve,
+				)
+				: await approve(requiresApproval.map((_, index) => index))
 			if (!approved) {
-				return message ? formatResponse.toolDeniedWithFeedback(message) : formatResponse.toolDenied()
+				return denialMessage ? formatResponse.toolDeniedWithFeedback(denialMessage) : formatResponse.toolDenied()
 			}
 		}
 
-		const { results, usedWorkspaceHint, resolvedToNonPrimary } = await this.executeCommands(commands, env)
-
+		const { results, failed, usedWorkspaceHint, resolvedToNonPrimary } = await this.executeCommands(
+			commands,
+			env,
+			new Set(requiresApproval),
+		)
+		if (failed) env.orchestration.reportFailure()
 		env.telemetry.captureCustomMetadata({
 			commandCount: commands.length,
 			usedWorkspaceHint,
 			resolvedToNonPrimary,
 			isMultiRootEnabled: this.isMultiRootEnabled,
 		})
-
 		return results.join("\n\n")
+	}
+
+	private prepareCommand(cmd: NormalizedCommand, env: IToolEnvironment): PreparedCommand {
+		const primaryCwd = path.resolve(env.config.cwd || process.cwd())
+		const hint = this.isMultiRootEnabled && this.workspaceManager && !cmd.script ? parseWorkspaceHint(cmd.command) : null
+		const cwd = hint
+			? path.resolve(
+				new WorkspacePathAdapter({
+					cwd: primaryCwd,
+					isMultiRootEnabled: true,
+					workspaceManager: this.workspaceManager,
+				}).resolvePath(".", hint.workspaceHint),
+			)
+			: primaryCwd
+		const command = hint?.command ?? cmd.command
+		return {
+			...cmd,
+			command,
+			approvalRequest: {
+				identity: cmd.script
+					? { kind: "script", script: cmd.script.source, interpreter: cmd.script.interpreter, cwd }
+					: { kind: "command", command, cwd },
+				effectiveCommand: command,
+			},
+			usedWorkspaceHint: hint !== null,
+			resolvedToNonPrimary: cwd !== primaryCwd,
+		}
 	}
 
 	private validateCommands(commands: NormalizedCommand[]): void {
@@ -146,80 +201,87 @@ export class ExecuteCommandTool implements IDiracTool {
 		commands: NormalizedCommand[],
 		utilityPermissionHandlingEnabled: boolean,
 	): CommandApprovalRequirement {
-		if (!utilityPermissionHandlingEnabled) {
-			if (this.autoApprover.isUnrestrictedAutoApprove()) {
-				return { required: false, utilityEligible: false }
-			}
-			for (const command of commands) {
-				const actualCommand = this.stripWorkspaceHint(command.command)
-				const permission = this.commandPermissionController.validateCommand(actualCommand)
-				if (!permission.allowed || !this.autoApprover.isCommandAutoApproved(actualCommand)) {
-					return { required: true, utilityEligible: false }
-				}
-			}
-			return { required: false, utilityEligible: false }
-		}
-
-		const permissionResults = commands.map((command) => {
-			const actualCommand = this.stripWorkspaceHint(command.command)
-			return {
-				actualCommand,
-				permission: this.commandPermissionController.validateTool("execute_command", actualCommand),
-			}
-		})
-		if (permissionResults.some(({ permission }) => !permission.allowed)) {
-			return { required: true, utilityEligible: false }
-		}
-		if (this.autoApprover.isUnrestrictedAutoApprove()) {
-			return { required: false, utilityEligible: false }
-		}
-
-		const requiresApproval = permissionResults.some(({ actualCommand, permission }) => {
-			if (this.autoApprover.isCommandAutoApproved(actualCommand)) return false
-			return !permission.matchedPattern
-		})
-		return { required: requiresApproval, utilityEligible: requiresApproval }
+		return resolveCommandApproval(
+			commands.map(({ command }) => command),
+			utilityPermissionHandlingEnabled,
+			this.autoApprover,
+			this.commandPermissionController,
+			DiracDefaultTool.EXECUTE_COMMAND,
+		)
 	}
 
 	private async requestApproval(
-		commands: NormalizedCommand[],
+		commands: PreparedCommand[],
 		env: IToolEnvironment,
 		utilityEligible: boolean,
 		utilityPermissionHandlingEnabled: boolean,
 	): Promise<{ approved: boolean; message?: string }> {
 		const label = this.permissionCardLabel(commands, env.config.cwd)
-		const card =
-			!env.config.isSubagentExecution || utilityPermissionHandlingEnabled
-				? await env.ui.createCard({
-					header: commands.length === 1 ? `Execute: ${label}` : `Execute ${label}?`,
-					status: CardStatus.WAITING_FOR_INPUT,
-					icon: DiracIcon.COMMAND,
-					requireApproval: true,
-					permissionRequestKind:
-						utilityPermissionHandlingEnabled
-							? (!utilityEligible ? "manual_tool" : "tool")
-							: undefined,
-					renderType: "markdown",
-					maxHeight: 10000,
-					rawInput: {
-						commands: commands.map(({ command, displayName, language }) => ({ command, displayName, language })),
-					},
-					body: commands
-						.map((command) => {
-							const language = command.language || "bash"
-							const header = command.displayName !== command.command ? `**${command.displayName}**\n` : ""
-							return `${header}\`\`\`${language}\n${shortenCommandForDisplay(command.command, env.config.cwd)}\n\`\`\``
-						})
-						.join("\n"),
-					collapsed: false,
+		const classified = commands.map(({ command }) => classifyCommandCapabilities(command))
+		const required = classified.includes(-1) ? -1 : classified.reduce(mergeCommandCapabilities, 0)
+		const capabilities = env.orchestration.commandCapabilities
+		const grantsEnabled = capabilities && utilityEligible && (
+			this.autoApprover.requiresCounterpartyApproval || this.autoApprover.shouldAutoApproveTool(DiracDefaultTool.EXECUTE_COMMAND) === true
+		)
+		const capabilityApproval = capabilities ? await capabilities.offerApproval(grantsEnabled ? required : -1) : undefined
+		const card = await env.ui.createCard({
+			header: commands.length === 1 ? `Execute: ${label}` : `Execute ${label}?`,
+			status: CardStatus.WAITING_FOR_INPUT,
+			icon: DiracIcon.COMMAND,
+			requireApproval: true,
+			commandApprovalChoices: capabilityApproval ? [...capabilityApproval.choices] : undefined,
+			permissionOperation: {
+				kind: "commands",
+				commands: commands.map(({ command }) => command),
+				executionContexts: commands.map(({ command, approvalRequest }) => ({ command, cwd: approvalRequest.identity.cwd })),
+				...(commands[0].sandboxContext ? { sandbox: commands[0].sandboxContext } : {}),
+			},
+			permissionRequestKind: utilityPermissionHandlingEnabled ? (!utilityEligible ? "manual_tool" : "tool") : undefined,
+			renderType: "markdown",
+			maxHeight: 10000,
+			rawInput: {
+				commands: commands.map(({ command, displayName, language, approvalRequest }) => ({
+					command,
+					displayName,
+					language,
+					cwd: approvalRequest.identity.cwd,
+				})),
+			},
+			body: commands
+				.map((command) => {
+					const language = command.language || "bash"
+					const header = command.displayName !== command.command ? `**${command.displayName}**\n` : ""
+					const sandbox = command.sandboxContext ? `${describeSandboxExecution(command.sandboxContext)}\n` : ""
+					return `${header}${sandbox}Working directory: ${JSON.stringify(command.approvalRequest.identity.cwd)}\n\`\`\`${language}\n${shortenCommandForDisplay(command.command, env.config.cwd)}\n\`\`\``
 				})
-				: undefined
+				.join("\n"),
+			collapsed: false,
+		})
 
-		if (!card) return { approved: false }
-
-		let interaction: Awaited<ReturnType<ICardHandle["waitForInteraction"]>>
 		try {
-			interaction = await card.waitForInteraction()
+			const interaction = await card.waitForInteraction()
+			if (interaction.action === DiracAskResponse.MESSAGE) {
+				if (interaction.text) {
+					await env.ui.upsertText(interaction.text, false, "user")
+				}
+				await this.resolvePermissionCard(card, "Skipped", label, CardStatus.SKIPPED, "↩ Skipped by user")
+				return { approved: false, message: interaction.text }
+			}
+			if (interaction.action !== DiracAskResponse.APPROVE) {
+				await this.resolvePermissionCard(card, "Rejected", label, CardStatus.CANCELLED, "Execution denied by user.")
+				return { approved: false, message: interaction.text }
+			}
+			const choiceId = interaction.commandApprovalChoiceId
+			if (choiceId !== undefined && !capabilityApproval) throw new Error("Command approval choice was not offered by the host")
+			env.orchestration.getTaskState("abortSignal").throwIfAborted()
+			this.validateCommands(commands)
+			this.commandPermissionController.assertConfigurationValid()
+			if (capabilityApproval && !await capabilityApproval.approve(choiceId ?? "approve")) {
+				await this.resolvePermissionCard(card, "Rejected", label, CardStatus.CANCELLED, "Execution denied by user.")
+				return { approved: false }
+			}
+			await this.resolvePermissionCard(card, "Approved", label, CardStatus.SUCCESS)
+			return { approved: true }
 		} catch (error) {
 			if (error instanceof ToolSkippedByUserMessage) {
 				await this.resolvePermissionCard(card, "Skipped", label, CardStatus.SKIPPED, "↩ Skipped by user")
@@ -228,20 +290,6 @@ export class ExecuteCommandTool implements IDiracTool {
 			}
 			throw error
 		}
-
-		if (interaction.action === DiracAskResponse.MESSAGE) {
-			if (interaction.text) {
-				await env.ui.upsertText(interaction.text, false, "user")
-			}
-			await this.resolvePermissionCard(card, "Skipped", label, CardStatus.SKIPPED, "↩ Skipped by user")
-			return { approved: false, message: interaction.text }
-		}
-		if (interaction.action !== DiracAskResponse.APPROVE) {
-			await this.resolvePermissionCard(card, "Rejected", label, CardStatus.CANCELLED, "Execution denied by user.")
-			return { approved: false, message: interaction.text }
-		}
-		await this.resolvePermissionCard(card, "Approved", label, CardStatus.SUCCESS)
-		return { approved: true }
 	}
 
 	private permissionCardLabel(commands: NormalizedCommand[], cwd?: string): string {
@@ -264,112 +312,90 @@ export class ExecuteCommandTool implements IDiracTool {
 	}
 
 	private async executeCommands(
-		commands: NormalizedCommand[],
+		commands: PreparedCommand[],
 		env: IToolEnvironment,
-	): Promise<{ results: string[]; usedWorkspaceHint: boolean; resolvedToNonPrimary: boolean }> {
+		requiresApproval: ReadonlySet<PreparedCommand>,
+	): Promise<{ results: string[]; failed: boolean; usedWorkspaceHint: boolean; resolvedToNonPrimary: boolean }> {
 		const results: string[] = []
-		let usedWorkspaceHint = false
-		let resolvedToNonPrimary = false
-
+		let failures = 0
 		for (let i = 0; i < commands.length; i++) {
 			const cmd = commands[i]
-			const {
-				result,
-				usedWorkspaceHint: usedHint,
-				resolvedToNonPrimary: resolvedNonPrimary,
-			} = await this.executeSingleCommand(cmd, i + 1, commands.length, env)
-
+			const assertAuthorized = () => {
+				this.validateCommands([cmd])
+				if (requiresApproval.has(cmd)) env.orchestration.commandApprovals?.assertCurrent([cmd.approvalRequest])
+				else if (this.getCommandApprovalRequirement([cmd], env.config.permissionDecisionBinding !== undefined).required) {
+					throw new Error("Command now requires approval under the current permissions")
+				}
+			}
+			assertAuthorized()
+			const { result, failed } = await this.executeSingleCommand(cmd, i + 1, commands.length, env, assertAuthorized)
 			results.push(result)
-			if (usedHint) usedWorkspaceHint = true
-			if (resolvedNonPrimary) resolvedToNonPrimary = true
+			if (failed) failures++
 		}
-
-		return { results, usedWorkspaceHint, resolvedToNonPrimary }
+		return {
+			results,
+			failed: failures === commands.length,
+			usedWorkspaceHint: commands.some((command) => command.usedWorkspaceHint),
+			resolvedToNonPrimary: commands.some((command) => command.resolvedToNonPrimary),
+		}
 	}
 
 	private async executeSingleCommand(
-		cmd: NormalizedCommand,
+		cmd: PreparedCommand,
 		index: number,
 		total: number,
 		env: IToolEnvironment,
-	): Promise<{ result: string; usedWorkspaceHint: boolean; resolvedToNonPrimary: boolean }> {
+		assertAuthorized: () => void,
+	): Promise<{ result: string; failed: boolean }> {
 		const header = `Executing ${index} of ${total}: ${shortenCommandForDisplay(cmd.displayName, env.config.cwd)}`
-
-		const activeCard = !env.config.isSubagentExecution
-			? await env.ui.createCard({
-				header,
-				icon: DiracIcon.COMMAND,
-				collapsed: true,
-				rawInput: { command: cmd.command, displayName: cmd.displayName, language: cmd.language ?? "bash" },
-			})
-			: null
-
-		let usedWorkspaceHint = false
-		let resolvedToNonPrimary = false
-
+		const activeCard = await env.ui.createCard({
+			header,
+			icon: DiracIcon.COMMAND,
+			collapsed: true,
+			rawInput: {
+				command: cmd.command,
+				cwd: cmd.approvalRequest.identity.cwd,
+				displayName: cmd.displayName,
+				language: cmd.language ?? "bash",
+			},
+		})
 		try {
-			let commandToExecute = cmd.command
-			let executionDir
-
-			if (this.isMultiRootEnabled && this.workspaceManager) {
-				const parsedHint = parseWorkspaceHint(cmd.command)
-				if (parsedHint) {
-					usedWorkspaceHint = true
-					commandToExecute = parsedHint.command
-					const adapter = new WorkspacePathAdapter({
-						cwd: env.config.cwd || process.cwd(),
-						isMultiRootEnabled: true,
-						workspaceManager: this.workspaceManager,
-					})
-					executionDir = adapter.resolvePath(".", parsedHint.workspaceHint)
-					if (executionDir !== env.config.cwd) {
-						resolvedToNonPrimary = true
-					}
-				}
-			}
-
-			if (executionDir) {
-				commandToExecute = `cd "${executionDir}" && ${commandToExecute}`
-			}
-
-			const timeoutSeconds = resolveCommandTimeoutSeconds(commandToExecute, true)
-			const commandResult = await env.system.executeCommand(commandToExecute, { timeout: timeoutSeconds })
+			assertAuthorized()
+			const timeoutSeconds = resolveCommandTimeoutSeconds(cmd.command, true)
+			const commandResult = await env.system.executeCommand(cmd.command, {
+				timeout: timeoutSeconds,
+				cwd: cmd.approvalRequest.identity.cwd,
+				assertAuthorized,
+				sandboxContext: cmd.sandboxContext,
+			})
 			const output = typeof commandResult.output === "string" ? commandResult.output : JSON.stringify(commandResult.output)
 			const truncatedOutput = truncateHeadTail(output, MAX_COMMAND_OUTPUT_SIZE)
 			const commandFailed =
 				commandResult.userRejected ||
 				(commandResult.signal !== undefined && commandResult.signal !== null) ||
 				(typeof commandResult.exitCode === "number" && commandResult.exitCode !== 0)
-
-			if (activeCard) {
-				await activeCard.update({
-					header: `${commandFailed ? "Failed" : "Executed"}: ${cmd.displayName}`,
-					body: [commandFailed ? "Error:" : "Executed:", "```", truncatedOutput, "```"].join("\n"),
-					rawOutput: {
-						output: truncatedOutput,
-						userRejected: commandResult.userRejected,
-						...(commandResult.exitCode === undefined ? {} : { exitCode: commandResult.exitCode }),
-						...(commandResult.signal === undefined ? {} : { signal: commandResult.signal }),
-					},
-				})
-				await activeCard.finalize(commandFailed ? CardStatus.ERROR : CardStatus.SUCCESS)
-			}
-
-			return {
-				result: `--- Output for '${cmd.displayName}' ---\n${truncatedOutput}`,
-				usedWorkspaceHint,
-				resolvedToNonPrimary,
-			}
+			const sandboxIndicator = commandResult.sandbox?.effective === "unsandboxed-fallback" ? " · Unsandboxed fallback" : ""
+			await activeCard.update({
+				header: `${commandFailed ? "Failed" : "Executed"}: ${cmd.displayName}${sandboxIndicator}`,
+				body: [commandFailed ? "Error:" : "Executed:", "```", truncatedOutput, "```"].join("\n"),
+				rawOutput: {
+					output: truncatedOutput,
+					userRejected: commandResult.userRejected,
+					...(commandResult.sandbox ? { sandbox: commandResult.sandbox } : {}),
+					...(commandResult.exitCode === undefined ? {} : { exitCode: commandResult.exitCode }),
+					...(commandResult.signal === undefined ? {} : { signal: commandResult.signal }),
+				},
+			})
+			await activeCard.finalize(commandFailed ? CardStatus.ERROR : CardStatus.SUCCESS)
+			return { result: `--- Output for '${cmd.displayName}' ---${sandboxIndicator}\n${truncatedOutput}`, failed: commandFailed && !commandResult.userRejected }
 		} catch (error: any) {
-			if (activeCard) {
-				await activeCard.update({ body: `Error: ${error.message}`, rawOutput: { error: error.message } })
-				await activeCard.finalize(CardStatus.ERROR)
+			if (env.orchestration.getTaskState("abortSignal").aborted) {
+				await activeCard.finalize(CardStatus.CANCELLED)
+				throw error
 			}
-			return {
-				result: `--- Output for '${cmd.displayName}' ---\nError: ${error.message}`,
-				usedWorkspaceHint,
-				resolvedToNonPrimary,
-			}
+			await activeCard.update({ body: `Error: ${error.message}`, rawOutput: { error: error.message } })
+			await activeCard.finalize(CardStatus.ERROR)
+			return { result: `--- Output for '${cmd.displayName}' ---\nError: ${error.message}`, failed: true }
 		}
 	}
 
@@ -387,9 +413,13 @@ export class ExecuteCommandTool implements IDiracTool {
 
 		if (args.script) {
 			const language = args.language || "bash"
+			const normalizedLanguage = language.toLowerCase().trim()
+			const interpreter =
+				normalizedLanguage === "python" ? "python3" : normalizedLanguage === "javascript" ? "node" : normalizedLanguage
 			const langDisplay = language.charAt(0).toUpperCase() + language.slice(1)
 			commands.push({
-				command: this.wrapScript(args.script, language),
+				command: this.wrapScript(args.script, interpreter),
+				script: { source: args.script, interpreter },
 				displayName: `${langDisplay} script`,
 				language: language,
 			})
@@ -397,29 +427,11 @@ export class ExecuteCommandTool implements IDiracTool {
 		return commands
 	}
 
-	private stripWorkspaceHint(cmd: string): string {
-		return parseWorkspaceHint(cmd)?.command ?? cmd
-	}
-
-	private wrapScript(script: string, language: string): string {
-		const delimiter = `EOF_DIRAC_SCRIPT_${Math.random().toString(36).substring(2, 10).toUpperCase()}`
-		const normalizedLanguage = language.toLowerCase().trim()
-
-		let interpreter = "bash"
-		if (normalizedLanguage === "python" || normalizedLanguage === "python3") {
-			interpreter = "python3"
-		} else if (normalizedLanguage === "node" || normalizedLanguage === "javascript") {
-			interpreter = "node"
-		} else if (normalizedLanguage === "sh") {
-			interpreter = "sh"
-		} else if (normalizedLanguage === "ruby") {
-			interpreter = "ruby"
-		} else if (normalizedLanguage === "perl") {
-			interpreter = "perl"
-		} else {
-			interpreter = normalizedLanguage
-		}
-
+	private wrapScript(script: string, interpreter: string): string {
+		let delimiter: string
+		do {
+			delimiter = `EOF_DIRAC_SCRIPT_${Math.random().toString(36).substring(2, 10).toUpperCase()}`
+		} while (script.split(/\r?\n/).includes(delimiter))
 		return `${interpreter} << '${delimiter}'\n${script}\n${delimiter}`
 	}
 }

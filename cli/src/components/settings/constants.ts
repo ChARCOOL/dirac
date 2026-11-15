@@ -16,6 +16,7 @@ export const CLI_SETTINGS_DESTINATIONS: CliSettingsDestination[] = [
 	SettingsTab.RUNNING_TASKS,
 	SettingsTab.TOOLS,
 	SettingsTab.TERMINAL,
+	SettingsTab.SANDBOX,
 	SettingsTab.GENERAL,
 ].map((key) => ({
 	key,
@@ -42,7 +43,8 @@ export const FEATURE_SETTINGS = {
 		stateKey: "subagentsEnabled",
 		default: false,
 		label: "Subagents",
-		description: "Run focused subagents in parallel for independent exploration or analysis. This may increase token usage.",
+		description:
+			"Run focused subagents in parallel to research, edit files, run commands, and verify work. This may increase token usage.",
 	},
 	autoCondense: {
 		stateKey: "useAutoCondense",
@@ -68,13 +70,6 @@ export const FEATURE_SETTINGS = {
 		default: false,
 		label: "Parallel tool calling",
 		description: "Run independent tool calls concurrently. Execution order is not guaranteed and resource use may increase.",
-	},
-	doubleCheckCompletion: {
-		stateKey: "doubleCheckCompletionEnabled",
-		default: false,
-		label: "Double-check completion",
-		description:
-			"Require an additional verification pass before accepting completion. This adds latency and may use more tokens.",
 	},
 } as const
 

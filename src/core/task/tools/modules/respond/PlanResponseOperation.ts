@@ -41,6 +41,7 @@ export async function presentPlanForApproval(response: string, env: IToolEnviron
 		if (wasPlanMode) {
 			const switchSuccessful = await env.orchestration.switchToActMode()
 			if (!switchSuccessful) {
+				env.orchestration.reportFailure()
 				await cardHandle.finalize(CardStatus.ERROR, true)
 				return formatResponse.toolError("Failed to switch to ACT MODE.")
 			}
@@ -56,6 +57,7 @@ export async function presentPlanForApproval(response: string, env: IToolEnviron
 	}
 
 	const {
+		value,
 		text,
 		images,
 		files: planResponseFiles,
@@ -71,7 +73,7 @@ export async function presentPlanForApproval(response: string, env: IToolEnviron
 	const fileContentString =
 		planResponseFiles && planResponseFiles.length > 0 ? await env.workspace.formatAttachedFiles(planResponseFiles) : ""
 
-	const didSwitchMode = env.orchestration.getTaskState("didRespondToPlanAskBySwitchingMode")
+	const didSwitchMode = value === PlanInteractionResponse.MODE_TOGGLE
 	const selectedOption = userText && options.includes(userText)
 
 	if (didSwitchMode || selectedOption) {
@@ -82,12 +84,11 @@ export async function presentPlanForApproval(response: string, env: IToolEnviron
 	}
 
 	if (didSwitchMode) {
-		env.orchestration.setTaskState("didRespondToPlanAskBySwitchingMode", false)
 		return formatResponse.toolResult(
 			`[The user has switched to ACT MODE, so you may now proceed with the task.]` +
-				(userText
-					? `\n\nThe user also provided the following message when switching to ACT MODE:\n<user_message>\n${userText}\n</user_message>`
-					: ""),
+			(userText
+				? `\n\nThe user also provided the following message when switching to ACT MODE:\n<user_message>\n${userText}\n</user_message>`
+				: ""),
 			images,
 			fileContentString,
 		)

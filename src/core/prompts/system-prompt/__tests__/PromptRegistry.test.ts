@@ -14,7 +14,6 @@ function emptyToolSnapshot(): ToolRequestSnapshot {
 		nativeTools: [],
 		coordinator: { has: () => false } as any,
 		executableToolNames: new Set(),
-		dynamicSubagentToolNames: new Set(),
 	}
 }
 
@@ -57,6 +56,14 @@ describe("PromptRegistry", () => {
 			expect(prompt).to.be.a("string")
 			expect(prompt.length).to.be.greaterThan(10)
 		})
+	})
+
+	it("invalidates cached parent guidance when profile or delegation capability changes with identical inventories", async () => {
+		const parent = { ...mockContext, executionProfile: "standalone" as const, subagentsEnabled: true }
+		expect(await registry.get(parent, emptyToolSnapshot())).to.include("TASKLET DELEGATION")
+		expect(await registry.get({ ...parent, executionProfile: "tasklet" }, emptyToolSnapshot())).not.to.include("TASKLET DELEGATION")
+		expect(await registry.get({ ...parent, subagentsEnabled: false }, emptyToolSnapshot())).not.to.include("TASKLET DELEGATION")
+		expect(await registry.get(parent, emptyToolSnapshot())).to.include("TASKLET DELEGATION")
 	})
 
 	describe("basic functionality", () => {

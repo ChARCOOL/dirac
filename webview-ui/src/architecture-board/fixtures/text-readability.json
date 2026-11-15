@@ -1,0 +1,26 @@
+{
+	"title": "Checkout typography — long and multilingual labels",
+	"summary": "Illustrative typography stress fixture, not repository architecture. Exercises all node kinds, natural word boundaries, qualified identifiers, endpoint paths, grapheme clusters, RTL, explicit line breaks, proposal badges, and bounded truncation. The deliberately long class name represents a generated adapter name.",
+	"nodes": [
+		{ "id": "backend", "kind": "group", "label": "Checkout platform · shared production deployment · European and Asia-Pacific regions" },
+		{ "id": "session", "kind": "class", "label": "GeneratedCheckoutSessionPaymentAuthorizationAndIdempotentConfirmationRepositoryAdapterForInternationalMarketplaceOrdersWithMultiCurrencyTaxCalculationAndRegionalFulfillmentPolicyResolution", "parentId": "backend", "change": "modified" },
+		{ "id": "total", "kind": "function", "label": "calculateInternationalOrderTotalIncludingTaxAndShipping()", "parentId": "backend", "change": "added" },
+		{ "id": "endpoint", "kind": "api_endpoint", "label": "POST /api/v1/organizations/marketplace-europe/orders/checkout/confirm-payment", "parentId": "backend" },
+		{ "id": "service", "kind": "service", "label": "International payment authorization service", "parentId": "backend" },
+		{ "id": "orders", "kind": "database", "label": "订单付款确认及国际配送记录数据库", "parentId": "backend", "change": "added" },
+		{ "id": "ui", "kind": "component", "label": "Checkout summary\nShipping & taxes\nPayment confirmation", "change": "modified" },
+		{ "id": "customer", "kind": "actor", "label": "Dirac harness" },
+		{ "id": "operator", "kind": "actor", "label": "👩🏽‍💻 Zoë · international checkout support" },
+		{ "id": "pending", "kind": "state", "label": "في انتظار تأكيد الدفع للطلب الدولي", "change": "modified" },
+		{ "id": "paid", "kind": "state", "label": "Payment confirmed\nReady for fulfillment" }
+	],
+	"edges": [
+		{ "id": "submit", "kind": "message", "source": "customer", "target": "ui", "label": "Submit checkout with shipping address and preferred billing currency" },
+		{ "id": "request", "kind": "api_call", "source": "ui", "target": "endpoint", "label": "POST checkout with idempotency key, signed payment token, delivery preferences, and regional taxation identifiers" },
+		{ "id": "session-call", "kind": "api_call", "source": "endpoint", "target": "session", "label": "await checkoutSession.confirmInternationalPayment()" },
+		{ "id": "calculate", "kind": "api_call", "source": "session", "target": "total", "label": "Calculate authoritative order total" },
+		{ "id": "payment", "kind": "api_call", "source": "session", "target": "service", "label": "Authorize payment" },
+		{ "id": "persist", "kind": "data_flow", "source": "session", "target": "orders", "label": "订单金额、付款授权及配送偏好" },
+		{ "id": "confirm", "kind": "transition", "source": "pending", "target": "paid", "label": "Payment provider: confirmation received [signature verified, amount matches, event not previously applied]" }
+	]
+}

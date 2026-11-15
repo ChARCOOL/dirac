@@ -3,11 +3,13 @@ import { Mode } from "@shared/ExtensionMessage"
 import PROVIDERS from "@shared/providers/providers.json"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import Fuse from "fuse.js"
-import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
+import { ChevronDown } from "lucide-react"
+import { KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react"
 import styled from "styled-components"
 import { PLATFORM_CONFIG, PlatformType } from "@/config/platform.config"
 import { getModeSpecificFields, normalizeApiConfiguration } from "@/features/settings/components/utils/providerUtils"
 import { useSettingsStore } from "@/features/settings/store/settingsStore"
+import { Button } from "@/shared/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip"
 import { OPENROUTER_MODEL_PICKER_Z_INDEX } from "./OpenRouterModelPicker"
 import { AIhubmixProvider } from "./providers/AihubmixProvider"
@@ -49,6 +51,7 @@ import { WandbProvider } from "./providers/WandbProvider"
 import { XaiProvider } from "./providers/XaiProvider"
 import { ZAiProvider } from "./providers/ZAiProvider"
 import { useApiConfigurationHandlers } from "./utils/useApiConfigurationHandlers"
+import { ProviderSetupContext } from "./utils/ProviderSetupContext"
 
 interface ApiOptionsProps {
 	showModelOptions: boolean
@@ -56,6 +59,8 @@ interface ApiOptionsProps {
 	modelIdErrorMessage?: string
 	isPopup?: boolean
 	currentMode: Mode
+	intent?: "setup" | "activate"
+	initialSetupProvider?: string
 }
 
 // This is necessary to ensure dropdown opens downward, important for when this is used in popup
@@ -82,16 +87,21 @@ declare module "vscode" {
 	}
 }
 
-const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, isPopup, currentMode }: ApiOptionsProps) => {
+const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, isPopup, currentMode, intent = "activate", initialSetupProvider }: ApiOptionsProps) => {
 	const apiConfiguration = useSettingsStore((state) => state.apiConfiguration)
 	const remoteConfigSettings = useSettingsStore((state) => state.remoteConfigSettings)
 	const apiConfigurationError = useSettingsStore((state) => state.apiConfigurationError)
 	const planActSeparateModelsSetting = useSettingsStore((state) => state.planActSeparateModelsSetting)
-	const { selectedProvider } = normalizeApiConfiguration(apiConfiguration, currentMode)
+	const { selectedProvider: configuredProvider } = normalizeApiConfiguration(apiConfiguration, currentMode)
+	const [setupProvider, setSetupProvider] = useState<string | undefined>(initialSetupProvider)
+	const selectedProvider = intent === "setup" ? setupProvider ?? "" : configuredProvider
+	const configuredApiProviders = useSettingsStore((state) => state.configuredApiProviders)
+	const [isAddingProvider, setIsAddingProvider] = useState(false)
+	const [addedProvider, setAddedProvider] = useState<string>()
+	const isEditingSetup = intent === "setup" && initialSetupProvider !== undefined
+	const providerListId = useId()
 	const modeFields = getModeSpecificFields(apiConfiguration, currentMode)
 	const { handleFieldsChange, handleModeFieldsChange } = useApiConfigurationHandlers()
-
-	// Poll vscode-lm models
 
 	// Provider search state
 	const [searchTerm, setSearchTerm] = useState("")
@@ -102,6 +112,7 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 	const itemRefs = useRef<(HTMLDivElement | null)[]>([])
 	const dropdownListRef = useRef<HTMLDivElement>(null)
 	const activeProvider = pendingProvider || selectedProvider
+	const isProviderAdded = configuredApiProviders.some((provider) => provider === activeProvider) || addedProvider === activeProvider
 	const selectedModeProvider = modeFields.apiProvider || selectedProvider
 	const isSwitchingToOpenRouter = pendingProvider === "openrouter" && selectedModeProvider !== "openrouter"
 
@@ -162,6 +173,10 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 	const handleProviderChange = (newProvider: string) => {
 		setIsDropdownVisible(false)
 		setSelectedIndex(-1)
+		if (intent === "setup") {
+			setSetupProvider(newProvider)
+			return
+		}
 		if (newProvider === "openrouter" && !modeFields.openRouterModelId && selectedModeProvider !== "openrouter") {
 			setSearchTerm("OpenRouter")
 			setPendingProvider(newProvider)
@@ -178,31 +193,40 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 		)
 	}
 
+	const addProvider = async () => {
+		setIsAddingProvider(true)
+		try {
+			if (await handleFieldsChange({}, activeProvider)) setAddedProvider(activeProvider)
+		} finally {
+			setIsAddingProvider(false)
+		}
+	}
+
 	const handlePendingOpenRouterModelSelected = async (modelId: string, modelInfo: ModelInfo | undefined): Promise<boolean> => {
 		const updates: Partial<ApiConfiguration> = planActSeparateModelsSetting
 			? currentMode === "plan"
 				? {
-						planModeApiProvider: "openrouter",
-						planModeOpenRouterModelId: modelId,
-						planModeOpenRouterModelInfo: modelInfo,
-						planModeInferenceSpeed: "default",
-					}
-				: {
-						actModeApiProvider: "openrouter",
-						actModeOpenRouterModelId: modelId,
-						actModeOpenRouterModelInfo: modelInfo,
-						actModeInferenceSpeed: "default",
-					}
-			: {
 					planModeApiProvider: "openrouter",
-					actModeApiProvider: "openrouter",
 					planModeOpenRouterModelId: modelId,
-					actModeOpenRouterModelId: modelId,
 					planModeOpenRouterModelInfo: modelInfo,
-					actModeOpenRouterModelInfo: modelInfo,
 					planModeInferenceSpeed: "default",
+				}
+				: {
+					actModeApiProvider: "openrouter",
+					actModeOpenRouterModelId: modelId,
+					actModeOpenRouterModelInfo: modelInfo,
 					actModeInferenceSpeed: "default",
 				}
+			: {
+				planModeApiProvider: "openrouter",
+				actModeApiProvider: "openrouter",
+				planModeOpenRouterModelId: modelId,
+				actModeOpenRouterModelId: modelId,
+				planModeOpenRouterModelInfo: modelInfo,
+				actModeOpenRouterModelInfo: modelInfo,
+				planModeInferenceSpeed: "default",
+				actModeInferenceSpeed: "default",
+			}
 		const saved = await handleFieldsChange(updates)
 		if (saved) setPendingProvider(undefined)
 		return saved
@@ -210,6 +234,11 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 
 	const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
 		if (!isDropdownVisible) {
+			if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+				event.preventDefault()
+				setIsDropdownVisible(true)
+				setSelectedIndex(0)
+			}
 			return
 		}
 
@@ -229,6 +258,8 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 				}
 				break
 			case "Escape":
+				event.preventDefault()
+				event.stopPropagation()
 				setIsDropdownVisible(false)
 				setSelectedIndex(-1)
 				setSearchTerm(currentProviderLabel)
@@ -278,276 +309,309 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 	*/
 
 	return (
-		<div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: isPopup ? -10 : 0 }}>
-			<style>
-				{`
+		<ProviderSetupContext.Provider value={activeProvider}>
+			<div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: isPopup ? -10 : 0 }}>
+				<style>
+					{`
 				.provider-item-highlight {
 					background-color: var(--vscode-editor-findMatchHighlightBackground);
 					color: inherit;
 				}
 				`}
-			</style>
-			<DropdownContainer className="dropdown-container">
-				{remoteConfigSettings?.remoteConfiguredProviders && remoteConfigSettings.remoteConfiguredProviders.length > 0 ? (
-					<Tooltip>
-						<TooltipTrigger>
-							<div className="flex items-center gap-2 mb-1">
-								<label htmlFor="api-provider">
-									<span style={{ fontWeight: 500 }}>API Provider</span>
-								</label>
-								<i className="codicon codicon-lock text-description text-sm" />
-							</div>
-						</TooltipTrigger>
-						<TooltipContent>Provider options are managed by your organization's remote configuration</TooltipContent>
-					</Tooltip>
-				) : (
-					<label htmlFor="api-provider">
-						<span style={{ fontWeight: 500 }}>API Provider</span>
-					</label>
-				)}
-				<ProviderDropdownWrapper ref={dropdownRef}>
-					<VSCodeTextField
-						data-testid="provider-selector-input"
-						id="api-provider"
-						onFocus={() => {
-							setIsDropdownVisible(true)
-							setSearchTerm("")
-						}}
-						onInput={(e) => {
-							setSearchTerm((e.target as HTMLInputElement)?.value || "")
-							setIsDropdownVisible(true)
-						}}
-						onKeyDown={handleKeyDown}
-						placeholder="Search and select provider..."
-						role="combobox"
-						style={{
-							width: "100%",
-							zIndex: DROPDOWN_Z_INDEX,
-							position: "relative",
-							minWidth: 130,
-						}}
-						value={searchTerm}>
-						{searchTerm && searchTerm !== currentProviderLabel && (
-							<div
-								aria-label="Clear search"
-								className="input-icon-button codicon codicon-close"
+				</style>
+				{!isEditingSetup && (
+					<DropdownContainer className="dropdown-container">
+						{remoteConfigSettings?.remoteConfiguredProviders && remoteConfigSettings.remoteConfiguredProviders.length > 0 ? (
+							<Tooltip>
+								<TooltipTrigger>
+									<div className="flex items-center gap-2 mb-1">
+										<label htmlFor="api-provider">
+											<span style={{ fontWeight: 500 }}>{intent === "setup" ? "Choose a provider" : "API Provider"}</span>
+										</label>
+										<i className="codicon codicon-lock text-description text-sm" />
+									</div>
+								</TooltipTrigger>
+								<TooltipContent>Provider options are managed by your organization's remote configuration</TooltipContent>
+							</Tooltip>
+						) : (
+							<label htmlFor="api-provider">
+								<span style={{ fontWeight: 500 }}>{intent === "setup" ? "Choose a provider" : "API Provider"}</span>
+							</label>
+						)}
+						<ProviderDropdownWrapper
+							ref={dropdownRef}
+							onBlur={(event) => {
+								if (!event.currentTarget.contains(event.relatedTarget)) {
+									setIsDropdownVisible(false)
+									setSelectedIndex(-1)
+								}
+							}}>
+							<VSCodeTextField
+								data-testid="provider-selector-input"
+								id="api-provider"
+								disabled={isAddingProvider}
+								aria-label={intent === "setup" ? "Choose a provider" : "API Provider"}
+								aria-expanded={isDropdownVisible}
+								aria-controls={providerListId}
+								aria-autocomplete="list"
+								aria-activedescendant={isDropdownVisible && selectedIndex >= 0 ? `${providerListId}-${selectedIndex}` : undefined}
 								onClick={() => {
+									if (!isDropdownVisible) {
+										setSearchTerm("")
+										setIsDropdownVisible(true)
+									}
+								}}
+								onFocus={() => {
+									setIsDropdownVisible(true)
 									setSearchTerm("")
+								}}
+								onInput={(e) => {
+									setSearchTerm((e.target as HTMLInputElement)?.value || "")
 									setIsDropdownVisible(true)
 								}}
-								slot="end"
+								onKeyDown={handleKeyDown}
+								placeholder="Search and select provider..."
+								role="combobox"
 								style={{
-									display: "flex",
-									justifyContent: "center",
-									alignItems: "center",
-									height: "100%",
+									width: "100%",
+									zIndex: DROPDOWN_Z_INDEX,
+									position: "relative",
+									minWidth: 130,
 								}}
-							/>
-						)}
-					</VSCodeTextField>
-					{isDropdownVisible && (
-						<ProviderDropdownList ref={dropdownListRef} role="listbox">
-							{providerSearchResults.map((item, index) => (
-								<ProviderDropdownItem
-									data-testid={`provider-option-${item.value}`}
-									isSelected={index === selectedIndex}
-									key={item.value}
-									onClick={() => handleProviderChange(item.value)}
-									onMouseEnter={() => setSelectedIndex(index)}
-									ref={(el) => {
-										itemRefs.current[index] = el
-									}}
-									role="option">
-									<span>{item.html}</span>
-								</ProviderDropdownItem>
-							))}
-						</ProviderDropdownList>
-					)}
-				</ProviderDropdownWrapper>
-			</DropdownContainer>
+								value={searchTerm}>
+								<span slot="end" className="pointer-events-none flex items-center px-1" aria-hidden="true">
+									<ChevronDown size={14} />
+								</span>
+							</VSCodeTextField>
+							{isDropdownVisible && (
+								<ProviderDropdownList ref={dropdownListRef} id={providerListId} role="listbox" aria-label="API providers">
+									{providerSearchResults.length === 0 && <div className="p-2 text-description" role="status">No providers found.</div>}
+									{providerSearchResults.map((item, index) => (
+										<ProviderDropdownItem
+											data-testid={`provider-option-${item.value}`}
+											id={`${providerListId}-${index}`}
+											aria-selected={item.value === activeProvider}
+											onMouseDown={(event) => event.preventDefault()}
+											$isSelected={index === selectedIndex}
+											key={item.value}
+											onClick={() => handleProviderChange(item.value)}
+											onMouseEnter={() => setSelectedIndex(index)}
+											ref={(el) => {
+												itemRefs.current[index] = el
+											}}
+											role="option">
+											<span>{item.html}</span>
+										</ProviderDropdownItem>
+									))}
+								</ProviderDropdownList>
+							)}
+						</ProviderDropdownWrapper>
+					</DropdownContainer>
+				)}
 
-			{apiConfiguration && selectedProvider === "anthropic" && (
-				<AnthropicProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{intent === "setup" && activeProvider && (
+					<div className="my-2 text-xs text-description">
+						{!isEditingSetup && isProviderAdded && <p className="m-0 mb-1" role="status">This provider is added. You can edit its setup below.</p>}
+						<p className="m-0">
+							{activeProvider === "openai"
+								? "Use the save button below to save your endpoint configuration."
+								: "Credential and connection settings save automatically. Complete any sign-in steps below if required."}
+						</p>
+					</div>
+				)}
 
-			{apiConfiguration && selectedProvider === "claude-code" && (
-				<ClaudeCodeProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "anthropic" && (
+					<AnthropicProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "openai-native" && (
-				<OpenAINativeProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "claude-code" && (
+					<ClaudeCodeProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "openai-codex" && (
-				<OpenAiCodexProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "openai-native" && (
+					<OpenAINativeProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "qwen" && (
-				<QwenProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "openai-codex" && (
+					<OpenAiCodexProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "qwen-code" && (
-				<QwenCodeProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "qwen" && (
+					<QwenProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "doubao" && (
-				<DoubaoProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "qwen-code" && (
+					<QwenCodeProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "mistral" && (
-				<MistralProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "doubao" && (
+					<DoubaoProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && activeProvider === "openrouter" && (
-				<OpenRouterProvider
-					currentMode={currentMode}
-					isPendingProviderSelection={isSwitchingToOpenRouter}
-					isPopup={isPopup}
-					onCancelProviderSelection={() => setPendingProvider(undefined)}
-					onModelSelected={isSwitchingToOpenRouter ? handlePendingOpenRouterModelSelected : undefined}
-					showModelOptions={showModelOptions}
-				/>
-			)}
+				{apiConfiguration && selectedProvider === "mistral" && (
+					<MistralProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "deepseek" && (
-				<DeepSeekProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && activeProvider === "openrouter" && (
+					<OpenRouterProvider
+						currentMode={currentMode}
+						isPendingProviderSelection={isSwitchingToOpenRouter}
+						isPopup={isPopup}
+						onCancelProviderSelection={() => setPendingProvider(undefined)}
+						onModelSelected={isSwitchingToOpenRouter ? handlePendingOpenRouterModelSelected : undefined}
+						showModelOptions={showModelOptions}
+					/>
+				)}
 
-			{apiConfiguration && selectedProvider === "unbiased" && (
-				<UnbiasedProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "deepseek" && (
+					<DeepSeekProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "together" && (
-				<TogetherProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "unbiased" && (
+					<UnbiasedProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "openai" && (
-				<OpenAICompatibleProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "together" && (
+					<TogetherProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "vercel-ai-gateway" && (
-				<VercelAIGatewayProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "openai" && (
+					<OpenAICompatibleProvider currentMode={currentMode} intent={intent} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "sambanova" && (
-				<SambanovaProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "vercel-ai-gateway" && (
+					<VercelAIGatewayProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "bedrock" && (
-				<BedrockProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "sambanova" && (
+					<SambanovaProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "vertex" && (
-				<VertexProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "bedrock" && (
+					<BedrockProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "gemini" && (
-				<GeminiProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "vertex" && (
+					<VertexProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "requesty" && (
-				<RequestyProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "gemini" && (
+					<GeminiProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "fireworks" && (
-				<FireworksProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "requesty" && (
+					<RequestyProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "github-copilot" && (
-				<GithubCopilotProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "fireworks" && (
+					<FireworksProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "vscode-lm" && <VSCodeLmProvider currentMode={currentMode} />}
+				{apiConfiguration && selectedProvider === "github-copilot" && (
+					<GithubCopilotProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "groq" && (
-				<GroqProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
-			{apiConfiguration && selectedProvider === "baseten" && (
-				<BasetenProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
-			{apiConfiguration && selectedProvider === "litellm" && (
-				<LiteLlmProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "vscode-lm" && (showModelOptions ? <VSCodeLmProvider currentMode={currentMode} /> : <p>Use your installed VS Code language model provider. Select its model in Model configurations.</p>)}
 
-			{apiConfiguration && selectedProvider === "lmstudio" && (
-				<LMStudioProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "groq" && (
+					<GroqProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
+				{apiConfiguration && selectedProvider === "baseten" && (
+					<BasetenProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
+				{apiConfiguration && selectedProvider === "litellm" && (
+					<LiteLlmProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "moonshot" && (
-				<MoonshotProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "lmstudio" && (
+					<LMStudioProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "huggingface" && (
-				<HuggingFaceProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "moonshot" && (
+					<MoonshotProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "nebius" && (
-				<NebiusProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "huggingface" && (
+					<HuggingFaceProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "wandb" && (
-				<WandbProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "nebius" && (
+					<NebiusProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "xai" && (
-				<XaiProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "wandb" && (
+					<WandbProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "cerebras" && (
-				<CerebrasProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "xai" && (
+					<XaiProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "huawei-cloud-maas" && (
-				<HuaweiCloudMaasProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "cerebras" && (
+					<CerebrasProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "dify" && (
-				<DifyProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "huawei-cloud-maas" && (
+					<HuaweiCloudMaasProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "zai" && (
-				<ZAiProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "dify" && (
+					<DifyProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "minimax" && (
-				<MinimaxProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "zai" && (
+					<ZAiProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "nousResearch" && (
-				<NousResearchProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "minimax" && (
+					<MinimaxProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfiguration && selectedProvider === "aihubmix" && (
-				<AIhubmixProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
-			)}
+				{apiConfiguration && selectedProvider === "nousResearch" && (
+					<NousResearchProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiConfigurationError && (
-				<p aria-live="polite" className="m-0 text-xs text-error">
-					Could not save API configuration: {apiConfigurationError}
-				</p>
-			)}
+				{apiConfiguration && selectedProvider === "aihubmix" && (
+					<AIhubmixProvider currentMode={currentMode} isPopup={isPopup} showModelOptions={showModelOptions} />
+				)}
 
-			{apiErrorMessage && (
-				<p
-					style={{
-						margin: "-10px 0 4px 0",
-						fontSize: 12,
-						color: "var(--vscode-errorForeground)",
-					}}>
-					{apiErrorMessage}
-				</p>
-			)}
-			{modelIdErrorMessage && (
-				<p
-					style={{
-						margin: "-10px 0 4px 0",
-						fontSize: 12,
-						color: "var(--vscode-errorForeground)",
-					}}>
-					{modelIdErrorMessage}
-				</p>
-			)}
-		</div>
+				{intent === "setup" && activeProvider && activeProvider !== "openai" && !isEditingSetup && !isProviderAdded && (
+					<div className="mt-3 flex flex-col items-start gap-2">
+						<Button type="button" disabled={isAddingProvider} onClick={() => void addProvider()}>
+							{isAddingProvider ? "Adding provider…" : "Add provider"}
+						</Button>
+						<p className="m-0 text-xs text-description">You can also add a provider without saved credentials, such as a local service. Adding it does not verify connectivity.</p>
+					</div>
+				)}
+
+				{apiConfigurationError && (
+					<p aria-live="polite" className="m-0 text-xs text-error">
+						Could not save API configuration: {apiConfigurationError}
+					</p>
+				)}
+
+				{apiErrorMessage && (
+					<p
+						style={{
+							margin: "-10px 0 4px 0",
+							fontSize: 12,
+							color: "var(--vscode-errorForeground)",
+						}}>
+						{apiErrorMessage}
+					</p>
+				)}
+				{modelIdErrorMessage && (
+					<p
+						style={{
+							margin: "-10px 0 4px 0",
+							fontSize: 12,
+							color: "var(--vscode-errorForeground)",
+						}}>
+						{modelIdErrorMessage}
+					</p>
+				)}
+			</div>
+		</ProviderSetupContext.Provider>
 	)
 }
 
@@ -572,13 +636,13 @@ const ProviderDropdownList = styled.div`
 	border-bottom-right-radius: 3px;
 `
 
-const ProviderDropdownItem = styled.div<{ isSelected: boolean }>`
+const ProviderDropdownItem = styled.div<{ $isSelected: boolean }>`
 	padding: 5px 10px;
 	cursor: pointer;
 	word-break: break-all;
 	white-space: normal;
 
-	background-color: ${({ isSelected }) => (isSelected ? "var(--vscode-list-activeSelectionBackground)" : "inherit")};
+	background-color: ${({ $isSelected }) => ($isSelected ? "var(--vscode-list-activeSelectionBackground)" : "inherit")};
 
 	&:hover {
 		background-color: var(--vscode-list-activeSelectionBackground);

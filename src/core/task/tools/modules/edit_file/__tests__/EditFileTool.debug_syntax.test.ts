@@ -85,7 +85,6 @@ function createConfig() {
 		ulid: "ulid-1",
 		cwd: tmpDir,
 		mode: "act",
-		isSubagentExecution: true,
 		taskState,
 		services: {
 			fileContextTracker: {
@@ -116,6 +115,7 @@ describe("EditFileTool – debug syntax", () => {
 		getDiagnosticsStub = sandbox.stub().resolves({ fileDiagnostics: [] })
 
 		setVscodeHostProviderMock({
+			capabilities: { editorDiagnostics: true },
 			hostBridgeClient: {
 				workspaceClient: {
 					getDiagnostics: getDiagnosticsStub,

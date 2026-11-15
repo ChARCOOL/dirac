@@ -1,89 +1,97 @@
-import { Mode } from "@shared/ExtensionMessage"
-import { UpdateSettingsRequest } from "@shared/proto/dirac/state"
-import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
+import type { ApiProvider } from "@shared/api"
+import PROVIDERS from "@shared/providers/providers.json"
 import { useState } from "react"
-import { syncModeConfigurations } from "@/features/settings/components/utils/providerUtils"
 import { useSettingsStore } from "@/features/settings/store/settingsStore"
-import { StateServiceClient } from "@/shared/api/grpc-client"
-import { TabButton } from "../../../../shared/ui/TabButton"
+import { Button } from "@/shared/ui/button"
 import ApiOptions from "../ApiOptions"
+import { ProviderSetupSummary } from "../ProviderSetupSummary"
+import { OpenAiCodexConfiguredDetails } from "../providers/openai-codex/OpenAiCodexConfiguredDetails"
 import Section from "../Section"
-import { useApiConfigurationHandlers } from "../utils/useApiConfigurationHandlers"
 
 interface ApiConfigurationSectionProps {
 	renderSectionHeader?: (tabId: string) => JSX.Element | null
 }
 
+const getProviderLabel = (provider: ApiProvider) => PROVIDERS.list.find((entry) => entry.value === provider)?.label ?? provider
+
 const ApiConfigurationSection = ({ renderSectionHeader }: ApiConfigurationSectionProps) => {
-	const { planActSeparateModelsSetting, mode, apiConfiguration } = useSettingsStore()
-	const [currentTab, setCurrentTab] = useState<Mode>(mode as Mode)
-	const { handleFieldsChange } = useApiConfigurationHandlers()
+	const { configuredApiProviders, apiConfiguration } = useSettingsStore()
+	const [setupView, setSetupView] = useState<{ provider?: ApiProvider } | null>(null)
+	const profiles: { name: string; baseUrl: string }[] = apiConfiguration.openAiCompatibleProfiles ?? []
+	const providers: ApiProvider[] = profiles.length > 0 && !configuredApiProviders.includes("openai")
+		? [...configuredApiProviders, "openai"]
+		: configuredApiProviders
+
 	return (
 		<div>
 			{renderSectionHeader?.("models-api")}
 			<Section>
-				{/* Tabs container */}
-				{planActSeparateModelsSetting ? (
-					<div className="rounded-md mb-5">
-						<div className="flex gap-px mb-[10px] -mt-2 border-0 border-b border-solid border-(--vscode-panel-border)">
-							<TabButton
-								disabled={currentTab === "plan"}
-								isActive={currentTab === "plan"}
-								onClick={() => setCurrentTab("plan")}
-								style={{
-									opacity: 1,
-									cursor: "pointer",
-								}}>
-								Plan Mode
-							</TabButton>
-							<TabButton
-								disabled={currentTab === "act"}
-								isActive={currentTab === "act"}
-								onClick={() => setCurrentTab("act")}
-								style={{
-									opacity: 1,
-									cursor: "pointer",
-								}}>
-								Act Mode
-							</TabButton>
+				<p className="m-0 text-xs text-description">
+					Provider setup does not change your active model selection. Choose active models in Model configurations.
+				</p>
+				{setupView ? (
+					<>
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<h3 className="m-0 text-sm font-medium">
+								{setupView.provider ? `${getProviderLabel(setupView.provider)} setup` : "Add provider"}
+							</h3>
+							<Button type="button" variant="secondary" size="sm" onClick={() => setSetupView(null)}>
+								Back to providers
+							</Button>
 						</div>
-
-						{/* Content container */}
-						<div className="-mb-3">
-							<ApiOptions currentMode={currentTab as Mode} showModelOptions={true} />
-						</div>
-					</div>
+						<ApiOptions
+							key={setupView.provider ?? "add"}
+							initialSetupProvider={setupView.provider}
+							currentMode="act"
+							intent="setup"
+							showModelOptions={false}
+						/>
+					</>
 				) : (
-					<ApiOptions currentMode={mode as Mode} showModelOptions={true} />
+					<>
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<h3 className="m-0 text-sm font-medium">Configured providers</h3>
+							<Button type="button" size="sm" onClick={() => setSetupView({})}>
+								+ Add provider
+							</Button>
+						</div>
+						{providers.length === 0 ? (
+							<p className="m-0 text-sm text-description">No providers configured yet. Add a provider to get started.</p>
+						) : (
+							<ul aria-label="Configured providers" className="m-0 list-none divide-y divide-(--vscode-panel-border) p-0">
+								{providers.map((provider) => (
+									<li className="py-3" key={provider}>
+										<div className="flex flex-wrap items-center justify-between gap-2">
+											<div className="min-w-0 break-words">
+												<span className="text-sm font-medium">{getProviderLabel(provider)}</span>
+												<ProviderSetupSummary provider={provider} />
+											</div>
+											<Button
+												type="button"
+												variant="secondary"
+												size="sm"
+												aria-label={`Edit ${getProviderLabel(provider)} setup`}
+												onClick={() => setSetupView({ provider })}>
+												Edit setup
+											</Button>
+										</div>
+										{provider === "openai-codex" && <OpenAiCodexConfiguredDetails />}
+										{provider === "openai" && profiles.length > 0 && (
+											<ul aria-label="OpenAI Compatible profiles" className="mt-2 list-none space-y-1 pl-3">
+												{profiles.map((profile) => (
+													<li key={profile.name} className="flex flex-wrap justify-between gap-x-2 text-xs">
+														<span className="min-w-0 break-words">{profile.name}</span>
+														<span className="min-w-0 break-all text-description">{profile.baseUrl}</span>
+													</li>
+												))}
+											</ul>
+										)}
+									</li>
+								))}
+							</ul>
+						)}
+					</>
 				)}
-
-				<div className="mb-[5px]">
-					<VSCodeCheckbox
-						checked={planActSeparateModelsSetting}
-						className="mb-[5px]"
-						onClick={async (e: any) => {
-							const checked = e.target.checked === true
-							try {
-								// If unchecking the toggle, wait a bit for state to update, then sync configurations
-								if (!checked) {
-									await syncModeConfigurations(apiConfiguration, currentTab, handleFieldsChange)
-								}
-								await StateServiceClient.updateSettings(
-									UpdateSettingsRequest.create({
-										planActSeparateModelsSetting: checked,
-									}),
-								)
-							} catch (error) {
-								console.error("Failed to update separate models setting:", error)
-							}
-						}}>
-						Use separate models for Plan and Act
-					</VSCodeCheckbox>
-					<p className="text-xs mt-[5px] text-(--vscode-descriptionForeground)">
-						Use one provider/model for planning and another for implementation. Before disabling, note that the
-						current {currentTab === "plan" ? "Plan" : "Act"} configuration becomes shared.
-					</p>
-				</div>
 			</Section>
 		</div>
 	)

@@ -6,6 +6,8 @@ import type { IUITrait, IInteractionTrait, ICardHandle, CardParams } from "../..
 import type { TaskConfig } from "../../types/TaskConfig"
 import { CardHandle } from "../CardHandle"
 import { ApprovedPermissionCardHandle } from "../ApprovedPermissionCardHandle"
+import { DiracDefaultTool } from "@shared/tools"
+import { resolveCommandApproval } from "../../autoApprove"
 
 // Builds the UI trait — text streaming and card creation.
 export function buildUiTrait(
@@ -13,15 +15,15 @@ export function buildUiTrait(
 	createCardFn: (params: CardParams) => Promise<ICardHandle>,
 	createManualInteractionCardFn: (params: CardParams) => Promise<ICardHandle>,
 ): IUITrait {
+	const messenger = config.messengerContext ? config.taskMessenger.forInvocation(config.messengerContext) : config.taskMessenger
 	return {
 		createCard: createCardFn,
 		createManualInteractionCard: createManualInteractionCardFn,
 		upsertText: async (text: string, isReasoning?: boolean, role?: "user" | "assistant") => {
-			const visibleText = config.agentIdentity && role !== "user" ? `**${config.agentIdentity.name}:** ${text}` : text
-			await config.taskMessenger.upsertText(visibleText, isReasoning, undefined, undefined, role, config.agentIdentity)
+			await messenger.upsertText(text, isReasoning, undefined, undefined, role)
 		},
 		streamText: async (type: "markdown" | "reasoning") => {
-			return await config.taskMessenger.streamText(type)
+			return await messenger.streamText(type)
 		},
 		publishState: async () => await config.callbacks.postStateToWebview(),
 	}
@@ -76,18 +78,32 @@ export async function askPermissionOnCard(
 	}
 }
 
+function commandApprovalPredicate(config: TaskConfig, params: CardParams): (() => boolean) | undefined {
+	const tool = config.toolUse?.name ?? params.toolName
+	if (!params.requireApproval || params.operationalInput || params.permissionOperation?.kind !== "commands" ||
+		(tool !== DiracDefaultTool.EXECUTE_COMMAND && tool !== DiracDefaultTool.UPSERT_TOOL)) return undefined
+	const commands = [...params.permissionOperation.commands]
+	return () => {
+		if (isUnrestrictedToolApproval(config)) return true
+		return commands.length > 0 && !resolveCommandApproval(commands, config.permissionDecisionBinding !== undefined,
+			config.autoApprover, config.services.commandPermissionController, tool).required
+	}
+}
+
 // Resolves explicitly classified tool permissions before falling back to the displayed-card path.
 export async function createCardFromMessenger(
 	config: TaskConfig,
 	params: CardParams,
 	tracker: CardHandle[],
 ): Promise<ICardHandle> {
+	if (config.taskMessenger.routesToOwner) return createTaskletPermissionCard(config, params, tracker)
 	const { permissionRequestKind, ...cardParams } = params
 	if (permissionRequestKind === undefined) {
-		return createDisplayedCardFromMessenger(config, cardParams, tracker)
+		const isAutoApproved = commandApprovalPredicate(config, cardParams)
+		return createDisplayedCardFromMessenger(config, cardParams, tracker, true, isAutoApproved)
 	}
 
-	const isAutoApproved = () => isUnrestrictedToolApproval(config)
+	const isAutoApproved = commandApprovalPredicate(config, cardParams) ?? (() => isUnrestrictedToolApproval(config))
 	if (isAutoApproved()) {
 		return new ApprovedPermissionCardHandle(cardParams)
 	}
@@ -98,28 +114,108 @@ export async function createCardFromMessenger(
 	const binding = config.permissionDecisionBinding
 	if (!binding) return createDisplayedCardFromMessenger(config, cardParams, tracker, true, isAutoApproved)
 
-	const request = createUtilityPermissionRequest(config, cardParams)
-	const decision = await binding.service.decide(request, config.taskState.abortSignal)
+	const request = createUtilityPermissionRequest(config, cardParams, binding.authorityMode)
+	const signal = permissionSignal(config)
+	signal.throwIfAborted()
+	const decision = await binding.service.decide(request, signal)
+	signal.throwIfAborted()
 	if (isAutoApproved()) {
 		return new ApprovedPermissionCardHandle(cardParams)
 	}
 
 	const currentBinding = config.permissionDecisionBinding
-	if (!currentBinding || currentBinding.configurationRevision !== binding.configurationRevision) {
+	if (!currentBinding || currentBinding.configurationRevision !== binding.configurationRevision ||
+		currentBinding.commandPermissionRevision !== binding.commandPermissionRevision) {
 		return createDisplayedCardFromMessenger(config, cardParams, tracker, true, isAutoApproved)
 	}
 	if (decision.decision === "escalate") {
 		return createDisplayedCardFromMessenger(config, cardParams, tracker, true, isAutoApproved)
 	}
 	await publishPermissionApprovalCard(config, cardParams, tracker, request, decision.reason)
+	signal.throwIfAborted()
+	const publishedBinding = config.permissionDecisionBinding
+	if (!publishedBinding || publishedBinding.configurationRevision !== binding.configurationRevision ||
+		publishedBinding.commandPermissionRevision !== binding.commandPermissionRevision) {
+		return createDisplayedCardFromMessenger(config, cardParams, tracker, true, isAutoApproved)
+	}
 	return new ApprovedPermissionCardHandle(cardParams)
+}
+
+/** Only unresolved execute_command permissions may consult Utility before the owner. */
+async function createTaskletPermissionCard(
+	config: TaskConfig,
+	params: CardParams,
+	tracker: CardHandle[],
+): Promise<ICardHandle> {
+	if (params.operationalInput || (!params.requireApproval && params.permissionRequestKind === undefined)) {
+		return createOwnerCard(config, params, tracker)
+	}
+	if (config.toolUse?.name !== "execute_command" || params.permissionOperation?.kind !== "commands") {
+		return createOwnerCard(config, {
+			...params,
+			utilityPermissionSkipped: "This operation requires Dirac review before automatic approval.",
+		}, tracker)
+	}
+	if (params.permissionRequestKind === "manual_tool") {
+		return createOwnerCard(config, {
+			...params,
+			utilityPermissionSkipped: "Command restrictions require Dirac review; Utility cannot approve this request.",
+		}, tracker)
+	}
+	const binding = config.permissionDecisionBinding
+	if (!binding || params.permissionRequestKind !== "tool") {
+		return createOwnerCard(config, {
+			...params,
+			utilityPermissionSkipped: !binding
+				? "Utility permission handling is disabled or not fully configured."
+				: "This request was not classified for Utility approval.",
+		}, tracker)
+	}
+
+	const request = createUtilityPermissionRequest(config, params, binding.authorityMode)
+	const signal = permissionSignal(config)
+	signal.throwIfAborted()
+	const decision = await binding.service.decide(request, signal)
+	signal.throwIfAborted()
+	const currentBinding = config.permissionDecisionBinding
+	if (!currentBinding || currentBinding.configurationRevision !== binding.configurationRevision ||
+		currentBinding.commandPermissionRevision !== binding.commandPermissionRevision) {
+		return createOwnerCard(config, {
+			...params,
+			utilityPermissionEscalation: "Permission settings changed during evaluation; approval requires a new authority check.",
+		}, tracker)
+	}
+	if (decision.decision === "escalate") {
+		return createOwnerCard(config, { ...params, utilityPermissionEscalation: decision.reason }, tracker)
+	}
+	await publishPermissionApprovalCard(config, params, tracker, request, decision.reason)
+	signal.throwIfAborted()
+	const publishedBinding = config.permissionDecisionBinding
+	if (!publishedBinding || publishedBinding.configurationRevision !== binding.configurationRevision ||
+		publishedBinding.commandPermissionRevision !== binding.commandPermissionRevision) {
+		return createOwnerCard(config, {
+			...params,
+			utilityPermissionEscalation: "Permission settings changed during approval publication; approval requires a new authority check.",
+		}, tracker)
+	}
+	return new ApprovedPermissionCardHandle(params)
+}
+
+function permissionSignal(config: TaskConfig): AbortSignal {
+	return config.execution
+		? AbortSignal.any([config.execution.signal, config.taskState.abortSignal])
+		: config.taskState.abortSignal
 }
 
 function isUnrestrictedToolApproval(config: TaskConfig): boolean {
 	return config.autoApprover.isUnrestrictedAutoApprove()
 }
 
-function createUtilityPermissionRequest(config: TaskConfig, params: CardParams): UtilityPermissionRequest {
+function createUtilityPermissionRequest(
+	config: TaskConfig,
+	params: CardParams,
+	authorityMode: UtilityPermissionRequest["runtime"]["mode"],
+): UtilityPermissionRequest {
 	const toolName = config.toolUse?.name ?? params.toolName ?? "unknown"
 	const includesResolvedDiffs = toolName === "edit_file" || toolName === "edit_ast"
 	return {
@@ -129,13 +225,14 @@ function createUtilityPermissionRequest(config: TaskConfig, params: CardParams):
 		},
 		permission: {
 			header: params.header,
+			...(params.permissionOperation ? { operation: structuredClone(params.permissionOperation) } : {}),
 			...(params.locations ? { locations: structuredClone(params.locations) } : {}),
 			...(includesResolvedDiffs && params.diffs ? { diffs: structuredClone(params.diffs) } : {}),
 		},
 		runtime: {
 			cwd: config.cwd,
-			mode: config.mode,
-			isSubagent: config.isSubagentExecution,
+			mode: authorityMode,
+			isSubagent: config.executionProfile === "tasklet",
 		},
 	}
 }
@@ -147,15 +244,17 @@ async function publishPermissionApprovalCard(
 	request: UtilityPermissionRequest,
 	reason: string,
 ): Promise<void> {
+	const actor = config.executionProfile === "tasklet" ? config.taskId : "Dirac"
 	await createDisplayedCardFromMessenger(
 		config,
 		{
-			header: `Auto Approved · ${params.header}`,
+			header: `${actor} · Auto-approved`,
 			toolName: "permission_approval",
 			icon: DiracIcon.PERMISSION_APPROVAL,
 			status: CardStatus.SUCCESS,
 			renderType: "markdown",
-			body: `**Result:** Auto Approved by permission agent\n\n**Reason:** ${reason}`,
+			body: `**Decision:** Approved\n\n**Source:** Utility permission policy\n\n**Reason:** ${reason}\n\n### Requested operation\n\n${params.body ?? params.header}`,
+			...(config.executionProfile === "tasklet" ? { communication: { actor } } : {}),
 			rawInput: { tool: request.toolCall.name },
 			rawOutput: { decision: "approve", reason, approvedTool: request.toolCall.name },
 			locations: params.locations,
@@ -171,8 +270,29 @@ export async function createManualInteractionCardFromMessenger(
 	params: CardParams,
 	tracker: CardHandle[],
 ): Promise<ICardHandle> {
+	if (config.taskMessenger.routesToOwner) return createOwnerCard(config, params, tracker)
 	const { permissionRequestKind: _permissionRequestKind, ...cardParams } = params
 	return createDisplayedCardFromMessenger(config, cardParams, tracker, false)
+}
+
+async function createOwnerCard(config: TaskConfig, params: CardParams, tracker: CardHandle[]): Promise<ICardHandle> {
+	const cardParams: Parameters<TaskConfig["taskMessenger"]["createCard"]>[0] = {
+		...params,
+		...(config.execution ? { executionId: config.execution.identity.executionId } : {}),
+		isAutoApproved: undefined,
+		permissionOperation:
+			params.permissionOperation ??
+			(!params.operationalInput && (params.requireApproval || params.permissionRequestKind)
+				? { kind: "tool", manualOnly: params.permissionRequestKind === "manual_tool" }
+				: undefined),
+		toolCall: config.toolUse ? { name: config.toolUse.name, arguments: structuredClone(config.toolUse.params) } : undefined,
+	}
+	const handle = config.messengerContext
+		? await config.taskMessenger.createCard(cardParams, config.messengerContext)
+		: await config.taskMessenger.createCard(cardParams)
+	const adapterHandle = new CardHandle(handle, undefined, undefined, true, config.execution)
+	tracker.push(adapterHandle)
+	return adapterHandle
 }
 
 // Creates a card via taskMessenger and wraps the protocol handle in a CardHandle.
@@ -204,8 +324,14 @@ async function createDisplayedCardFromMessenger(
 		}
 		: params
 	const messengerParams = !autoApprovedAction && isAutoApproved ? { ...displayedParams, isAutoApproved } : displayedParams
-	const handle = await config.taskMessenger.createCard(messengerParams)
-	const adapterHandle = new CardHandle(handle, autoApprovedAction, liveAutoApprovedAction)
+	const cardParams: Parameters<TaskConfig["taskMessenger"]["createCard"]>[0] = {
+		...messengerParams,
+		...(config.execution ? { executionId: config.execution.identity.executionId } : {}),
+	}
+	const handle = config.messengerContext
+		? await config.taskMessenger.createCard(cardParams, config.messengerContext)
+		: await config.taskMessenger.createCard(cardParams)
+	const adapterHandle = new CardHandle(handle, autoApprovedAction, liveAutoApprovedAction, false, config.execution)
 	tracker.push(adapterHandle)
 	return adapterHandle
 }

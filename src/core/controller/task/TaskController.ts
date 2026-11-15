@@ -1,20 +1,21 @@
 import { cleanupLegacyCheckpoints } from "@integrations/checkpoints/CheckpointMigration"
 import type { HistoryItem } from "@shared/HistoryItem"
+import { TaskStatus } from "@shared/ExtensionMessage"
 import { type Settings } from "@shared/storage/state-keys"
+import pTimeout from "p-timeout"
+import pWaitFor from "p-wait-for"
+import { Logger } from "@/shared/services/Logger"
+import { getCwd, getDesktopDir } from "@/utils/path"
+import type { StateManager } from "../../storage/StateManager"
+import { getTaskDirectoryPath } from "../../storage/taskDirectory"
+import { Task } from "../../task"
 import {
 	createTaskWorkingConfiguration,
 	type TaskWorkingConfiguration,
 	type TaskWorkingConfigurationInput,
 } from "../../task/runtime/TaskWorkingConfiguration"
-import pWaitFor from "p-wait-for"
-import pTimeout from "p-timeout"
-import type { FolderLockWithRetryResult } from "@/core/locks/types"
-import { Logger } from "@/shared/services/Logger"
-import { getCwd, getDesktopDir } from "@/utils/path"
-import type { StateManager } from "../../storage/StateManager"
-import { Task } from "../../task"
-import { deserializeTaskError, type TaskRunOutcome } from "../../task/TaskRunOutcome"
-import { releaseTaskLock, tryAcquireTaskLockWithRetry } from "../../task/TaskLockUtils"
+import { acquireTaskLock } from "../../task/TaskLockUtils"
+import { deserializeTaskError } from "../../task/TaskRunOutcome"
 import { detectWorkspaceRoots } from "../../workspace/detection"
 import { setupWorkspaceManager } from "../../workspace/setup"
 import type { WorkspaceRootManager } from "../../workspace/WorkspaceRootManager"
@@ -59,7 +60,6 @@ export interface ITaskControllerDependencies {
 }
 
 const HISTORICAL_TASK_RESTORE_TIMEOUT_MS = 30_000
-const HISTORICAL_TASK_CLEANUP_TIMEOUT_MS = 5_000
 export class TaskController {
 	private _task?: Task
 	private _workspaceManager?: WorkspaceRootManager
@@ -67,7 +67,6 @@ export class TaskController {
 	private _backgroundCommandTaskId?: string
 	private cancelInProgress = false
 	private _taskRunPromise?: Promise<void>
-	private readonly taskReplacementListeners = new Set<(taskId: string) => void | Promise<void>>()
 	private currentConversationUlid?: string
 	private currentInitializationOptions?: TaskInitializationOptions
 
@@ -78,7 +77,7 @@ export class TaskController {
 
 	constructor(
 		private readonly deps: ITaskControllerDependencies,
-		private readonly tryAcquireTaskLockWithRetryFn: typeof tryAcquireTaskLockWithRetry = tryAcquireTaskLockWithRetry,
+		private readonly acquireTaskLockFn: typeof acquireTaskLock = acquireTaskLock,
 		private readonly setupWorkspaceManagerFn: typeof setupWorkspaceManager = setupWorkspaceManager,
 		private readonly detectRootsFn: typeof detectWorkspaceRoots = detectWorkspaceRoots,
 		private readonly getCwdFn: (defaultDir: string) => Promise<string> = getCwd,
@@ -114,9 +113,33 @@ export class TaskController {
 		return this._backgroundCommandTaskId
 	}
 
-	onTaskReplaced(listener: (taskId: string) => void | Promise<void>): () => void {
-		this.taskReplacementListeners.add(listener)
-		return () => this.taskReplacementListeners.delete(listener)
+	/** Return a live task ready for follow-up input, restoring ended runs without losing their conversation. */
+	async prepareTaskForFollowUp(initializationOptions?: TaskInitializationOptions): Promise<Task> {
+		const task = this._task
+		if (!task) throw new Error("No task available for follow-up")
+
+		// Completion output can reach the client before the loop clears its previous response.
+		if (task.stateView.didAttemptCompletion && !task.stateView.runOutcome) {
+			await pWaitFor(
+				() =>
+					this._task !== task ||
+					task.stateView.runOutcome !== undefined ||
+					task.stateView.status === TaskStatus.COMPLETED ||
+					task.stateView.status === TaskStatus.AWAITING_USER_INPUT,
+				{ interval: 10 },
+			)
+		}
+		if (this._task !== task) throw new Error(`Task ${task.taskId} changed while preparing a follow-up`)
+
+		const waitingForInput =
+			task.stateView.status === TaskStatus.COMPLETED ||
+			task.stateView.status === TaskStatus.CANCELLED ||
+			task.stateView.status === TaskStatus.AWAITING_USER_INPUT
+		if (!task.stateView.runOutcome && waitingForInput) return task
+
+		await this.reinitExistingTaskFromId(task.taskId, initializationOptions)
+		if (!this._task) throw new Error(`Task ${task.taskId} was not restored for follow-up`)
+		return this._task
 	}
 
 	private reconstructionInitializationOptions(task: Task): TaskInitializationOptions {
@@ -129,39 +152,6 @@ export class TaskController {
 			...callbacks,
 			workingConfiguration: task.getWorkingConfiguration(),
 		}
-	}
-
-	private async runTaskWithReplacement(task: Task, run: Promise<TaskRunOutcome>): Promise<void> {
-		let runFailure: { error: unknown } | undefined
-		try {
-			await run
-		} catch (error) {
-			runFailure = { error }
-		}
-
-		const replacement = task.taskState.pendingTaskReplacement
-		if (this._task !== task || !replacement) {
-			if (runFailure) throw runFailure.error
-			return
-		}
-
-		if (runFailure) {
-			Logger.warn("Old task run failed while starting an approved replacement", runFailure.error)
-		}
-
-		const taskId = await this.initTask(
-			replacement.context,
-			replacement.images,
-			replacement.files,
-			undefined,
-			undefined,
-			this.currentConversationUlid,
-			undefined,
-			this.reconstructionInitializationOptions(task),
-		)
-		task.taskState.pendingTaskReplacement = undefined
-		await Promise.all([...this.taskReplacementListeners].map((listener) => listener(taskId)))
-		await this._taskRunPromise
 	}
 
 	private trackTaskRun(run: Promise<void>): void {
@@ -182,8 +172,7 @@ export class TaskController {
 			didRestore = true
 			resolveRestore()
 		})
-		const run = this.runTaskWithReplacement(task, taskRun)
-		this.trackTaskRun(run)
+		this.trackTaskRun(taskRun.then(() => undefined))
 		void taskRun.then(
 			(outcome) => {
 				if (didRestore) return
@@ -206,18 +195,10 @@ export class TaskController {
 			}
 		} catch (error) {
 			if (this._task === task) {
-				const abort = task.abortTask()
-				void abort.catch((abortError) =>
-					Logger.error(`Failed to abort task ${task.taskId} after history restoration failed`, abortError),
-				)
 				try {
-					await pTimeout(this.clearTask(), {
-						milliseconds: HISTORICAL_TASK_CLEANUP_TIMEOUT_MS,
-						message: `Timed out while clearing task ${task.taskId} after history restoration failed`,
-					})
+					await this.clearTask()
 				} catch (cleanupError) {
-					Logger.error(`Failed to clear task ${task.taskId} after history restoration failed`, cleanupError)
-					if (this._task === task) this._task = undefined
+					throw new AggregateError([error, cleanupError], `Task ${task.taskId} history restoration and cleanup failed`)
 				}
 			}
 			throw error
@@ -234,58 +215,39 @@ export class TaskController {
 		_watcherFactory?: any,
 		initializationOptions?: TaskInitializationOptions,
 	): Promise<string> {
-		// Controller is required to construct a Task; fail fast with a clear error if missing
 		if (!this.deps.controller) {
 			throw new Error("TaskController.initTask requires a Controller instance")
 		}
 		const controller = this.deps.controller
-		this.currentConversationUlid = conversationUlid
-		this.currentInitializationOptions = initializationOptions
-		await this.clearTask()
-		this.deps.stateManager.refreshModelProviderPresetsFromDisk()
-
-		const isNewUser = this.deps.stateManager.getGlobalStateKey("isNewUser")
-		const taskHistory = this.deps.stateManager.getGlobalStateKey("taskHistory")
-
-		const NEW_USER_TASK_COUNT_THRESHOLD = 10
-
-		if (isNewUser && !historyItem && taskHistory && taskHistory.length >= NEW_USER_TASK_COUNT_THRESHOLD) {
-			this.deps.stateManager.setGlobalState("isNewUser", false)
-			await this.deps.postStateToWebview()
-		}
-
-		this._workspaceManager = this.deps.workspaceCwd
-			? await controller.ensureWorkspaceManager()
-			: await this.setupWorkspaceManagerFn({
-					stateManager: this.deps.stateManager,
-					detectRoots: this.detectRootsFn,
-				})
-		if (!this._workspaceManager) {
-			throw new Error("TaskController.initTask could not initialize a workspace manager")
-		}
-
-		const cwd = this._workspaceManager.getPrimaryRoot()?.path || (await this.getCwdFn(this.getDesktopDirFn()))
-
 		const taskId = historyItem?.id || Date.now().toString()
-
-		let taskLockAcquired = false
-		const lockResult: FolderLockWithRetryResult = await this.tryAcquireTaskLockWithRetryFn(taskId)
-
-		if (!lockResult.acquired && !lockResult.skipped) {
-			const errorMessage = lockResult.conflictingLock
-				? `Task locked by instance (${lockResult.conflictingLock.held_by})`
-				: "Failed to acquire task lock"
-			throw new Error(errorMessage)
-		}
-
-		taskLockAcquired = lockResult.acquired
-		if (lockResult.acquired) {
-			Logger.debug(`[Task ${taskId}] Task lock acquired`)
-		} else {
-			Logger.debug(`[Task ${taskId}] Task lock skipped (VS Code)`)
-		}
+		// Same-ID reconstruction must retire our current writer before reacquiring ownership.
+		if (this._task?.taskId === taskId) await this.clearTask()
+		const releaseTaskLock = await this.acquireTaskLockFn(getTaskDirectoryPath(taskId))
 
 		try {
+			await this.clearTask()
+			this.currentConversationUlid = conversationUlid
+			this.currentInitializationOptions = initializationOptions
+			this.deps.stateManager.refreshModelProviderPresetsFromDisk()
+
+			const isNewUser = this.deps.stateManager.getGlobalStateKey("isNewUser")
+			const taskHistory = this.deps.stateManager.getGlobalStateKey("taskHistory")
+			const NEW_USER_TASK_COUNT_THRESHOLD = 10
+			if (isNewUser && !historyItem && taskHistory && taskHistory.length >= NEW_USER_TASK_COUNT_THRESHOLD) {
+				this.deps.stateManager.setGlobalState("isNewUser", false)
+				await this.deps.postStateToWebview()
+			}
+
+			this._workspaceManager = this.deps.workspaceCwd
+				? await controller.ensureWorkspaceManager()
+				: await this.setupWorkspaceManagerFn({
+						stateManager: this.deps.stateManager,
+						detectRoots: this.detectRootsFn,
+					})
+			if (!this._workspaceManager) {
+				throw new Error("TaskController.initTask could not initialize a workspace manager")
+			}
+			const cwd = this._workspaceManager.getPrimaryRoot()?.path || (await this.getCwdFn(this.getDesktopDirFn()))
 			await this.deps.stateManager.loadTaskSettings(taskId)
 			if (taskSettings) {
 				this.deps.stateManager.setTaskSettingsBatch(taskId, taskSettings)
@@ -331,7 +293,7 @@ export class TaskController {
 				historyItem,
 				taskId,
 				conversationUlid,
-				taskLockAcquired,
+				releaseTaskLock,
 				pinnedContext: initializationOptions?.pinnedContext,
 				onContextCompacted: initializationOptions?.onContextCompacted,
 				switchToActMode: initializationOptions?.switchToActMode,
@@ -339,20 +301,18 @@ export class TaskController {
 				enqueuePreRequestSteeringMessages: async () => initializationOptions?.enqueueSteeringMessages?.(this._task!),
 			})
 		} catch (error) {
-			if (taskLockAcquired) {
-				await releaseTaskLock(taskId)
-			}
+			await releaseTaskLock()
 			throw error
 		}
 
+		this.currentConversationUlid = this._task.ulid
 		if (historyItem) {
 			await this.startHistoricalTaskAndWaitForRestore(this._task)
 		} else if (task || images || files) {
-			this.trackTaskRun(this.runTaskWithReplacement(this._task, this._task.startTask(task, images, files)))
+			this.trackTaskRun(this._task.startTask(task, images, files).then(() => undefined))
 		} else {
 			this._taskRunPromise = undefined
 		}
-
 		return this._task.taskId
 	}
 
@@ -400,9 +360,9 @@ export class TaskController {
 
 			await pWaitFor(
 				() =>
-					task.taskState.isApiRequestActive === false ||
-					task.taskState.didFinishAbortingStream ||
-					task.taskState.isWaitingForFirstChunk,
+					task.stateView.isApiRequestActive === false ||
+					task.stateView.didFinishAbortingStream ||
+					task.stateView.isWaitingForFirstChunk,
 				{
 					timeout: 3_000,
 				},
@@ -464,20 +424,24 @@ export class TaskController {
 	async clearTask() {
 		const task = this._task
 		if (task) {
-			await this.deps.clearTaskSettings()
-			let abortFailure: unknown
+			const failures: unknown[] = []
+			try {
+				await this.deps.clearTaskSettings()
+			} catch (error) {
+				failures.push(error)
+			}
 			try {
 				await task.abortTask()
 			} catch (error) {
-				abortFailure = error
+				failures.push(error)
 			}
 			try {
 				await task.retirePersistence()
 			} catch (error) {
-				if (abortFailure) throw new AggregateError([abortFailure, error], "Task abort and persistence retirement failed")
-				throw error
+				failures.push(error)
 			}
-			if (abortFailure) throw abortFailure
+			if (failures.length === 1) throw failures[0]
+			if (failures.length > 1) throw new AggregateError(failures, "Task cleanup failed")
 		}
 		if (this._task === task) {
 			this._task = undefined

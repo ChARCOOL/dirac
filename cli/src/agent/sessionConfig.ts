@@ -14,6 +14,7 @@ import { getProviderModelIdKey, getProviderModelInfoKey } from "@shared/storage/
 import type { Settings } from "@shared/storage/state-keys"
 import { refreshGithubCopilotModels } from "@/core/controller/models/refreshGithubCopilotModels"
 import { getHuggingFaceModels } from "@/core/controller/models/refreshHuggingFaceModels"
+import { getOpenAiModels } from "@/core/controller/models/refreshOpenAiModels"
 import { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
 import {
@@ -25,12 +26,20 @@ import {
     OPENAI_REASONING_EFFORT_LABELS,
     OPENAI_REASONING_EFFORT_OPTIONS,
 } from "@/shared/storage/types"
-import { filterOpenRouterModelIds } from "@/shared/utils/model-filters"
+import { filterOpenRouterModelIds, rankModelIdsForDisplay } from "@/shared/utils/model-filters"
 import { getDefaultModelId, getModelList, hasStaticModels } from "../utils/model-metadata.js"
 import { fetchOpenRouterModels, usesOpenRouterModels } from "../utils/openrouter-models"
 import { getProviderLabel, getValidCliProviders, isValidCliProvider } from "../utils/providers.js"
 import type { ProviderConfigurationManager } from "./providerConfiguration.js"
 import type { DiracAcpSession } from "./public-types.js"
+
+/** Accept native boolean controls and their explicit select fallback values, never truthiness. */
+export function parseBooleanConfigValue(value: string | boolean): boolean {
+	if (typeof value === "boolean") return value
+	if (value === "true") return true
+	if (value === "false") return false
+	throw new Error(`Invalid boolean config value: ${value}`)
+}
 
 /** ACP operating modes are mutually exclusive; approval qualifiers are separate booleans. */
 export type AcpModeId = Mode
@@ -231,7 +240,7 @@ export class SessionConfigManager {
 							name: "Inference Speed",
 							description: "Provider processing tier for the current model",
 							type: "select" as const,
-							category: "model",
+							category: "model_config",
 							currentValue: inferenceSpeed,
 							options: this.modelSupportsFastMode(currentProvider, currentModelId)
 								? ACP_INFERENCE_SPEED_OPTIONS
@@ -527,12 +536,15 @@ export class SessionConfigManager {
 			candidates = (async () => {
 				try {
 					if (usesOpenRouterModels(provider)) {
-						return refreshDynamicCatalog
-							? filterOpenRouterModelIds(
-									Object.keys(await fetchOpenRouterModels()).sort((a, b) => a.localeCompare(b)),
-									provider,
-								)
-							: []
+						if (!refreshDynamicCatalog) return []
+						const openRouterModels = await fetchOpenRouterModels()
+						return filterOpenRouterModelIds(
+							rankModelIdsForDisplay(
+								Object.keys(openRouterModels),
+								(modelId) => openRouterModels[modelId]?.canonicalSlug,
+							),
+							provider,
+						)
 					}
 					if (provider === "huggingface") {
 						return refreshDynamicCatalog
@@ -543,6 +555,11 @@ export class SessionConfigManager {
 						return refreshDynamicCatalog
 							? Object.keys(await refreshGithubCopilotModels()).sort((a, b) => a.localeCompare(b))
 							: []
+					}
+					if (provider === "openai") {
+						if (!refreshDynamicCatalog) return []
+						const openAiModels = await getOpenAiModels()
+						return Object.keys(openAiModels).sort((a, b) => a.localeCompare(b))
 					}
 					if (hasStaticModels(provider)) return getModelList(provider)
 					if (provider === "dify") return ["dify-workflow"]

@@ -1,9 +1,4 @@
-import {
-	type ResponseArguments,
-	ResponseOperation,
-	ResponseShapeError,
-	validateResponseShape,
-} from "@shared/responseTool"
+import { type ResponseArguments, ResponseOperation, ResponseShapeError, validateResponseShape } from "@shared/responseTool"
 import type { IToolEnvironment } from "../../interfaces/IToolEnvironment"
 
 export class ResponseArgumentsError extends Error {
@@ -28,7 +23,12 @@ export function validateResponseArguments(args: unknown, env: IToolEnvironment):
 }
 
 function validateMode(operation: ResponseOperation, env: IToolEnvironment): void {
-	if (env.config.isSubagentExecution) return
+	if (operation === ResponseOperation.PLAN && env.config.executionProfile === "tasklet") {
+		throw new ResponseArgumentsError(
+			"Tasklets cannot use the 'plan' response operation; report progress or complete the assignment.",
+			env,
+		)
+	}
 	if (operation === ResponseOperation.PLAN && env.config.mode !== "plan") {
 		throw new ResponseArgumentsError("The 'plan' response operation is available only in Plan Mode.", env)
 	}

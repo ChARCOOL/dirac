@@ -1,11 +1,11 @@
 import * as fs from "fs"
 import * as path from "path"
-import * as os from "os"
 import { CONFIGURABLE_TOOL_EXPOSURE, type DiscoveredTool, type ToolExposure, type ToolSource } from "./DiscoveredTool"
 import { UserToolLoader } from "./UserToolLoader"
 import type { IDiracTool } from "../interfaces/IDiracTool"
 import type { DiracToolSpec } from "@/shared/tools"
 import { approvedWorkspaceCode } from "@/core/security/WorkspaceCodeApproval"
+import { diracHomeDir } from "@/shared/config/environment"
 
 interface ToolManifest {
 	spec: DiracToolSpec
@@ -15,6 +15,7 @@ interface ToolManifest {
 
 interface DualToolManifest extends ToolManifest {
 	secondarySpec?: DiracToolSpec
+	secondaryExposure?: ToolExposure
 	createSecondary?: (config?: any) => IDiracTool
 }
 
@@ -51,7 +52,7 @@ export class ToolDiscoveryService {
 					id: manifest.secondarySpec.id,
 					name: manifest.secondarySpec.name,
 					source: "builtin",
-					exposure: manifest.exposure ?? CONFIGURABLE_TOOL_EXPOSURE,
+					exposure: manifest.secondaryExposure ?? manifest.exposure ?? CONFIGURABLE_TOOL_EXPOSURE,
 					spec: manifest.secondarySpec,
 					factory: manifest.createSecondary,
 					modulePath: `modules/${moduleName}/tool.ts`,
@@ -102,7 +103,7 @@ export class ToolDiscoveryService {
 	}
 
 	static async scanGlobalUserTools(): Promise<DiscoveredTool[]> {
-		const globalDir = path.join(process.env.DIRAC_DIR || path.join(os.homedir(), ".dirac"), "tools")
+		const globalDir = path.join(diracHomeDir(), "tools")
 		return this.scanUserToolDirectory(globalDir, "global")
 	}
 

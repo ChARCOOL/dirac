@@ -13,7 +13,7 @@ import {
 	ShieldCheck,
 	SquareTerminal,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import { useSettingsStore } from "@/features/settings/store/settingsStore"
 import { cn } from "@/lib/utils"
@@ -28,6 +28,7 @@ import BrowserSettingsSection from "../sections/BrowserSettingsSection"
 import GeneralSettingsSection from "../sections/GeneralSettingsSection"
 import ResponsesContextSection from "../sections/ResponsesContextSection"
 import RunningTasksSection from "../sections/RunningTasksSection"
+import SandboxSettingsSection from "../sections/SandboxSettingsSection"
 import TerminalSettingsSection from "../sections/TerminalSettingsSection"
 import ToolsSettingsSection from "../sections/ToolsSettingsSection"
 import UtilityModelSection from "../sections/UtilityModelSection"
@@ -48,6 +49,7 @@ export const SETTINGS_TABS: SettingsTab[] = [
 	{ id: "running-tasks", icon: ListChecks },
 	{ id: "tools", icon: Puzzle },
 	{ id: "terminal", icon: SquareTerminal },
+	{ id: "sandbox", icon: ShieldCheck },
 	{ id: "browser", icon: Globe2 },
 	{ id: "general", icon: Settings2 },
 ]
@@ -79,7 +81,6 @@ const TARGET_ALIASES: Record<string, ResolvedTarget> = {
 	"low-verbosity-responses": { tab: "responses-context", focusId: "low-verbosity-responses" },
 	subagents: { tab: "running-tasks", focusId: "subagents" },
 	"parallel-tool-calling": { tab: "running-tasks", focusId: "parallel-tool-calling" },
-	"double-check-completion": { tab: "running-tasks", focusId: "double-check-completion" },
 	"background-edit": { tab: "running-tasks", focusId: "background-edit" },
 	checkpoints: { tab: "running-tasks", focusId: "checkpoints" },
 	worktrees: { tab: "running-tasks", focusId: "worktrees" },
@@ -101,6 +102,7 @@ const TAB_CONTENT_MAP: Record<SettingsTabID, React.FC<any>> = {
 	"running-tasks": RunningTasksSection,
 	tools: ToolsSettingsSection,
 	terminal: TerminalSettingsSection,
+	sandbox: SandboxSettingsSection,
 	browser: BrowserSettingsSection,
 	general: GeneralSettingsSection,
 }
@@ -116,6 +118,60 @@ const SettingsView = ({ onDone, targetSection }: SettingsViewProps) => {
 	const initialTarget = resolveSettingsTarget(targetSection)
 	const [activeTab, setActiveTab] = useState<SettingsTabID>(initialTarget.tab)
 	const [focusTarget, setFocusTarget] = useState(initialTarget.focusId)
+	const [navigationExpanded, setNavigationExpanded] = useState(false)
+	const inputModality = useRef<"keyboard" | "pointer">("keyboard")
+	const navigationHasKeyboardFocus = useRef(false)
+	const navigationRef = useRef<HTMLElement>(null)
+	const pointerPosition = useRef<{ x: number; y: number } | null>(null)
+	const containmentFrame = useRef<number>()
+
+	const confirmNavigationExit = useCallback(() => {
+		if (containmentFrame.current !== undefined) return
+		containmentFrame.current = requestAnimationFrame(() => {
+			containmentFrame.current = undefined
+			const navigation = navigationRef.current
+			if (!navigation) return
+			const focusInside = navigation.contains(document.activeElement)
+			// Touch has no hovering pointer; its focused destination keeps the menu open until blur.
+			if (focusInside && (navigationHasKeyboardFocus.current || pointerPosition.current === null)) return
+			if (!focusInside) navigationHasKeyboardFocus.current = false
+			const point = pointerPosition.current
+			const bounds = navigation.getBoundingClientRect()
+			if (point && point.x >= bounds.left && point.x < bounds.right && point.y >= bounds.top && point.y < bounds.bottom) {
+				return
+			}
+			setNavigationExpanded(false)
+		})
+	}, [])
+
+	useEffect(() => {
+		const recordKeyboardInput = (event: KeyboardEvent) => {
+			inputModality.current = "keyboard"
+			if (event.key !== "Escape" && navigationRef.current?.contains(document.activeElement)) {
+				navigationHasKeyboardFocus.current = true
+			}
+		}
+		const recordPointerInput = (event: PointerEvent) => {
+			inputModality.current = "pointer"
+			navigationHasKeyboardFocus.current = false
+			pointerPosition.current = event.pointerType === "touch" ? null : { x: event.clientX, y: event.clientY }
+			confirmNavigationExit()
+		}
+		const recordPointerPosition = (event: PointerEvent) => {
+			if (event.pointerType === "touch") return
+			pointerPosition.current = { x: event.clientX, y: event.clientY }
+			confirmNavigationExit()
+		}
+		document.addEventListener("keydown", recordKeyboardInput, true)
+		document.addEventListener("pointerdown", recordPointerInput, true)
+		document.addEventListener("pointermove", recordPointerPosition, true)
+		return () => {
+			document.removeEventListener("keydown", recordKeyboardInput, true)
+			document.removeEventListener("pointerdown", recordPointerInput, true)
+			document.removeEventListener("pointermove", recordPointerPosition, true)
+			if (containmentFrame.current !== undefined) cancelAnimationFrame(containmentFrame.current)
+		}
+	}, [confirmNavigationExit])
 
 	const selectTarget = useCallback((target?: string) => {
 		const resolved = resolveSettingsTarget(target)
@@ -182,48 +238,87 @@ const SettingsView = ({ onDone, targetSection }: SettingsViewProps) => {
 		<Tab>
 			<ViewHeader environment={environment} onDone={onDone} title="Settings" />
 			<div className="flex flex-1 overflow-hidden">
-				<TabList
-					aria-label="Settings destinations"
-					aria-orientation="vertical"
-					className="settings-tab-list shrink-0 flex flex-col overflow-y-auto border-r border-sidebar-background"
-					onValueChange={(value) => setActiveTab(value as SettingsTabID)}
-					value={activeTab}>
-					{SETTINGS_TABS.map((tab) => {
-						const presentation = SETTINGS_DESTINATIONS[tab.id]
-						return (
-							<Tooltip key={tab.id}>
-								<TooltipTrigger asChild>
-									<TabTrigger
-										aria-controls={`settings-panel-${tab.id}`}
-										aria-label={presentation.label}
-										className={cn(
-											"settings-tab-trigger w-full whitespace-nowrap overflow-hidden h-12 box-border flex items-center border-l-2 border-transparent text-left text-foreground opacity-70 bg-transparent hover:bg-list-hover px-4 cursor-pointer gap-2",
-											activeTab === tab.id && "opacity-100 border-l-foreground bg-selection",
-										)}
-										data-testid={`tab-${tab.id}`}
-										id={`settings-tab-${tab.id}`}
-										value={tab.id}>
-										<tab.icon aria-hidden="true" className="settings-tab-icon w-4 h-4" />
-										<span className="settings-tab-label">{presentation.label}</span>
-										<span aria-hidden="true" className="settings-tab-compact-label">
-											{presentation.compactLabel}
-										</span>
-									</TabTrigger>
-								</TooltipTrigger>
-								<TooltipContent
-									className="settings-nav-tooltip max-w-xs"
-									showArrow={false}
-									side="right"
-									sideOffset={6}>
-									{presentation.webviewTooltip}
-								</TooltipContent>
-							</Tooltip>
-						)
-					})}
-				</TabList>
+				<div className="settings-nav-rail">
+					<nav
+						aria-label="Settings navigation"
+						className="settings-nav-overlay"
+						data-expanded={navigationExpanded}
+						onBlur={(event) => {
+							if (event.currentTarget.contains(event.relatedTarget)) return
+							confirmNavigationExit()
+						}}
+						onFocus={() => {
+							if (inputModality.current !== "keyboard") return
+							navigationHasKeyboardFocus.current = true
+							setNavigationExpanded(true)
+						}}
+						onKeyDownCapture={(event) => {
+							if (event.key === "Escape") {
+								event.preventDefault()
+								event.stopPropagation()
+								navigationHasKeyboardFocus.current = false
+								setNavigationExpanded(false)
+							} else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+								navigationHasKeyboardFocus.current = true
+								setNavigationExpanded(true)
+							}
+						}}
+						onPointerDown={(event) => {
+							if (event.pointerType === "touch") setNavigationExpanded(true)
+						}}
+						onPointerEnter={(event) => {
+							if (event.pointerType !== "mouse" && event.pointerType !== "pen") return
+							pointerPosition.current = { x: event.clientX, y: event.clientY }
+							setNavigationExpanded(true)
+						}}
+						onPointerLeave={(event) => {
+							if (event.pointerType === "touch") return
+							// Child/retargeted leave events are not proof that the pointer left the visible menu.
+							pointerPosition.current = { x: event.clientX, y: event.clientY }
+							confirmNavigationExit()
+						}}
+						ref={navigationRef}>
+						<TabList
+							aria-label="Settings destinations"
+							aria-orientation="vertical"
+							className="settings-tab-list flex flex-col"
+							onValueChange={(value) => setActiveTab(value as SettingsTabID)}
+							value={activeTab}>
+							{SETTINGS_TABS.map((tab) => {
+								const presentation = SETTINGS_DESTINATIONS[tab.id]
+								return (
+									<Tooltip key={tab.id}>
+										<TooltipTrigger asChild>
+											<TabTrigger
+												aria-controls={`settings-panel-${tab.id}`}
+												aria-label={presentation.label}
+												className={cn(
+													"settings-tab-trigger text-foreground opacity-70",
+													activeTab === tab.id && "opacity-100",
+												)}
+												data-testid={`tab-${tab.id}`}
+												id={`settings-tab-${tab.id}`}
+												value={tab.id}>
+												<tab.icon aria-hidden="true" className="settings-tab-icon w-4 h-4" />
+												<span className="settings-tab-label">{presentation.label}</span>
+											</TabTrigger>
+										</TooltipTrigger>
+										<TooltipContent
+											className="settings-nav-tooltip max-w-xs"
+											showArrow={false}
+											side="right"
+											sideOffset={6}>
+											{presentation.webviewTooltip}
+										</TooltipContent>
+									</Tooltip>
+								)
+							})}
+						</TabList>
+					</nav>
+				</div>
 				<TabContent
 					aria-labelledby={`settings-tab-${activeTab}`}
-					className="flex-1 overflow-auto"
+					className="min-w-0 flex-1 overflow-auto"
 					id={`settings-panel-${activeTab}`}
 					role="tabpanel">
 					{ActiveContent}
