@@ -4,6 +4,7 @@ import "should"
 import { ClaudeCodeHandler } from "@core/api/providers/claude-code"
 import { expect } from "chai"
 import { DiracStorageMessage } from "@/shared/messages/content"
+import type { ApiStreamUsageChunk } from "@core/api/transform/stream"
 
 describe("ClaudeCodeHandler", () => {
 	let handler: ClaudeCodeHandler
@@ -61,11 +62,17 @@ describe("ClaudeCodeHandler", () => {
 					},
 				}
 
-				// Yield result with cost
+				// Yield result with the run's final usage and cost
 				yield {
 					type: "result",
 					result: {},
 					total_cost_usd: 0.005,
+					usage: {
+						input_tokens: 100,
+						output_tokens: 50,
+						cache_read_input_tokens: 20,
+						cache_creation_input_tokens: 10,
+					},
 				}
 			}
 
@@ -106,6 +113,71 @@ describe("ClaudeCodeHandler", () => {
 			usageData[0].inputTokens.should.not.equal(130) // Would be wrong: double-counting cache tokens
 		})
 
+		it("takes output tokens from the result event instead of the partial assistant usage", async () => {
+			const runClaudeCodeModule = await import("@/integrations/claude-code/run")
+			const runClaudeCodeStub = sandbox.stub(runClaudeCodeModule, "runClaudeCode")
+
+			// While thinking streams, each assistant event reports only a few output tokens.
+			async function* mockGenerator() {
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "thinking", thinking: "" }],
+						usage: {
+							input_tokens: 2,
+							output_tokens: 4,
+							cache_read_input_tokens: 642,
+							cache_creation_input_tokens: 4300,
+						},
+						stop_reason: null,
+					},
+				}
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "PONG" }],
+						usage: {
+							input_tokens: 2,
+							output_tokens: 5,
+							cache_read_input_tokens: 642,
+							cache_creation_input_tokens: 4300,
+						},
+						stop_reason: "end_turn",
+					},
+				}
+				yield {
+					type: "result",
+					total_cost_usd: 0.00116,
+					usage: {
+						input_tokens: 2,
+						output_tokens: 803,
+						cache_read_input_tokens: 642,
+						cache_creation_input_tokens: 4300,
+					},
+				}
+			}
+
+			runClaudeCodeStub.returns(mockGenerator() as any)
+
+			const messages: DiracStorageMessage[] = [{ role: "user", content: "Hi" }]
+			const usageChunks: ApiStreamUsageChunk[] = []
+			for await (const chunk of handler.createMessage("sys", messages)) {
+				if (chunk.type === "usage") {
+					usageChunks.push(chunk)
+				}
+			}
+
+			usageChunks.should.have.length(1)
+			usageChunks[0].should.deepEqual({
+				type: "usage",
+				inputTokens: 2,
+				outputTokens: 803,
+				cacheReadTokens: 642,
+				cacheWriteTokens: 4300,
+				totalCost: 0.00116,
+			})
+		})
+
 		it("should handle missing usage fields with nullish coalescing", async () => {
 			// Mock the runClaudeCode function
 			const runClaudeCodeModule = await import("@/integrations/claude-code/run")
@@ -135,6 +207,7 @@ describe("ClaudeCodeHandler", () => {
 					type: "result",
 					result: {},
 					total_cost_usd: 0.005,
+					usage: { input_tokens: 100, output_tokens: 50 },
 				}
 			}
 
@@ -496,7 +569,7 @@ describe("ClaudeCodeHandler", () => {
 						stop_reason: "end_turn",
 					},
 				},
-				{ type: "result", result: {}, total_cost_usd: 0.003 },
+				{ type: "result", result: {}, total_cost_usd: 0.003, usage: { input_tokens: 10, output_tokens: 5 } },
 			])
 			const chunks: any[] = []
 			for await (const chunk of handler.createMessage("system", [{ role: "user", content: "hi" }])) chunks.push(chunk)
@@ -523,7 +596,7 @@ describe("ClaudeCodeHandler", () => {
 						stop_reason: "end_turn",
 					},
 				},
-				{ type: "result", result: {}, total_cost_usd: 0.003 },
+				{ type: "result", result: {}, total_cost_usd: 0.003, usage: { input_tokens: 10, output_tokens: 5 } },
 			])
 			const chunks: any[] = []
 			for await (const chunk of handler.createMessage("system", [{ role: "user", content: "hi" }])) chunks.push(chunk)

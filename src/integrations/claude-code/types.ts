@@ -22,6 +22,7 @@ type ResultMessage = {
 	type: "result"
 	subtype: "success" | "error_max_turns"
 	total_cost_usd: number
+	usage?: Partial<Anthropic.Messages.Usage>
 	is_error: boolean
 	duration_ms: number
 	duration_api_ms: number

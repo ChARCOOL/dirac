@@ -54,8 +54,6 @@ export class ClaudeCodeHandler implements ApiHandler {
 			jsonSchema,
 		})
 
-		// Usage is included with assistant messages,
-		// but cost is included in the result chunk
 		const usage: ApiStreamUsageChunk = {
 			type: "usage",
 			inputTokens: 0,
@@ -79,15 +77,15 @@ export class ClaudeCodeHandler implements ApiHandler {
 				const message = chunk.message
 				this.checkAssistantError(message)
 				yield* this.yieldAssistantContent(message.content)
-				usage.inputTokens = message.usage?.input_tokens ?? 0
-				usage.outputTokens = message.usage?.output_tokens ?? 0
-				usage.cacheReadTokens = message.usage?.cache_read_input_tokens ?? 0
-				usage.cacheWriteTokens = message.usage?.cache_creation_input_tokens ?? 0
 				continue
 			}
 			if (chunk.type === "result") {
-				// The StructuredOutput tool call is streamed on the assistant turn above; the
-				// result event (success or the expected error_max_turns) only carries final cost.
+				// The assistant usage is a partial snapshot: output_tokens stays at a few tokens while
+				// thinking streams. The result event (success or the expected error_max_turns) has the totals.
+				usage.inputTokens = chunk.usage?.input_tokens ?? 0
+				usage.outputTokens = chunk.usage?.output_tokens ?? 0
+				usage.cacheReadTokens = chunk.usage?.cache_read_input_tokens ?? 0
+				usage.cacheWriteTokens = chunk.usage?.cache_creation_input_tokens ?? 0
 				usage.totalCost = isPaidUsage ? chunk.total_cost_usd : 0
 				yield usage
 			}
