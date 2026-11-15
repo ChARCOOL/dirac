@@ -253,6 +253,9 @@ function runProcess(
 
 	claudeCodeProcess.stdin.write(JSON.stringify(messages))
 	claudeCodeProcess.stdin.end()
+	// A consumer that stops reading never reaches `await cProcess`, so a failed child would reject
+	// unobserved and the CLI's unhandledRejection handler would exit the whole ACP host.
+	claudeCodeProcess.catch(() => undefined)
 
 	return claudeCodeProcess
 }

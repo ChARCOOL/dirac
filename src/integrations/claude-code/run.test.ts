@@ -2,6 +2,7 @@ import { expect } from "chai"
 import path from "path"
 import proxyquire from "proxyquire"
 import sinon from "sinon"
+import { expectLoggerErrors } from "@/test/loggerGuard"
 
 const createMockProcess = () => {
 	const mockProcess = {
@@ -256,5 +257,53 @@ describe("Claude Code Integration - one-turn cap", () => {
 		expect(chunks[1].type).to.equal("result")
 		expect(chunks[1].subtype).to.equal("error_max_turns")
 		expect(chunks[1].total_cost_usd).to.equal(0.01)
+	})
+})
+
+describe("Claude Code Integration - abandoned stream", () => {
+	// A consumer can stop reading after the partial chunk while the child is still exiting. The child's
+	// rejection then has no awaiter and must not reach the process-wide unhandledRejection handler.
+	it("does not leave the child's exit rejection unobserved", async () => {
+		// The truncated assistant line is logged as a parse error by design.
+		expectLoggerErrors()
+		let rejectExit: (reason: Error) => void = () => undefined
+		const exit = new Promise<never>((_resolve, reject) => {
+			rejectExit = reject
+		})
+		const childProcess = Object.assign(exit, {
+			stdin: { write: sinon.fake(), end: sinon.fake() },
+			stdout: { on: sinon.fake(), resume: sinon.fake() },
+			stderr: { on: sinon.fake() },
+			on: sinon.fake(),
+			killed: false,
+			kill: sinon.fake(),
+		})
+		const { runClaudeCode: runAbandoned } = proxyquire("./run", {
+			"@/utils/path": { getCwd: () => Promise.resolve(path.resolve("./")) },
+			"node:os": { platform: () => "darwin" },
+			execa: { execa: sinon.fake(() => childProcess) },
+			readline: {
+				createInterface: () => ({
+					async *[Symbol.asyncIterator]() {
+						yield '{"type":"assistant","message":{"content":['
+						rejectExit(new Error("Command failed with exit code 143"))
+					},
+					close: sinon.fake(),
+				}),
+			},
+		})
+
+		const unhandled: unknown[] = []
+		const onUnhandled = (reason: unknown) => unhandled.push(reason)
+		process.on("unhandledRejection", onUnhandled)
+		try {
+			for await (const _chunk of runAbandoned({ systemPrompt: "sys", messages: [], modelId: "test", path: "echo" })) {
+				break
+			}
+			await new Promise((resolve) => setImmediate(resolve))
+			expect(unhandled).to.have.length(0)
+		} finally {
+			process.off("unhandledRejection", onUnhandled)
+		}
 	})
 })
