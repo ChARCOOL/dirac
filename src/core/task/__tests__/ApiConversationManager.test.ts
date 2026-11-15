@@ -471,7 +471,7 @@ describe("ApiConversationManager steering delivery", () => {
 					settings: Object.fromEntries(["hooksEnabled", "useAutoCondense", "autoCondenseContextLimits"].map((key) => [key, dependencies.stateManager.getGlobalSettingsKey(key)])),
 					apiConfiguration: {},
 				}),
-				api: { compactConversation },
+				api: { compactConversation, getModel: () => ({ id: "model", info: { contextWindow: 200_000 } }) },
 				contextManager: {
 					getTruncatedMessages: sinon.stub().callsFake((messages: any[]) => messages),
 					getNextTruncationRange: sinon.stub().returns([0, 1]),
