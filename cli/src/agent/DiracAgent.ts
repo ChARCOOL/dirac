@@ -870,7 +870,7 @@ export class DiracAgent implements acp.Agent {
 			this.applyContextWindow(overrides, this.options.contextWindow)
 		}
 		if (this.options.autoCondenseAt !== undefined) {
-			this.applyAutoCondenseAt(overrides, this.options.autoCondenseAt)
+			this.applyStartupAutoCondenseAt(overrides, this.options.autoCondenseAt)
 		}
 		if (inferenceSpeed !== undefined) {
 			const modes = overrides.planActSeparateModelsSetting ? [overrides.mode] : (["plan", "act"] as const)
@@ -908,7 +908,7 @@ export class DiracAgent implements acp.Agent {
 	}
 
 	/** Sets when each startup provider compacts: a token count, or a percent of its window. */
-	private applyAutoCondenseAt(overrides: Partial<Settings>, at: AutoCondenseAt): void {
+	private applyStartupAutoCondenseAt(overrides: Partial<Settings>, at: AutoCondenseAt): void {
 		for (const mode of this.startupModes(overrides)) {
 			const provider = overrides[mode === "act" ? "actModeApiProvider" : "planModeApiProvider"] as ApiProvider
 			const applied = applyAutoCondenseAt(overrides.autoCondenseContextLimits, provider, at)
