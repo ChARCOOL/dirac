@@ -22,7 +22,7 @@ const handlerFor = (chunks: unknown[]) => {
 			},
 		},
 	})
-	return new ClaudeCodeHandler({ apiModelId: "claude-haiku-5-5" })
+	return new ClaudeCodeHandler({ apiModelId: "claude-haiku-5-5", disableRetries: true })
 }
 
 const drain = async (chunks: unknown[]) => {
@@ -69,6 +69,27 @@ describe("ClaudeCodeHandler result checks", () => {
 			message = (error as Error).message
 		}
 		expect(message).to.include("no usable tool calls").and.include('"name":"read"')
+	})
+
+	it("retries a call that came back empty and returns the next one", async function () {
+		this.timeout(10_000)
+		const calls = [
+			[assistantWith([{ type: "text", text: "  " }]), baseResult],
+			[assistantWith([{ type: "text", text: "second" }]), baseResult],
+		]
+		const { ClaudeCodeHandler } = proxyquire("./claude-code", {
+			"@/integrations/claude-code/run": {
+				runClaudeCode: async function* () {
+					yield* calls.shift() ?? []
+				},
+			},
+		})
+		const out: Array<{ type: string; text?: string }> = []
+		for await (const chunk of new ClaudeCodeHandler({ apiModelId: "claude-haiku-5-5" }).createMessage("system", [])) {
+			out.push(chunk)
+		}
+		expect(out[0]).to.deep.equal({ type: "text", text: "second" })
+		expect(calls).to.have.length(0)
 	})
 
 	it("passes a normal result through with its usage", async () => {

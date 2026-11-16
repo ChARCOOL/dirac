@@ -10,8 +10,8 @@ import { ClaudeCodeModelId, claudeCodeDefaultModelId, claudeCodeModels, getAnthr
 import { DiracStorageMessage } from "@/shared/messages/content"
 import { type DiracTool } from "@/shared/tools"
 import { type ApiHandler, CommonApiHandlerOptions } from ".."
-import { withRetry } from "../retry"
-import { type ApiStream, ApiStreamUsageChunk } from "../transform/stream"
+import { RetriableError, withRetry } from "../retry"
+import { type ApiStream, type ApiStreamChunk, ApiStreamUsageChunk } from "../transform/stream"
 import type { ResultMessage } from "@/integrations/claude-code/types"
 
 interface ClaudeCodeHandlerOptions extends CommonApiHandlerOptions {
@@ -65,11 +65,14 @@ export class ClaudeCodeHandler implements ApiHandler {
 
 		let isPaidUsage = true
 		let producedOutput = false
+		// Nothing is yielded until the result passes its checks: a call that errored or came back
+		// empty is then retried whole, instead of ending the lane's turn with no output.
+		const buffered: ApiStreamChunk[] = []
 
 		for await (const chunk of claudeProcess) {
 			if (typeof chunk === "string") {
-				producedOutput = true
-				yield { type: "text", text: chunk }
+				producedOutput ||= chunk.trim() !== ""
+				buffered.push({ type: "text", text: chunk })
 				continue
 			}
 			if (chunk.type === "system" && chunk.subtype === "init") {
@@ -80,9 +83,10 @@ export class ClaudeCodeHandler implements ApiHandler {
 				const message = chunk.message
 				this.checkAssistantError(message)
 				producedOutput ||= message.content.some(
-					(block: { type: string }) => block.type === "text" || block.type === "tool_use",
+					(block: { type: string; text?: string }) =>
+						block.type === "tool_use" || (block.type === "text" && !!block.text?.trim()),
 				)
-				yield* this.yieldAssistantContent(message.content)
+				buffered.push(...this.yieldAssistantContent(message.content))
 				continue
 			}
 			if (chunk.type === "result") {
@@ -94,9 +98,10 @@ export class ClaudeCodeHandler implements ApiHandler {
 				usage.cacheReadTokens = chunk.usage?.cache_read_input_tokens ?? 0
 				usage.cacheWriteTokens = chunk.usage?.cache_creation_input_tokens ?? 0
 				usage.totalCost = isPaidUsage ? chunk.total_cost_usd : 0
-				yield usage
+				buffered.push(usage)
 			}
 		}
+		yield* buffered
 	}
 
 	// A failed or empty call must not look like a finished turn: the task loop would end the lane
@@ -110,7 +115,7 @@ export class ClaudeCodeHandler implements ApiHandler {
 			throw new Error(`Claude Code reported a failed call (${detail}): ${result.result ?? ""}`.trim())
 		}
 		if (!producedOutput) {
-			throw new Error(`Claude Code returned no content (${detail})`)
+			throw new RetriableError(`Claude Code returned no content (${detail})`)
 		}
 	}
 
@@ -159,7 +164,7 @@ export class ClaudeCodeHandler implements ApiHandler {
 		if (content.name === STRUCTURED_OUTPUT_TOOL_NAME) {
 			const structuredCalls = extractStructuredToolCalls(content.input)
 			if (structuredCalls.length === 0) {
-				throw new Error(
+				throw new RetriableError(
 					`Claude Code returned a StructuredOutput call with no usable tool calls: ${JSON.stringify(content.input)?.slice(0, 800)}`,
 				)
 			}
