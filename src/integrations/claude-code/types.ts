@@ -18,7 +18,7 @@ type ErrorMessage = {
 	type: "error"
 }
 
-type ResultMessage = {
+export type ResultMessage = {
 	type: "result"
 	subtype: "success" | "error_max_turns"
 	total_cost_usd: number
@@ -29,6 +29,10 @@ type ResultMessage = {
 	num_turns: number
 	result?: string
 	session_id: string
+	stop_reason?: string | null
+	terminal_reason?: string
+	api_error_status?: number | null
+	safety_stops?: number
 }
 
 export type ClaudeCodeMessage = InitMessage | AssistantMessage | ErrorMessage | ResultMessage

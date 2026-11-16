@@ -12,6 +12,7 @@ import { type DiracTool } from "@/shared/tools"
 import { type ApiHandler, CommonApiHandlerOptions } from ".."
 import { withRetry } from "../retry"
 import { type ApiStream, ApiStreamUsageChunk } from "../transform/stream"
+import type { ResultMessage } from "@/integrations/claude-code/types"
 
 interface ClaudeCodeHandlerOptions extends CommonApiHandlerOptions {
 	claudeCodePath?: string
@@ -63,9 +64,11 @@ export class ClaudeCodeHandler implements ApiHandler {
 		}
 
 		let isPaidUsage = true
+		let producedOutput = false
 
 		for await (const chunk of claudeProcess) {
 			if (typeof chunk === "string") {
+				producedOutput = true
 				yield { type: "text", text: chunk }
 				continue
 			}
@@ -76,10 +79,14 @@ export class ClaudeCodeHandler implements ApiHandler {
 			if (chunk.type === "assistant" && "message" in chunk) {
 				const message = chunk.message
 				this.checkAssistantError(message)
+				producedOutput ||= message.content.some(
+					(block: { type: string }) => block.type === "text" || block.type === "tool_use",
+				)
 				yield* this.yieldAssistantContent(message.content)
 				continue
 			}
 			if (chunk.type === "result") {
+				this.checkResult(chunk, producedOutput)
 				// The assistant usage is a partial snapshot: output_tokens stays at a few tokens while
 				// thinking streams. The result event (success or the expected error_max_turns) has the totals.
 				usage.inputTokens = chunk.usage?.input_tokens ?? 0
@@ -89,6 +96,21 @@ export class ClaudeCodeHandler implements ApiHandler {
 				usage.totalCost = isPaidUsage ? chunk.total_cost_usd : 0
 				yield usage
 			}
+		}
+	}
+
+	// A failed or empty call must not look like a finished turn: the task loop would end the lane
+	// with no output and no sign of why. error_max_turns is the expected end of our one-turn cap.
+	private checkResult(result: ResultMessage, producedOutput: boolean): void {
+		const detail = `subtype=${result.subtype} stop_reason=${result.stop_reason ?? "none"} terminal_reason=${result.terminal_reason ?? "none"} api_error_status=${result.api_error_status ?? "none"} safety_stops=${result.safety_stops ?? 0}`
+		if (
+			result.subtype !== "error_max_turns" &&
+			(result.is_error || (result.terminal_reason && result.terminal_reason !== "completed"))
+		) {
+			throw new Error(`Claude Code reported a failed call (${detail}): ${result.result ?? ""}`.trim())
+		}
+		if (!producedOutput) {
+			throw new Error(`Claude Code returned no content (${detail})`)
 		}
 	}
 
@@ -104,7 +126,7 @@ export class ClaudeCodeHandler implements ApiHandler {
 		if (error.error?.message?.includes("Invalid model name")) {
 			throw new Error(
 				content.text +
-				"\n\nAPI keys and subscription plans allow different models. Make sure the selected model is included in your plan.",
+					"\n\nAPI keys and subscription plans allow different models. Make sure the selected model is included in your plan.",
 			)
 		}
 		throw new Error(errorMessage)
