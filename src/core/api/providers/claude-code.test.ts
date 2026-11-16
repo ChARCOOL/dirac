@@ -58,6 +58,19 @@ describe("ClaudeCodeHandler result checks", () => {
 		expect(message).to.include("no content").and.include("stop_reason=refusal").and.include("safety_stops=1")
 	})
 
+	it("throws with the payload when StructuredOutput carries no usable tool call", async () => {
+		const empty = assistantWith([
+			{ type: "tool_use", id: "t1", name: "StructuredOutput", input: { tool_calls: [{ name: "read" }] } },
+		])
+		let message = ""
+		try {
+			await drain([empty, baseResult])
+		} catch (error) {
+			message = (error as Error).message
+		}
+		expect(message).to.include("no usable tool calls").and.include('"name":"read"')
+	})
+
 	it("passes a normal result through with its usage", async () => {
 		const out = await drain([assistantWith([{ type: "text", text: "ok" }]), { ...baseResult, usage: { output_tokens: 7 } }])
 		expect(out.map((chunk) => (chunk as { type: string }).type)).to.deep.equal(["text", "usage"])

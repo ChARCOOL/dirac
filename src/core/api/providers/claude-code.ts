@@ -158,6 +158,11 @@ export class ClaudeCodeHandler implements ApiHandler {
 		// Unwrap its payload into real tool calls so they flow through Dirac's native tool pipeline.
 		if (content.name === STRUCTURED_OUTPUT_TOOL_NAME) {
 			const structuredCalls = extractStructuredToolCalls(content.input)
+			if (structuredCalls.length === 0) {
+				throw new Error(
+					`Claude Code returned a StructuredOutput call with no usable tool calls: ${JSON.stringify(content.input)?.slice(0, 800)}`,
+				)
+			}
 			for (let idx = 0; idx < structuredCalls.length; idx++) {
 				const structuredCall = structuredCalls[idx]
 				const callId = `${content.id}_${idx}`
