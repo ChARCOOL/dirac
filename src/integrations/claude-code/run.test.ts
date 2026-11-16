@@ -15,7 +15,7 @@ const createMockProcess = () => {
 			resume: sinon.fake(),
 		},
 		stderr: {
-			on: sinon.fake(() => { }),
+			on: sinon.fake(() => {}),
 		},
 		on: sinon.fake((event, callback) => {
 			if (event === "close") {
@@ -83,7 +83,13 @@ describe("Claude Code Integration", () => {
 	})
 
 	it("passes configured effort through to Claude Code's adaptive reasoning control", async () => {
-		for await (const _chunk of runClaudeCode({ systemPrompt: "a", messages: [], modelId: "claude-sonnet-5-5", path: scriptPath, reasoningEffort: "xhigh" })) {
+		for await (const _chunk of runClaudeCode({
+			systemPrompt: "a",
+			messages: [],
+			modelId: "claude-sonnet-5-5",
+			path: scriptPath,
+			reasoningEffort: "xhigh",
+		})) {
 			// Consume the invocation.
 		}
 		expect(mockExeca.lastCall.args[2].env.CLAUDE_CODE_EFFORT_LEVEL).to.equal("xhigh")
@@ -107,7 +113,7 @@ describe("Claude Code Integration", () => {
 		expect(params).to.include("--no-session-persistence")
 	})
 
-	it("pins the official API endpoint so a local proxy in the user's settings is bypassed", async () => {
+	it("pins the endpoint and output cap so the user's global settings do not apply to the child", async () => {
 		process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"
 		try {
 			const cProcess = runClaudeCode({
@@ -125,7 +131,9 @@ describe("Claude Code Integration", () => {
 
 		const [, params, options] = mockExeca.lastCall.args
 		const settings = JSON.parse(params[params.indexOf("--settings") + 1])
-		expect(settings).to.deep.equal({ env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" } })
+		expect(settings).to.deep.equal({
+			env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com", CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000" },
+		})
 		expect(options.env).to.not.have.property("ANTHROPIC_BASE_URL")
 	})
 
@@ -220,7 +228,7 @@ describe("Claude Code Integration - one-turn cap", () => {
 	const maxTurnsProcess = () => ({
 		stdin: { write: sinon.fake(), end: sinon.fake() },
 		stdout: { on: sinon.fake(), resume: sinon.fake() },
-		stderr: { on: sinon.fake(() => { }) },
+		stderr: { on: sinon.fake(() => {}) },
 		on: sinon.fake((event: string, callback: (code: number) => void) => {
 			if (event === "close") {
 				setImmediate(() => callback(1))

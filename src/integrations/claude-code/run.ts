@@ -181,10 +181,21 @@ const ANTHROPIC_API_URL = "https://api.anthropic.com"
 const BUFFER_SIZE = 20_000_000 // 20 MB
 
 // This is the limit imposed by the CLI
-const CLAUDE_CODE_MAX_OUTPUT_TOKENS = "32000"
+// One call carries reasoning plus the whole tool payload; at high effort a 16k cap, which a user
+// may set globally for interactive use, ends calls with "exceeded the output token maximum".
+const CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000"
 
 function runProcess(
-	{ systemPrompt, messages, path, modelId, thinkingBudgetTokens, reasoningEffort, shouldUseFile, jsonSchema }: ClaudeCodeOptions,
+	{
+		systemPrompt,
+		messages,
+		path,
+		modelId,
+		thinkingBudgetTokens,
+		reasoningEffort,
+		shouldUseFile,
+		jsonSchema,
+	}: ClaudeCodeOptions,
 	cwd: string,
 ) {
 	const claudePath = path?.trim() || "claude"
@@ -205,11 +216,12 @@ function runProcess(
 		"--strict-mcp-config",
 		"--disable-slash-commands",
 		"--no-session-persistence",
-		// The user's ~/.claude/settings.json env block routes the CLI through a local proxy
-		// (ANTHROPIC_BASE_URL) and outranks the process env, so only --settings can pin the
-		// official endpoint for this child.
+		// The user's ~/.claude/settings.json env block (a local proxy in ANTHROPIC_BASE_URL, a
+		// global output cap) outranks the process env, so only --settings can pin these for this child.
 		"--settings",
-		JSON.stringify({ env: { ANTHROPIC_BASE_URL: ANTHROPIC_API_URL } }),
+		JSON.stringify({
+			env: { ANTHROPIC_BASE_URL: ANTHROPIC_API_URL, CLAUDE_CODE_MAX_OUTPUT_TOKENS },
+		}),
 		// Disable all built-in tools; tool selection is driven by the --json-schema
 		// structured-output contract instead. ("" disables the entire built-in set.)
 		"--tools",
@@ -236,7 +248,7 @@ function runProcess(
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		// Respect the user's environment variables but set defaults.
-		CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+		CLAUDE_CODE_MAX_OUTPUT_TOKENS,
 		// Disable telemetry, auto-updater and error reporting.
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
 		DISABLE_NON_ESSENTIAL_MODEL_CALLS: process.env.DISABLE_NON_ESSENTIAL_MODEL_CALLS || "1",
